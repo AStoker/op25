@@ -91,8 +91,19 @@ def post_req(environ, start_response, postdata):
     output = json.dumps(resp_msg)
     return status, content_type, output
 
+CORS_HEADERS = [
+    ('Access-Control-Allow-Origin',  '*'),
+    ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+    ('Access-Control-Allow-Headers', 'Content-Type'),
+]
+
 def http_request(environ, start_response):
-    if environ['REQUEST_METHOD'] == 'GET':
+    if environ['REQUEST_METHOD'] == 'OPTIONS':
+        # CORS preflight
+        response_headers = [('Content-Length', '0')] + CORS_HEADERS
+        start_response('204 No Content', response_headers)
+        return [b'']
+    elif environ['REQUEST_METHOD'] == 'GET':
         status, content_type, output = static_file(environ, start_response)
     elif environ['REQUEST_METHOD'] == 'POST':
         postdata = environ['wsgi.input'].read()
@@ -102,9 +113,9 @@ def http_request(environ, start_response):
         content_type = 'text/plain'
         output = status
         sys.stderr.write('http_request: unexpected input %s\n' % environ['PATH_INFO'])
-    
+
     response_headers = [('Content-type', content_type),
-                        ('Content-Length', str(len(output)))]
+                        ('Content-Length', str(len(output)))] + CORS_HEADERS
     start_response(status, response_headers)
 
     if sys.version[0] > '2':
