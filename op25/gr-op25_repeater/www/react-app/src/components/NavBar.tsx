@@ -5,23 +5,18 @@ import {
 import SettingsIcon from '@mui/icons-material/Settings';
 import InfoIcon from '@mui/icons-material/Info';
 import ArticleIcon from '@mui/icons-material/Article';
-
-interface DebugInfo {
-  requestCount: number;
-  httpOk: number;
-  httpErrors: number;
-  fetchErrors: number;
-}
+import type { ControlStats } from '../hooks/useControl';
 
 interface Props {
   connectionError: string | null;
+  wsConnected: boolean;
   onOpenSettings: () => void;
   onOpenConfig: () => void;
   onOpenAbout: () => void;
-  debugInfo: DebugInfo;
+  debugInfo: ControlStats;
 }
 
-export default function NavBar({ connectionError, onOpenSettings, onOpenConfig, onOpenAbout, debugInfo }: Props) {
+export default function NavBar({ connectionError, wsConnected, onOpenSettings, onOpenConfig, onOpenAbout, debugInfo }: Props) {
   return (
     <>
       <AppBar position="sticky" elevation={0}>
@@ -83,13 +78,13 @@ export default function NavBar({ connectionError, onOpenSettings, onOpenConfig, 
 
           {/* Debug pill */}
           <Tooltip
-            title={`Requests: ${debugInfo.requestCount} | OK: ${debugInfo.httpOk} | HTTP errors: ${debugInfo.httpErrors} | Fetch errors: ${debugInfo.fetchErrors}`}
+            title={`Requests: ${debugInfo.requests} | WS OK: ${debugInfo.wsOk} | HTTP OK: ${debugInfo.httpOk} | Errors: ${debugInfo.errors} | Transport: ${wsConnected ? 'WebSocket' : 'HTTP'}`}
             arrow
           >
             <Chip
-              label={`OK: ${debugInfo.httpOk}`}
+              label={wsConnected ? `WS: ${debugInfo.wsOk}` : `HTTP: ${debugInfo.httpOk}`}
               size="small"
-              color={debugInfo.httpErrors + debugInfo.fetchErrors > 0 ? 'error' : 'default'}
+              color={debugInfo.errors > 0 ? 'error' : wsConnected ? 'success' : 'default'}
               variant="outlined"
               sx={{ fontSize: '0.65rem', height: 20, cursor: 'default' }}
             />

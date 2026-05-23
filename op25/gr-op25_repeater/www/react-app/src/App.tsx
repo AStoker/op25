@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ThemeProvider, CssBaseline, Box, Container } from '@mui/material';
 import { buildTheme } from './theme';
 import { useAudio } from './hooks/useAudio';
+import { useControl } from './hooks/useControl';
 import type {
   Settings,
   SmartColor,
@@ -20,8 +21,8 @@ import type {
   WsInstancesResponse,
   CallLogResponse,
   FullConfigResponse,
-  SendCommand,
   WuidEntry,
+  PlotResponse,
 } from './types';
 
 // Components
@@ -36,9 +37,9 @@ import SubscriberTable from './components/SubscriberTable';
 import SettingsDialog from './components/SettingsDialog';
 import ConfigDialog from './components/ConfigDialog';
 import AboutDialog from './components/AboutDialog';
+import PlotPanel from './components/PlotPanel';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const SEND_QLIMIT = 5;
 const MAX_HISTORY_ROWS = 1000;
 const MAX_HISTORY_SECONDS = 5;
 const MAX_TG_CHARS = 20;
@@ -115,26 +116,19 @@ export default function App() {
   // ── Settings ─────────────────────────────────────────────────────────────
   const [settings, setSettings] = useState<Settings>(loadSettings);
 
-  const updateSetting = useCallback(
-    <K extends keyof Settings>(key: K, value: Settings[K]) => {
-      setSettings((prev) => {
-        const next = { ...prev, [key]: value };
-        localStorage.setItem('op25-react-settings', JSON.stringify(next));
-        return next;
-      });
-    },
-    [],
-  );
+  const saveAllSettings = useCallback((newSettings: Settings) => {
+    setSettings(newSettings);
+    localStorage.setItem('op25-react-settings', JSON.stringify(newSettings));
+  }, []);
 
   // ── Theme (rebuilds when accent changes) ─────────────────────────────────
   const theme = useMemo(() => buildTheme(settings.accentColor), [settings.accentColor]);
 
-  // ── Connection / debug ───────────────────────────────────────────────────
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [requestCount, setRequestCount] = useState(0);
-  const [httpOk, setHttpOk] = useState(0);
-  const [httpErrors, setHttpErrors] = useState(0);
-  const [fetchErrors, setFetchErrors] = useState(0);
+  // ── Control transport (WS + HTTP fallback) ─────────────────────────────────
+  // Defined after response handlers are declared; sendCommand is exposed via ref
+  // so the polling interval closure always has the latest version.
+  const dispatchResponsesRef = useRef<(r: ServerResponse[]) => void>(() => {});
+  const dispatchResponses    = useCallback((r: ServerResponse[]) => dispatchResponsesRef.current(r), []);
 
   // ── Channel management ───────────────────────────────────────────────────
   const [channelList, setChannelList] = useState<number[]>([]);
@@ -189,6 +183,9 @@ export default function App() {
   const [fullConfig, setFullConfig] = useState<FullConfigResponse | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
 
+  // ── Signal plots (keyed by "chan:mode") ────────────────────────────────────
+  const [plots, setPlots] = useState<Record<string, PlotResponse>>({});
+
   // ── Dialogs ───────────────────────────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
@@ -201,63 +198,8 @@ export default function App() {
     settings.serverUrl,
   );
 
-  // ── Command queue ─────────────────────────────────────────────────────────
-  const sendQueueRef = useRef<SendCommand[]>([]);
-  const isFetchingRef = useRef(false);
-  const handleResponseRef = useRef<(responses: ServerResponse[]) => void>(() => {});
-  const serverUrlRef = useRef(settings.serverUrl);
-  serverUrlRef.current = settings.serverUrl;
-
-  const processQueue = useCallback(async () => {
-    if (isFetchingRef.current || sendQueueRef.current.length === 0) return;
-    isFetchingRef.current = true;
-
-    const batch = JSON.stringify(sendQueueRef.current);
-    sendQueueRef.current = [];
-
-    try {
-      const base = serverUrlRef.current.trim();
-      const endpoint = base ? base.replace(/\/+$/, '') + '/' : '/';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: batch,
-      });
-
-      if (!res.ok) {
-        setHttpErrors((n) => n + 1);
-        setConnectionError(`HTTP Error: ${res.status}`);
-      } else {
-        setHttpOk((n) => n + 1);
-        setConnectionError(null);
-        const data = (await res.json()) as ServerResponse[];
-        if (Array.isArray(data)) handleResponseRef.current(data);
-      }
-    } catch (err: unknown) {
-      setFetchErrors((n) => n + 1);
-      setConnectionError(
-        `Connection error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      isFetchingRef.current = false;
-    }
-  }, []);
-
-  const sendCommand = useCallback(
-    (command: string, arg1 = 0, arg2 = 0) => {
-      setRequestCount((n) => n + 1);
-      if (sendQueueRef.current.length >= SEND_QLIMIT) {
-        sendQueueRef.current.shift();
-      }
-      sendQueueRef.current.push({ command, arg1, arg2 });
-      processQueue();
-    },
-    [processQueue],
-  );
-
-  // Stable ref so the polling timer + response handlers always call the latest
-  const sendCommandRef = useRef(sendCommand);
-  sendCommandRef.current = sendCommand;
+  // Stable ref so the polling interval always calls the latest sendCommand
+  const sendCommandRef = useRef<(command: string, arg1?: number, arg2?: number) => void>(() => {});
 
   // ── TG tag cache helpers ──────────────────────────────────────────────────
   const rememberTag = useCallback((sysidHex: string, tgid: string, tagFromServer: unknown) => {
@@ -487,6 +429,10 @@ export default function App() {
     [settings.callHistorySource],
   );
 
+  const handlePlot = useCallback((d: PlotResponse) => {
+    setPlots((prev) => ({ ...prev, [`${d.chan}:${d.mode}`]: d }));
+  }, []);
+
   const handleFullConfig = useCallback((d: FullConfigResponse) => {
     setFullConfig(d);
     const chans = d.trunking?.chans ?? [];
@@ -501,7 +447,7 @@ export default function App() {
   }, []);
 
   // ── Master response dispatcher ────────────────────────────────────────────
-  handleResponseRef.current = useCallback(
+  dispatchResponsesRef.current = useCallback(
     (responses: ServerResponse[]) => {
       for (const r of responses) {
         if (!('json_type' in r)) continue;
@@ -514,17 +460,29 @@ export default function App() {
           case 'ws_instances': handleWsInstances(r); break;
           case 'call_log': handleCallLog(r); break;
           case 'full_config': handleFullConfig(r); break;
+          case 'plot': handlePlot(r); break;
         }
       }
     },
     [
       handleTerminalConfig, handleChannelUpdate, handleTrunkUpdate,
       handleChangeFreq, handleRxUpdate, handleWsInstances,
-      handleCallLog, handleFullConfig,
+      handleCallLog, handleFullConfig, handlePlot,
     ],
   );
 
-  // ── Polling ───────────────────────────────────────────────────────────────
+  // ── Wire up useControl (below response handlers so dispatchResponses is stable) ──
+  const {
+    sendCommand,
+    wsConnected,
+    connectionError,
+    stats: controlStats,
+  } = useControl(settings.serverUrl, dispatchResponses);
+  sendCommandRef.current = sendCommand;
+
+  // ── Periodic update tick ────────────────────────────────────────────────────
+  // Sends the `update` command every second so the server generates fresh data.
+  // All other commands are sent immediately through sendCommandRef.
   useEffect(() => {
     sendCommandRef.current('get_terminal_config', 0, 0);
     sendCommandRef.current('get_full_config', 0, 0);
@@ -532,8 +490,8 @@ export default function App() {
 
     const id = setInterval(() => {
       const list = channelListRef.current;
-      const idx = channelIndexRef.current;
-      const ch = list.length > 0 ? list[idx] : 0;
+      const idx  = channelIndexRef.current;
+      const ch   = list.length > 0 ? list[idx] : 0;
       sendCommandRef.current('update', 0, ch);
       if (smartColors.length === 0) {
         sendCommandRef.current('get_terminal_config', 0, 0);
@@ -662,10 +620,11 @@ export default function App() {
 
       <NavBar
         connectionError={connectionError}
+        wsConnected={wsConnected}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenConfig={() => { refreshConfig(); setConfigOpen(true); }}
         onOpenAbout={() => setAboutOpen(true)}
-        debugInfo={{ requestCount, httpOk, httpErrors, fetchErrors }}
+        debugInfo={controlStats}
       />
 
       <Container maxWidth={false} sx={{ pt: 1, pb: 4, px: { xs: 1, sm: 2 } }}>
@@ -751,6 +710,8 @@ export default function App() {
 
           {/* ── RIGHT COLUMN ── */}
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <PlotPanel plots={plots} onTogglePlot={togglePlot} />
+
             {settings.showCallHistory && (
               <CallHistory
                 entries={callHistory}
@@ -779,14 +740,15 @@ export default function App() {
         open={settingsOpen}
         settings={settings}
         onClose={() => setSettingsOpen(false)}
-        onUpdate={updateSetting}
+        onSave={saveAllSettings}
         captureActive={captureActive}
         onCapture={toggleCapture}
         onDumpTgids={dumpTgids}
         onDumpBuffer={dumpBuffer}
         onSetLogVerbosity={setLogVerbosity}
         streamUrl={currentStreamUrl}
-        debugInfo={{ requestCount, httpOk, httpErrors, fetchErrors }}
+        wsConnected={wsConnected}
+        debugInfo={controlStats}
       />
 
       <ConfigDialog

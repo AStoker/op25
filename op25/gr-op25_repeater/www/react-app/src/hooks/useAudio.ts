@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
+import { normalizeServerUrl } from './useControl';
 
 const WS_AUDIO_SAMPLE_RATE = 8000;
 
@@ -98,17 +99,16 @@ export function useAudio(
       }
 
       // Normalize WebSocket URL:
-      // 1. If serverUrl is configured, rewrite hostname+port to match it.
+      // 1. If serverUrl is configured, replace only the hostname (keep the
+      //    audio port from the endpoint — it's independently configured).
       // 2. Otherwise replace 0.0.0.0 / 127.0.0.1 with the page's hostname.
       let wsUrl = endpoint;
       try {
         const u = new URL(endpoint);
         if (serverUrl.trim()) {
-          // Derive hostname and port from the configured HTTP URL
-          const base = new URL(serverUrl.trim());
+          const base = new URL(normalizeServerUrl(serverUrl.trim()));
           u.hostname = base.hostname;
-          u.port = base.port;
-          // Keep ws:// or wss:// scheme as-is; only override host/port
+          // Do NOT copy base.port — audio uses its own dedicated port
         } else if (u.hostname === '0.0.0.0' || u.hostname === '127.0.0.1') {
           u.hostname = window.location.hostname;
         }

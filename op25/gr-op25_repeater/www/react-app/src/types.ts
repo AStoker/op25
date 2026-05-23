@@ -175,6 +175,18 @@ export interface FullConfigResponse {
   [key: string]: unknown;
 }
 
+export type PlotMode = 'eye' | 'constellation' | 'symbol' | 'fft' | 'mixer' | 'fll';
+
+export interface PlotResponse {
+  json_type: 'plot';
+  chan: number;
+  mode: PlotMode;
+  data: [number, number][];
+  xrange: [number, number];
+  yrange: [number, number];
+  title: string;
+}
+
 export type ServerResponse =
   | TerminalConfigResponse
   | ChannelUpdateResponse
@@ -183,7 +195,8 @@ export type ServerResponse =
   | RxUpdateResponse
   | WsInstancesResponse
   | CallLogResponse
-  | FullConfigResponse;
+  | FullConfigResponse
+  | PlotResponse;
 
 // ── App-level derived types ───────────────────────────────────────────────────
 export interface CallHistoryEntry {

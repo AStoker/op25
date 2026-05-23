@@ -36,6 +36,92 @@ my_output_q = None
 my_recv_q = None
 my_port = None
 
+# ── Optional WebSocket control server ─────────────────────────────────────────
+try:
+    import asyncio
+    import websockets
+    _HAS_WEBSOCKETS = True
+except ImportError:
+    _HAS_WEBSOCKETS = False
+
+_ws_loop = None          # asyncio event loop running in the WS thread
+_ws_clients = set()      # currently connected WebSocket clients
+_ws_clients_lock = threading.Lock()
+
+
+async def _ws_handler(websocket, *args):
+    """Handle a single WebSocket client connection."""
+    with _ws_clients_lock:
+        _ws_clients.add(websocket)
+    try:
+        async for message in websocket:
+            if not isinstance(message, str):
+                continue
+            try:
+                data = json.loads(message)
+                for d in data:
+                    msg = gr.message().make_from_string(
+                        str(d['command']), -2, d['arg1'], d['arg2']
+                    )
+                    if not my_output_q.full_p():
+                        my_output_q.insert_tail(msg)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                sys.stderr.write('ws_handler: error processing message: %s\n' % message)
+    except Exception:
+        pass
+    finally:
+        with _ws_clients_lock:
+            _ws_clients.discard(websocket)
+
+
+def _ws_push(msg_str):
+    """Push a JSON string to all connected WS clients (thread-safe, non-blocking)."""
+    if not _HAS_WEBSOCKETS or _ws_loop is None:
+        return
+    with _ws_clients_lock:
+        clients = set(_ws_clients)
+    if not clients:
+        return
+    payload = '[' + msg_str + ']'
+
+    async def _broadcast():
+        disconnected = set()
+        for client in clients:
+            try:
+                await client.send(payload)
+            except Exception:
+                disconnected.add(client)
+        if disconnected:
+            with _ws_clients_lock:
+                _ws_clients.difference_update(disconnected)
+
+    asyncio.run_coroutine_threadsafe(_broadcast(), _ws_loop)
+
+
+def _start_ws_server(host, port):
+    """Start the WebSocket control server in a daemon thread on *port*."""
+    global _ws_loop
+
+    async def _serve():
+        try:
+            async with websockets.serve(_ws_handler, host, port):
+                sys.stderr.write('WebSocket control server listening on %s:%d\n' % (host, port))
+                await asyncio.Future()  # run until cancelled
+        except Exception as exc:
+            sys.stderr.write('WebSocket server error: %s\n' % exc)
+
+    def _thread_main():
+        global _ws_loop
+        _ws_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_ws_loop)
+        try:
+            _ws_loop.run_until_complete(_serve())
+        except Exception as exc:
+            sys.stderr.write('WebSocket server thread error: %s\n' % exc)
+
+    t = threading.Thread(target=_thread_main, name='ws-control', daemon=True)
+    t.start()
+
 """
 fake http and ajax server module
 TODO: make less fake
@@ -141,6 +227,12 @@ def process_qmsg(msg):
         return
     if not my_recv_q.full_p():
         my_recv_q.insert_tail(msg)
+    # Push to any connected WebSocket clients immediately
+    if msg.type() == -4:
+        try:
+            _ws_push(msg.to_string())
+        except Exception:
+            pass
 
 class http_server(object):
     def __init__(self, input_q, output_q, endpoint, **kwds):
@@ -160,6 +252,13 @@ class http_server(object):
         except (OSError, ValueError):
             sys.stderr.write('Failed to create http terminal server\n%s\n' % traceback.format_exc())
             sys.exit(1)
+
+        # Start WebSocket control server on port+1 if websockets library is available
+        if _HAS_WEBSOCKETS:
+            try:
+                _start_ws_server(host if host else '0.0.0.0', my_port + 1)
+            except Exception:
+                sys.stderr.write('Failed to start WebSocket server\n%s\n' % traceback.format_exc())
 
     def run(self):
         self.server.run()
