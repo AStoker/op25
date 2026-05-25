@@ -76,13 +76,13 @@ export default function NavBar({ connectionError, wsConnected, onOpenSettings, o
 
           <Box sx={{ flex: 1 }} />
 
-          {/* Debug pill */}
+          {/* Transport indicator */}
           <Tooltip
-            title={`Requests: ${debugInfo.requests} | WS OK: ${debugInfo.wsOk} | HTTP OK: ${debugInfo.httpOk} | Errors: ${debugInfo.errors} | Transport: ${wsConnected ? 'WebSocket' : 'HTTP'}`}
+            title={`Transport: ${wsConnected ? 'WebSocket' : 'HTTP'} | Errors: ${debugInfo.errors}`}
             arrow
           >
             <Chip
-              label={wsConnected ? `WS: ${debugInfo.wsOk}` : `HTTP: ${debugInfo.httpOk}`}
+              label={wsConnected ? 'WS' : 'HTTP'}
               size="small"
               color={debugInfo.errors > 0 ? 'error' : wsConnected ? 'success' : 'default'}
               variant="outlined"

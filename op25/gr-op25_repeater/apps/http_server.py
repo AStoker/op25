@@ -50,7 +50,14 @@ _ws_clients_lock = threading.Lock()
 
 
 async def _ws_handler(websocket, *args):
-    """Handle a single WebSocket client connection."""
+    """Handle a single WebSocket client connection.
+
+    For each batch of commands received, this mirrors what post_req() does over
+    HTTP: put commands on my_output_q, wait briefly for processing, then drain
+    my_recv_q and send the accumulated responses back to the client.
+    This guarantees the client always gets a reply, regardless of whether
+    _ws_push() works from the queue_watcher thread.
+    """
     with _ws_clients_lock:
         _ws_clients.add(websocket)
     try:
@@ -67,6 +74,23 @@ async def _ws_handler(websocket, *args):
                         my_output_q.insert_tail(msg)
             except (json.JSONDecodeError, KeyError, TypeError):
                 sys.stderr.write('ws_handler: error processing message: %s\n' % message)
+                continue
+
+            # Mirror post_req: wait for the backend to process then send responses.
+            await asyncio.sleep(0.2)
+            resp_msgs = []
+            while not my_recv_q.empty_p():
+                resp = my_recv_q.delete_head_nowait()
+                if resp is not None and resp.type() == -4:
+                    try:
+                        resp_msgs.append(json.loads(resp.to_string()))
+                    except Exception:
+                        pass
+            if resp_msgs:
+                try:
+                    await websocket.send(json.dumps(resp_msgs))
+                except Exception:
+                    break
     except Exception:
         pass
     finally:

@@ -584,9 +584,13 @@ export default function App() {
     sendCommand('capture', 0, currentChannelArg());
   }, [currentChannelArg, sendCommand]);
 
+  // multi_rx.py toggle_plot: arg1 must be an integer (1=fft, 2=constellation, 3=symbol, 4=datascope, 5=mixer, 6=fll)
+  const PLOT_TYPE_IDS: Record<string, number> = {
+    fft: 1, constellation: 2, symbol: 3, datascope: 4, mixer: 5, fll: 6,
+  };
   const togglePlot = useCallback(
     (plotType: string) => {
-      sendCommand('toggle_plot', plotType as unknown as number, currentChannelArg());
+      sendCommand('toggle_plot', PLOT_TYPE_IDS[plotType] ?? 0, currentChannelArg());
     },
     [currentChannelArg, sendCommand],
   );
