@@ -663,6 +663,10 @@ class rx_block (gr.top_block):
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))
         self.http_plot_interval = float(from_dict(config, 'http_plot_interval', 1.0))
         self.http_plot_directory = str(from_dict(config, 'http_plot_directory', "../www/images"))
+        try:
+            os.makedirs(self.http_plot_directory, exist_ok=True)
+        except OSError as e:
+            sys.stderr.write("Warning: unable to create plot directory %s: %s\n" % (self.http_plot_directory, e))
         self.ui_timeout = float(from_dict(config, 'terminal_timeout', 5.0))
 
     def configure_trunking(self, config):

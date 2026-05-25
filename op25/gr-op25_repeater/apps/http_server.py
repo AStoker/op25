@@ -68,11 +68,11 @@ async def _ws_handler(websocket, *args):
                 data = json.loads(message)
                 for d in data:
                     msg = gr.message().make_from_string(
-                        str(d['command']), -2, d['arg1'], d['arg2']
+                        str(d['command']), -2, float(d['arg1']), float(d['arg2'])
                     )
                     if not my_output_q.full_p():
                         my_output_q.insert_tail(msg)
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 sys.stderr.write('ws_handler: error processing message: %s\n' % message)
                 continue
 
@@ -186,18 +186,14 @@ def static_file(environ, start_response):
         status = '200 OK'
     return status, content_type, output
 
-PLOT_NAME_TO_ID = {'fft': 1, 'constellation': 2, 'symbol': 3, 'datascope': 4, 'mixer': 5, 'fll': 6}
-
 def post_req(environ, start_response, postdata):
     global my_input_q, my_output_q, my_recv_q, my_port
     valid_req = False
     try:
         data = json.loads(postdata)
         for d in data:
-            arg1 = d['arg1']
-            arg2 = d['arg2']
-            if d['command'] == 'toggle_plot' and isinstance(arg1, str):
-                arg1 = PLOT_NAME_TO_ID.get(arg1, 0)
+            arg1 = float(d['arg1'])
+            arg2 = float(d['arg2'])
             msg = gr.message().make_from_string(str(d['command']), -2, arg1, arg2)
             if not my_output_q.full_p():
                 my_output_q.insert_tail(msg)
