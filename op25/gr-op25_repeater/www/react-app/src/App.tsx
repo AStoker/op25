@@ -335,8 +335,10 @@ export default function App() {
         const nac = d[key] as NacData;
         if (!nac || typeof nac !== 'object') continue;
 
-        // Filter to system matching current channel
-        if (nac.system !== undefined && nac.system !== currentSystem) continue;
+        // Filter to system matching current channel, but only once a system has
+        // been identified.  Before the first change_freq is received currentSystem
+        // is '' and no NAC data would otherwise be shown.
+        if (currentSystem && nac.system !== undefined && nac.system !== currentSystem) continue;
 
         newNacData[key] = nac;
 

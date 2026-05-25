@@ -51,6 +51,17 @@ the encryption on traffic with unknown keys.
 - DES-OFB
 - AES-256
 
+## HTTP / WebSocket Communication
+
+The web-based GUI communicates with the Python backend over HTTP and WebSockets.
+See [README-websockets.md](README-websockets.md) for a detailed description of:
+
+- The control channel (WebSocket on HTTP port+1, HTTP POST fallback)
+- How commands flow from the browser to the Python trunking engine
+- How state updates are pushed from Python back to the browser
+- Browser audio streaming (raw PCM over dedicated WebSocket ports)
+- CORS headers and remote access configuration
+
 ## Roadmap (under development)
 - Demodulator improvements to speed up channel lock-time
 - Additional encryption algorithms
