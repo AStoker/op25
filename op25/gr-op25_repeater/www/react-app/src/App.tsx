@@ -198,6 +198,25 @@ export default function App() {
     settings.serverUrl,
   );
 
+  // Initialize AudioContext on first user interaction (browser security
+  // requirement — audio cannot start without a user gesture).
+  useEffect(() => {
+    const handleFirstInteraction = () => {
+      initAudioCtx();
+      document.removeEventListener('click', handleFirstInteraction);
+      document.removeEventListener('keydown', handleFirstInteraction);
+      document.removeEventListener('touchstart', handleFirstInteraction);
+    };
+    document.addEventListener('click', handleFirstInteraction);
+    document.addEventListener('keydown', handleFirstInteraction);
+    document.addEventListener('touchstart', handleFirstInteraction, { passive: true });
+    return () => {
+      document.removeEventListener('click', handleFirstInteraction);
+      document.removeEventListener('keydown', handleFirstInteraction);
+      document.removeEventListener('touchstart', handleFirstInteraction);
+    };
+  }, [initAudioCtx]);
+
   // Stable ref so the polling interval always calls the latest sendCommand
   const sendCommandRef = useRef<(command: string, arg1?: number, arg2?: number) => void>(() => {});
 

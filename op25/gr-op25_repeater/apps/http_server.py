@@ -99,14 +99,25 @@ def _ws_push(msg_str):
 
 
 def _start_ws_server(host, port):
-    """Start the WebSocket control server in a daemon thread on *port*."""
+    """Start the WebSocket control server in a daemon thread on *port*.
+
+    The server always listens on all interfaces (host=None / 0.0.0.0) so that
+    browsers connecting from remote machines can reach it, even when the HTTP
+    server is bound to a specific IP address.
+    """
     global _ws_loop
+    # None → asyncio binds to all interfaces; avoids the HTTP server's
+    # potentially restrictive binding (e.g. 127.0.0.1) being inherited here.
+    ws_host = None
 
     async def _serve():
         try:
-            async with websockets.serve(_ws_handler, host, port):
-                sys.stderr.write('WebSocket control server listening on %s:%d\n' % (host, port))
-                await asyncio.Future()  # run until cancelled
+            async with websockets.serve(_ws_handler, ws_host, port):
+                sys.stderr.write('WebSocket control server listening on 0.0.0.0:%d\n' % port)
+                await asyncio.get_event_loop().create_future()  # run until cancelled
+        except OSError as exc:
+            sys.stderr.write('WebSocket server failed to bind on port %d: %s\n' % (port, exc))
+            sys.stderr.write('  → Is port %d already in use? Is the websockets library installed?\n' % port)
         except Exception as exc:
             sys.stderr.write('WebSocket server error: %s\n' % exc)
 
@@ -256,7 +267,7 @@ class http_server(object):
         # Start WebSocket control server on port+1 if websockets library is available
         if _HAS_WEBSOCKETS:
             try:
-                _start_ws_server(host if host else '0.0.0.0', my_port + 1)
+                _start_ws_server(host, my_port + 1)
             except Exception:
                 sys.stderr.write('Failed to start WebSocket server\n%s\n' % traceback.format_exc())
 

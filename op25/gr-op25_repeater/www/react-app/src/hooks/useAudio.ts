@@ -38,6 +38,12 @@ export function useAudio(
     const state = channelsRef.current[channel];
     if (!ctx || !state || state.muted || state.queue.length === 0) return;
 
+    // Resume AudioContext if it was suspended (Chrome autoplay policy)
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => { /* ignore */ });
+      return;
+    }
+
     if (state.nextPlayTime < ctx.currentTime) {
       state.nextPlayTime = ctx.currentTime;
     }
