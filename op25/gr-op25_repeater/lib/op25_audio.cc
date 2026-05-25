@@ -34,6 +34,7 @@
 #include <netdb.h>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <nlohmann/json.hpp>
 
 #include "op25_audio.h"
@@ -134,6 +135,7 @@ op25_audio::op25_audio(const char* destination, log_ts& logger, int debug, int m
     static const std::string P_UDP  = "udp";
     static const std::string P_FILE = "file";
     static const std::string P_WS   = "ws";
+    static const std::string P_WSS  = "wss";
     d_ws_host.clear();
     d_ws_connections.clear();
 
@@ -145,9 +147,11 @@ op25_audio::op25_audio(const char* destination, log_ts& logger, int debug, int m
     // TODO: the following block needs to be seriously cleaned up!
     for (auto & dest : destinations) {
         URLParser::HTTP_URL dest_url = URLParser::Parse(dest);
+        std::string scheme(dest_url.scheme);
+        std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char c){ return std::tolower(c); });
         fprintf(stderr, "%s op25_audio::op25_audio: destination: %s [schema: %s, host: %s, port: %s]\n",
                 logts.get(d_msgq_id), dest.c_str(), dest_url.scheme.c_str(), dest_url.host.c_str(), dest_url.port.c_str());
-        if (dest_url.scheme == P_UDP) {
+        if (scheme == P_UDP) {
             char ip[20];
             if (hostname_to_ip(dest_url.host.c_str(), ip) == 0) {
                 strncpy(d_udp_host, ip, sizeof(d_udp_host)-1);
@@ -155,7 +159,7 @@ op25_audio::op25_audio(const char* destination, log_ts& logger, int debug, int m
                 d_write_port = d_audio_port = std::stoi(dest_url.port);
                 open_socket();
             }
-        } else if (dest_url.scheme == P_FILE) { //TODO: this block of code is broken
+        } else if (scheme == P_FILE) { //TODO: this block of code is broken
 #if 0
             const char * filename = dest.c_str() + P_FILE.length() + 3;
             size_t l = strlen(filename);
@@ -170,9 +174,10 @@ op25_audio::op25_audio(const char* destination, log_ts& logger, int debug, int m
             }
             d_file_enabled = true;
 #endif
-        } else if (dest_url.scheme == P_WS) {
+        } else if (scheme == P_WS || scheme == P_WSS) {
             // websocket initialization
             websocketpp::lib::error_code ec;
+            bool listened_on_any = false;
             d_ws_endpt.set_error_channels(websocketpp::log::elevel::all);
             //d_ws_endpt.set_access_channels(websocketpp::log::alevel::all ^ websocketpp::log::alevel::frame_payload);
             d_ws_endpt.set_access_channels(websocketpp::log::alevel::none);
@@ -186,9 +191,19 @@ op25_audio::op25_audio(const char* destination, log_ts& logger, int debug, int m
             d_ws_port = std::stoi(dest_url.port);
             d_ws_endpt.listen(dest_url.host, dest_url.port, ec);
             if (ec) {
-                fprintf(stderr, "%s op25_audio::op25_audio: port [%d], websocket listen error: %s\n", logts.get(d_msgq_id), d_ws_port, ec.message().c_str());
-            } else
-            {
+                fprintf(stderr, "%s op25_audio::op25_audio: websocket listen error on %s:%d: %s - retrying on all interfaces\n",
+                        logts.get(d_msgq_id), d_ws_host.c_str(), d_ws_port, ec.message().c_str());
+                ec.clear();
+                d_ws_endpt.listen(d_ws_port, ec);
+                listened_on_any = !ec;
+                if (ec) {
+                    fprintf(stderr, "%s op25_audio::op25_audio: port [%d], websocket listen retry error: %s\n",
+                            logts.get(d_msgq_id), d_ws_port, ec.message().c_str());
+                }
+            }
+            if (!ec) {
+                if (listened_on_any)
+                    d_ws_host = "0.0.0.0";
                 d_ws_endpt.start_accept();
                 ws_start();
                 d_ws_enabled = true;
