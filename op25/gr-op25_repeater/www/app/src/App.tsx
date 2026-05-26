@@ -1,9 +1,19 @@
 
 import Box from '@mui/material/Box';
+import Stack from '@mui/material/Stack';
 import Toolbar from '@mui/material/Toolbar';
 import Header from './components/Header/Header';
 import type { NavItem } from './components/Header/Header';
 import { ThemeServiceProvider } from './services/themeService';
+import PlayerCard from './components/PlayerCard/PlayerCard';
+import TalkGroupsCard from './components/TalkGroupsCard/TalkGroupsCard';
+import ChannelsCard from './components/ChannelsCard/ChannelsCard';
+import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
+import BandPlanCard from './components/BandPlanCard/BandPlanCard';
+import FrequenciesCard from './components/FrequenciesCard/FrequenciesCard';
+import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
+import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
+import SubscribersCard from './components/SubscribersCard/SubscribersCard';
 
 const navItems: NavItem[] = [
   { label: 'Settings', onClick: () => { /* TODO: open Settings dialog */ } },
@@ -20,7 +30,27 @@ export default function App() {
         <Box component="main" sx={{ p: 3 }}>
           {/* Offset below the fixed AppBar */}
           <Toolbar />
-          {/* Page content will go here */}
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={2}
+            alignItems="flex-start"
+          >
+            <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
+              <PlayerCard />
+              <SiteInfoCard />
+              <FrequenciesCard />
+              <BandPlanCard />
+              <TalkGroupsCard />
+            </Stack>
+
+            <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
+              <ChannelsCard />
+              <SignalPlotsCard />
+              <CallHistoryCard />
+              <SubscribersCard />
+            </Stack>
+
+          </Stack>
         </Box>
       </Box>
     </ThemeServiceProvider>
