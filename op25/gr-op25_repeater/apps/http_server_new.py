@@ -17,8 +17,6 @@
 # Software Foundation, Inc., 51 Franklin Street, Boston, MA
 # 02110-1301, USA.
 
-from __future__ import annotations
-
 import sys
 import os
 import traceback
@@ -27,7 +25,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from wsgiref.types import StartResponse, WSGIEnvironment
 
-from waitress.server import create_server  # type: ignore[import-untyped]
+try:
+    from waitress.server import create_server  # type: ignore[import-untyped]
+except ImportError:  # pragma: no cover
+    def create_server(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+        raise RuntimeError("waitress is required: pip install waitress")
 
 # Directory containing built frontend assets (Vite output)
 _DIST_DIR = os.path.realpath(
@@ -145,5 +147,17 @@ class http_server(object):
             sys.stderr.write('Failed to create http server\n%s\n' % traceback.format_exc())
             sys.exit(1)
 
-    def run(self):
+    def run(self) -> None:
         self.server.run()
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='OP25 HTTP server (new)')
+    parser.add_argument('--endpoint', default='127.0.0.1:8080',
+                        help='host:port to listen on (default: 127.0.0.1:8080)')
+    args = parser.parse_args()
+
+    sys.stderr.write('Serving %s on http://%s\n' % (_DIST_DIR, args.endpoint))
+    http_server(args.endpoint).run()

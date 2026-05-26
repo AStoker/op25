@@ -1,4 +1,7 @@
 # Untracked files
+.venv/
+__pycache__/
+.pytest_cache/
 stderr*
 *.2
 *.blist

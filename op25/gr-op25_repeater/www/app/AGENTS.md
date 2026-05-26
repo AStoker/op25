@@ -33,27 +33,3 @@ yarn build       # tsc -b && vite build → outputs to ../www-static/
 yarn dev         # Vite dev server (proxies nothing; see remote server section)
 ```
 ---
-
-### Command Reference
-
-| Command | arg1 | arg2 | Effect |
-|---|---|---|---|
-| `update` | 0 | channel index | Triggers server to flush pending responses |
-| `get_terminal_config` | 0 | 0 | Returns `terminal_config` response |
-| `get_full_config` | 0 | 0 | Returns `full_config` response |
-| `get_ws_instances` | 0 | 0 | Returns `ws_instances` response |
-| `hold` | tgid | channel | Hold on talkgroup (0 = release) |
-| `whitelist` | tgid | channel | Add tgid to whitelist |
-| `skip` | 0 | channel | Skip (scan past) current talkgroup |
-| `lockout` | tgid | channel | Lockout (blacklist) talkgroup |
-| `adj_tune` | Hz offset | channel | Adjust frequency offset |
-| `capture` | 0 | channel | Toggle IQ capture |
-| `dump_tgids` | 0 | channel | Log talkgroup IDs to server console |
-| `dump_tracking` | 0 | channel | Log tracking state |
-| `dump_buffer` | -1 | channel | Force buffer dump |
-| `set_debug` | level (0–10) | channel | Set log verbosity |
-| `toggle_plot` | plot type (cast as number) | channel | Toggle gnuplot |
-
-"Hold on talkgroup" requires sending `whitelist` first then `hold` — see `holdTalkgroup()` in `App.tsx`.
-
----

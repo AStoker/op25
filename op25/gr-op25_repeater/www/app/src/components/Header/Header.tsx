@@ -1,0 +1,174 @@
+import React, { useState } from 'react';
+import AppBar from '@mui/material/AppBar';
+import Box from '@mui/material/Box';
+import Divider from '@mui/material/Divider';
+import Drawer from '@mui/material/Drawer';
+import IconButton from '@mui/material/IconButton';
+import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
+import ListItemButton from '@mui/material/ListItemButton';
+import ListItemText from '@mui/material/ListItemText';
+import MenuIcon from '@mui/icons-material/Menu';
+import Toolbar from '@mui/material/Toolbar';
+import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
+import Brightness4Icon from '@mui/icons-material/Brightness4';
+import Brightness7Icon from '@mui/icons-material/Brightness7';
+import RadioIcon from '@mui/icons-material/Radio';
+import { useThemeService } from '../../services/themeService';
+
+export interface NavItem {
+  label: string;
+  href?: string;
+  onClick?: () => void;
+}
+
+interface HeaderProps {
+  navItems: NavItem[];
+}
+
+const DRAWER_WIDTH = 240;
+const APP_TITLE = 'OP25';
+
+export default function Header({ navItems }: HeaderProps) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const { mode, toggleTheme } = useThemeService();
+
+  const handleDrawerToggle = () => {
+    setMobileOpen((prev) => !prev);
+  };
+
+  const drawer = (
+    <Box onClick={handleDrawerToggle} sx={{ textAlign: 'center' }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 1,
+          my: 2,
+        }}
+      >
+        <RadioIcon />
+        <Typography variant="h6" sx={{ fontWeight: 700, letterSpacing: '.1rem' }}>
+          {APP_TITLE}
+        </Typography>
+      </Box>
+      <Divider />
+      <List>
+        {navItems.map((item) => (
+          <ListItem key={item.label} disablePadding>
+            <ListItemButton
+              sx={{ textAlign: 'left' }}
+              {...(item.href
+                ? { component: 'a', href: item.href }
+                : { onClick: item.onClick })}
+            >
+              <ListItemText primary={item.label} />
+            </ListItemButton>
+          </ListItem>
+        ))}
+      </List>
+    </Box>
+  );
+
+  return (
+    <Box sx={{ display: 'flex' }}>
+      <AppBar component="nav" position="fixed">
+        <Toolbar>
+          {/* Hamburger — mobile only */}
+          <IconButton
+            color="inherit"
+            aria-label="open navigation drawer"
+            edge="start"
+            onClick={handleDrawerToggle}
+            sx={{ mr: 2, display: { sm: 'none' } }}
+          >
+            <MenuIcon />
+          </IconButton>
+
+          {/* Logo section — desktop */}
+          <Box
+            sx={{
+              display: { xs: 'none', sm: 'flex' },
+              alignItems: 'center',
+              gap: 1,
+              mr: 3,
+            }}
+          >
+            <RadioIcon />
+            <Typography
+              variant="h6"
+              component="div"
+              sx={{ fontWeight: 700, letterSpacing: '.1rem', whiteSpace: 'nowrap' }}
+            >
+              {APP_TITLE}
+            </Typography>
+          </Box>
+
+          {/* Logo section — mobile (centered) */}
+          <Box
+            sx={{
+              display: { xs: 'flex', sm: 'none' },
+              alignItems: 'center',
+              gap: 1,
+              flexGrow: 1,
+            }}
+          >
+            <RadioIcon />
+            <Typography
+              variant="h6"
+              component="div"
+              sx={{ fontWeight: 700, letterSpacing: '.1rem' }}
+            >
+              {APP_TITLE}
+            </Typography>
+          </Box>
+
+          {/* Nav buttons — desktop */}
+          <Box sx={{ flexGrow: 1, display: { xs: 'none', sm: 'flex' } }}>
+            {navItems.map((item) => (
+              <Button
+                key={item.label}
+                sx={{ color: 'inherit' }}
+                {...(item.href
+                  ? { component: 'a', href: item.href }
+                  : { onClick: item.onClick })}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </Box>
+
+          {/* Theme toggle */}
+          <IconButton
+            color="inherit"
+            onClick={toggleTheme}
+            aria-label={`Switch to ${mode === 'light' ? 'dark' : 'light'} mode`}
+          >
+            {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
+          </IconButton>
+        </Toolbar>
+      </AppBar>
+
+      {/* Mobile navigation drawer */}
+      <nav>
+        <Drawer
+          variant="temporary"
+          open={mobileOpen}
+          onClose={handleDrawerToggle}
+          ModalProps={{ keepMounted: true }}
+          sx={{
+            display: { xs: 'block', sm: 'none' },
+            '& .MuiDrawer-paper': {
+              boxSizing: 'border-box',
+              width: DRAWER_WIDTH,
+            },
+          }}
+        >
+          {drawer}
+        </Drawer>
+      </nav>
+    </Box>
+  );
+}
