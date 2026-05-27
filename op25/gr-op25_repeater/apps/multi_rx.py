@@ -980,6 +980,7 @@ class rx_block (gr.top_block):
         self.kill()
         time.sleep(0.5) # allow a little time for processes and ports to end gracefully
         gr.top_block.stop(self)
+        gr.top_block.wait(self) # wait for all GNURadio block threads to finish before Python GC runs
 
 # data unit receive queue
 #
@@ -1064,13 +1065,11 @@ class rx_main(object):
         except (KeyboardInterrupt):
             sys.stderr.write("Ctrl-C detected\n")
             self.tb.stop()
-            self.tb.kill()
             self.keep_running = False
         except Exception:
             sys.stderr.write('main: exception occurred\n')
             sys.stderr.write('main: exception:\n%s\n' % traceback.format_exc())
             self.tb.stop()
-            self.tb.kill()
             self.keep_running = False
 
 if __name__ == "__main__":
