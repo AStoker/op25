@@ -16,7 +16,7 @@ export default function CardShell({ title, children }: CardShellProps) {
         titleTypographyProps={{ variant: 'subtitle1', fontWeight: 'bold' }}
         sx={{ pb: 0 }}
       />
-      <CardContent>{children}</CardContent>
+      <CardContent sx={{ '&:last-child': { pb: 2 } }}>{children}</CardContent>
     </Card>
   );
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
+import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
 import Drawer from '@mui/material/Drawer';
 import IconButton from '@mui/material/IconButton';
@@ -16,6 +17,7 @@ import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import RadioIcon from '@mui/icons-material/Radio';
 import { useThemeService } from '../../services/themeService';
+import { useWebSocketService } from '../../services/websocketService';
 
 export interface NavItem {
   label: string;
@@ -33,6 +35,20 @@ const APP_TITLE = 'OP25';
 export default function Header({ navItems }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { mode, toggleTheme } = useThemeService();
+  const { status: wsStatus } = useWebSocketService();
+
+  const wsChipColor: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
+    open:       'success',
+    connecting: 'warning',
+    closed:     'default',
+    error:      'error',
+  };
+  const wsChipLabel: Record<string, string> = {
+    open:       'Connected',
+    connecting: 'Connecting',
+    closed:     'Disconnected',
+    error:      'Error',
+  };
 
   const handleDrawerToggle = () => {
     setMobileOpen((prev) => !prev);
@@ -139,6 +155,14 @@ export default function Header({ navItems }: HeaderProps) {
               </Button>
             ))}
           </Box>
+
+          {/* Server status chip */}
+          <Chip
+            label={wsChipLabel[wsStatus] ?? wsStatus}
+            color={wsChipColor[wsStatus] ?? 'default'}
+            size="small"
+            sx={{ mr: 1 }}
+          />
 
           {/* Theme toggle */}
           <IconButton

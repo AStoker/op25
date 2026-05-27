@@ -1,2 +1,2 @@
-"Sysname"	"Control Channel List"	"Offset"	"NAC"	"Modulation"	"TGID Tags File"	"Whitelist"	"Blacklist"	"Center Frequency"
-"P25 SYSTEM"	"876.54320"	"0"	"0"	"cqpsk"	""	""	""	""
+"sysname"	"control_channel_list"	"offset"	"nac"	"modulation"	"tgid_tags_file"	"whitelist"	"blacklist"	"center_frequency"
+"Palmetto800"	"853.03750,852.53750,853.53750,860.33750"	"0"	"0x1d1"	"cqpsk"	"palmetto_tgs.tsv"	""	""	""

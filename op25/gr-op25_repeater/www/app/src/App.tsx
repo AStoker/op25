@@ -5,10 +5,10 @@ import Toolbar from '@mui/material/Toolbar';
 import Header from './components/Header/Header';
 import type { NavItem } from './components/Header/Header';
 import { ThemeServiceProvider } from './services/themeService';
+import { WebSocketServiceProvider } from './services/websocketService';
 import PlayerCard from './components/PlayerCard/PlayerCard';
 import TalkGroupsCard from './components/TalkGroupsCard/TalkGroupsCard';
 import ChannelsCard from './components/ChannelsCard/ChannelsCard';
-import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
 import BandPlanCard from './components/BandPlanCard/BandPlanCard';
 import FrequenciesCard from './components/FrequenciesCard/FrequenciesCard';
 import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
@@ -25,6 +25,7 @@ const navItems: NavItem[] = [
 export default function App() {
   return (
     <ThemeServiceProvider>
+      <WebSocketServiceProvider>
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         <Header navItems={navItems} />
         <Box component="main" sx={{ p: 3 }}>
@@ -37,7 +38,6 @@ export default function App() {
           >
             <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
               <PlayerCard />
-              <SiteInfoCard />
               <FrequenciesCard />
               <BandPlanCard />
               <TalkGroupsCard />
@@ -53,6 +53,7 @@ export default function App() {
           </Stack>
         </Box>
       </Box>
+    </WebSocketServiceProvider>
     </ThemeServiceProvider>
   );
 }

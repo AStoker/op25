@@ -4,6 +4,20 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    // Proxy API and WebSocket requests to the Python backend during `yarn dev`.
+    // Change the target port if you start websocket_server.py on a different port.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://127.0.0.1:8080',
+        ws: true,
+      },
+    },
+  },
   build: {
     outDir: path.resolve(__dirname, '../dist'),
     emptyOutDir: true,
