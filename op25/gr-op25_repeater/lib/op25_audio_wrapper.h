@@ -58,21 +58,26 @@ public:
         // threadsafety guard
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // map.emplace() will either return iterator to an existing object, or create a new object
-        auto const [it, created] = audioMap.try_emplace(msgq_id, options, logger, debug, msgq_id);
-        if (debug >= 10) {
-            if (created) {
+        // op25_audio contains std::mutex, std::thread and websocketpp::server,
+        // all of which are non-copyable.  Apple's libc++ (macOS) is stricter
+        // than libstdc++ (Linux) about requiring map value types to be
+        // copy-constructible during internal tree rebalancing, so we store
+        // by unique_ptr to keep the non-copyable members off the map's value.
+        auto it = audioMap.find(msgq_id);
+        if (it == audioMap.end()) {
+            if (debug >= 10)
                 fprintf(stderr, "%s op25_audio_wrapper::get_op25_audio: created new op25_audio object\n", logger.get(msgq_id));
-            } else {
+            it = audioMap.emplace(msgq_id, std::make_unique<op25_audio>(options, logger, debug, msgq_id)).first;
+        } else {
+            if (debug >= 10)
                 fprintf(stderr, "%s op25_audio_wrapper::get_op25_audio: using existing op25_audio object\n", logger.get(msgq_id));
-            }
         }
 
-        return it->second;
+        return *it->second;
     }
 
 private:
-    std::map<int, op25_audio> audioMap;
+    std::map<int, std::unique_ptr<op25_audio>> audioMap;
     std::mutex mutex_;
 
 }; // class op25_audio_wrapper

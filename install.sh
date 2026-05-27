@@ -35,6 +35,11 @@ if [ ${GR_VER} = "3.10" ]; then
     sudo apt-get build-dep gnuradio $([ "$FORCE" = true ] && echo "-y")
     sudo apt-get install gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev libhackrf-dev liborc-dev cmake git build-essential pkg-config doxygen clang-format python3-pybind11 python3-numpy python3-waitress python3-requests python3-websockets gnuplot-x11 libsndfile1-dev libspdlog-dev $([ "$FORCE" = true ] && echo "-y")
 
+    echo "Installing Python web server dependencies"
+    # --break-system-packages is required on Debian/Ubuntu 23+ with PEP 668
+    pip3 install fastapi "uvicorn[standard]" --break-system-packages 2>/dev/null \
+        || pip3 install fastapi "uvicorn[standard]"
+
     # Tell op25 to use python3
     echo "/usr/bin/python3" > op25/gr-op25_repeater/apps/op25_python
 else

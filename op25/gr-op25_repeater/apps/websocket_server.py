@@ -33,6 +33,8 @@ import math
 import os
 import struct
 import sys
+import threading
+import time
 import traceback
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -41,6 +43,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 import uvicorn
+
+try:
+    from gnuradio import gr as _gr
+except ImportError:
+    _gr = None  # type: ignore[assignment]
+
+MOCK = False  # when True, audio stream emits a test tone until real audio arrives
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -145,7 +154,7 @@ class AudioStreamManager:
     def __init__(self) -> None:
         # maxsize = 50 chunks × 100 ms = 5 s of buffering before we drop
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-        self.mock: bool = True   # set False once the real decoder feeds audio
+        self.mock: bool = MOCK   # set False once the real decoder feeds audio
 
     def push_audio(self, pcm_chunk: bytes) -> None:
         """Thread-safe: push a raw PCM chunk.  Drops the oldest on overflow."""
@@ -241,6 +250,38 @@ manager = ConnectionManager()
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="OP25 WebSocket Server", docs_url=None, redoc_url=None)
+
+# Captured on startup so non-async decoder threads can schedule broadcasts.
+_server_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    global _server_loop
+    _server_loop = asyncio.get_event_loop()
+
+
+def _broadcast_from_thread(msg_type: str, payload: dict[str, Any]) -> None:
+    """Schedule a broadcast from any thread into the uvicorn event loop."""
+    if _server_loop is None or _server_loop.is_closed():
+        return
+    asyncio.run_coroutine_threadsafe(
+        manager.broadcast({"type": msg_type, "payload": payload}),
+        _server_loop,
+    )
+
+
+# Maps the decoder's json_type field to the appropriate downstream WS message.
+_JSON_TYPE_TO_MSG: dict[str, str] = {
+    "chan_status":         MSG_SDR_STATUS,
+    "call_log":           MSG_CALL_ACTIVITY,
+    "trunked_site_status": MSG_CALL_ACTIVITY,
+    "sys_info":           MSG_CALL_ACTIVITY,
+    "terminal_config":    MSG_SYSTEM_STATE,
+    "full_config":        MSG_SYSTEM_STATE,
+    "ws_instances":       MSG_SYSTEM_STATE,
+}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -400,6 +441,161 @@ async def broadcast_sdr_status(payload: dict[str, Any]) -> None:
 async def broadcast_call_activity(payload: dict[str, Any]) -> None:
     """Broadcast a CALL_ACTIVITY message to all connected clients."""
     await manager.broadcast({"type": MSG_CALL_ACTIVITY, "payload": payload})
+
+
+# ---------------------------------------------------------------------------
+# OP25 terminal adapter  (multi_rx.py integration)
+# ---------------------------------------------------------------------------
+
+class ws_terminal(threading.Thread):
+    """Bridge the multi_rx.py UI queues to the FastAPI WebSocket server.
+
+    multi_rx.py calls ``op25_terminal(input_q, output_q, terminal_type)``
+    which returns one of these.  The thread does two things:
+
+    1. Sends a periodic ``update`` heartbeat to *output_q* so the decoder
+       pushes fresh channel-status and call-log data into *input_q*.
+    2. Drains *input_q*, maps each JSON message to the appropriate
+       WebSocket message type, and broadcasts it to all connected clients.
+
+    Upstream WebSocket messages (CALL_CONTROL / SYSTEM_CONTROL) are
+    forwarded to *output_q* as GNURadio messages.
+    """
+
+    UPDATE_INTERVAL: float = 1.0  # seconds between heartbeat 'update' commands
+
+    def __init__(
+        self,
+        input_q: Any,
+        output_q: Any,
+        endpoint: str,
+        **kwds: Any,
+    ) -> None:
+        threading.Thread.__init__(self, **kwds)
+        self.daemon = True
+        self.input_q  = input_q
+        self.output_q = output_q
+        self.keep_running = True
+
+        # Parse "host:port" — the "ws:" prefix is stripped by op25_terminal().
+        host, port_str = endpoint.split(':', 1)
+        self._host = host
+        self._port = int(port_str)
+
+        # Start uvicorn in its own daemon thread so multi_rx's main thread
+        # is free to run the GNURadio flowgraph.
+        server_t = threading.Thread(
+            target=lambda: uvicorn.run(app, host=self._host, port=self._port, log_level="warning"),
+            name='ws-server',
+            daemon=True,
+        )
+        server_t.start()
+        sys.stderr.write('WebSocket terminal server starting on %s:%d\n' % (self._host, self._port))
+
+        # Register upstream WebSocket handlers that forward client commands
+        # to the decoder via output_q.
+        self._register_upstream_handlers()
+
+        self.start()  # start the queue-watcher / heartbeat thread
+
+    # ------------------------------------------------------------------
+    # Terminal interface expected by multi_rx.py
+    # ------------------------------------------------------------------
+
+    def get_terminal_type(self) -> str:
+        return "ws"
+
+    def end_terminal(self) -> None:
+        self.keep_running = False
+
+    # ------------------------------------------------------------------
+    # Thread body
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:
+        last_update = 0.0
+        while self.keep_running:
+            now = time.time()
+            if now - last_update >= self.UPDATE_INTERVAL:
+                self._send_cmd('update')
+                last_update = now
+            if not self.input_q.empty_p():
+                msg = self.input_q.delete_head_nowait()
+                if msg is not None:
+                    self._dispatch(msg)
+            else:
+                time.sleep(0.01)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _send_cmd(self, cmd: str, arg1: float = 0.0, arg2: float = 0.0) -> None:
+        """Put a command message onto the decoder's output queue."""
+        if _gr is None:
+            return
+        msg = _gr.message().make_from_string(cmd, -2, arg1, arg2)
+        if not self.output_q.full_p():
+            self.output_q.insert_tail(msg)
+
+    def _dispatch(self, msg: Any) -> None:
+        """Broadcast a decoder message to all WebSocket clients."""
+        if msg.type() != -4:
+            return
+        try:
+            data: dict[str, Any] = json.loads(msg.to_string())
+        except Exception:
+            return
+        json_type = data.get('json_type', '')
+        ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
+        _broadcast_from_thread(ws_type, data)
+
+    def _register_upstream_handlers(self) -> None:
+        """Wire upstream WebSocket messages to decoder commands."""
+        output_q = self.output_q  # capture for closures
+
+        async def handle_call_control(websocket: WebSocket, payload: dict[str, Any]) -> None:
+            try:
+                if _gr is None:
+                    return
+                command = str(payload.get('command', ''))
+                arg1    = float(payload.get('arg1', 0.0))
+                arg2    = float(payload.get('arg2', 0.0))
+                if command:
+                    m = _gr.message().make_from_string(command, -2, arg1, arg2)
+                    if not output_q.full_p():
+                        output_q.insert_tail(m)
+            except Exception:
+                sys.stderr.write('ws_terminal: handle_call_control error:\n%s\n' % traceback.format_exc())
+
+        async def handle_system_control(websocket: WebSocket, payload: dict[str, Any]) -> None:
+            try:
+                if _gr is None:
+                    return
+                action = str(payload.get('action', ''))
+                if action == 'quit':
+                    m = _gr.message().make_from_string('quit', -2, 0.0, 0.0)
+                    if not output_q.full_p():
+                        output_q.insert_tail(m)
+            except Exception:
+                sys.stderr.write('ws_terminal: handle_system_control error:\n%s\n' % traceback.format_exc())
+
+        register_upstream_handler(MSG_CALL_CONTROL, handle_call_control)
+        register_upstream_handler(MSG_SYSTEM_CONTROL, handle_system_control)
+
+
+def op25_terminal(input_q: Any, output_q: Any, terminal_type: str) -> ws_terminal:
+    """Factory matching the terminal.py ``op25_terminal`` interface.
+
+    ``terminal_type`` should be ``"ws:<host>:<port>"``, e.g.
+    ``"ws:0.0.0.0:8080"``.  The ``"ws:"`` prefix is stripped before the
+    endpoint is passed to :class:`ws_terminal`.
+    """
+    if terminal_type.startswith('ws:'):
+        endpoint = terminal_type[3:]
+    else:
+        endpoint = terminal_type
+    return ws_terminal(input_q, output_q, endpoint)
 
 
 # ---------------------------------------------------------------------------
