@@ -31,6 +31,8 @@ import asyncio
 import json
 import math
 import os
+import select
+import socket
 import struct
 import sys
 import threading
@@ -38,6 +40,7 @@ import time
 import traceback
 from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -140,32 +143,75 @@ def _sine_chunk(t: float, freq: float = 600.0, amp: float = 0.25) -> bytes:
 
 
 class AudioStreamManager:
-    """Queue-backed audio stream.
+    """Byte-buffered audio stream.
 
-    Real PCM chunks are pushed via :meth:`push_audio`; when the queue is
-    empty the generator emits the mock sine wave (while ``mock`` is ``True``)
-    or silence, maintaining a steady byte-rate so browser buffers stay happy
-    and no syllables are clipped when real audio resumes.
+    Real PCM bytes are pushed via :meth:`push_audio` from any thread.  The
+    async :meth:`generate` consumer yields fixed-size PCM chunks paced at
+    the wall-clock byte-rate so the browser playback stays in sync.  When
+    the buffer underruns, silence (or the mock sine) is emitted instead,
+    keeping the HTTP stream and the browser's scheduler alive.
 
-    Swap ``mock = False`` and call :meth:`push_audio` from the OP25 decoder
-    thread to switch from the test tone to live radio audio.
+    A small set of counters is maintained so the server can log how much
+    audio is flowing end-to-end — useful when "no sound" issues need to be
+    distinguished from "decoder produced no audio" issues.
     """
 
+    # Hard cap on the buffer — about 4 s at 16 kB/s.  Larger than this and
+    # we are unrecoverably behind; drop the oldest to bound latency.
+    _MAX_BUFFERED_BYTES = _SAMPLE_RATE * _SAMPLE_WIDTH * 4
+
     def __init__(self) -> None:
-        # maxsize = 50 chunks × 100 ms = 5 s of buffering before we drop
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
+        self._buffer: bytearray = bytearray()
+        self._lock: threading.Lock = threading.Lock()
         self.mock: bool = MOCK   # set False once the real decoder feeds audio
 
+        # Diagnostics
+        self.bytes_pushed: int = 0
+        self.bytes_yielded: int = 0
+        self.bytes_dropped: int = 0
+        self.underruns: int = 0          # chunks padded with silence
+        self.real_chunks: int = 0        # chunks fully sourced from real PCM
+        self.last_push_ts: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Producer side (called from UDP receiver thread)
+    # ------------------------------------------------------------------
+
     def push_audio(self, pcm_chunk: bytes) -> None:
-        """Thread-safe: push a raw PCM chunk.  Drops the oldest on overflow."""
-        try:
-            self._queue.put_nowait(pcm_chunk)
-        except asyncio.QueueFull:
-            try:
-                self._queue.get_nowait()          # discard oldest
-                self._queue.put_nowait(pcm_chunk) # enqueue new
-            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                pass
+        """Thread-safe: append raw 8 kHz / 16-bit LE mono PCM bytes."""
+        if not pcm_chunk:
+            return
+        with self._lock:
+            self._buffer.extend(pcm_chunk)
+            self.bytes_pushed += len(pcm_chunk)
+            self.last_push_ts = time.time()
+            overflow = len(self._buffer) - self._MAX_BUFFERED_BYTES
+            if overflow > 0:
+                del self._buffer[:overflow]
+                self.bytes_dropped += overflow
+
+    # ------------------------------------------------------------------
+    # Consumer side (called from the asyncio event loop)
+    # ------------------------------------------------------------------
+
+    def _take_chunk(self) -> tuple[bytes, int]:
+        """Pop up to one full chunk from the buffer.
+
+        Returns ``(pcm_bytes, real_byte_count)`` where ``real_byte_count``
+        is the number of bytes that came from real pushed audio (the rest
+        of the chunk is silence padding when the buffer underran).
+        """
+        with self._lock:
+            if not self._buffer:
+                return b'', 0
+            take = min(len(self._buffer), _CHUNK_BYTES)
+            chunk = bytes(self._buffer[:take])
+            del self._buffer[:take]
+            return chunk, take
+
+    def buffered_bytes(self) -> int:
+        with self._lock:
+            return len(self._buffer)
 
     async def generate(self) -> AsyncGenerator[bytes, None]:
         """Async generator: WAV header then a steady stream of PCM chunks."""
@@ -178,17 +224,208 @@ class AudioStreamManager:
         while True:
             t0 = loop.time()
 
-            try:
-                chunk = self._queue.get_nowait()
-            except asyncio.QueueEmpty:
+            real_bytes, real_len = self._take_chunk()
+            if real_len == _CHUNK_BYTES:
+                chunk = real_bytes
+                self.real_chunks += 1
+            elif real_len > 0:
+                # Partial buffer — pad the tail with silence so the chunk
+                # stays exactly _CHUNK_BYTES.  This is normal at the start
+                # and end of a transmission.
+                chunk = real_bytes + b'\x00' * (_CHUNK_BYTES - real_len)
+                self.underruns += 1
+            else:
                 chunk = _sine_chunk(t) if self.mock else _silence_chunk()
+                self.underruns += 1
                 t += interval
 
+            self.bytes_yielded += len(chunk)
             yield chunk
             await asyncio.sleep(max(0.0, interval - (loop.time() - t0)))
 
 
 audio_manager = AudioStreamManager()
+
+
+# ---------------------------------------------------------------------------
+# UDP audio receiver
+# ---------------------------------------------------------------------------
+#
+# The OP25 C++ frame_assembler block decodes IMBE → 8 kHz / 16-bit / mono PCM
+# and emits it on a UDP socket whose host/port come from the channel's
+# ``destination`` field (e.g. ``udp://127.0.0.1:23456``).  This receiver
+# listens on every such port discovered in the loaded config and feeds the
+# decoded PCM into :data:`audio_manager` so the browser ``/api/stream`` and
+# any other consumer can play it.
+#
+# Two packet shapes arrive on the wire:
+#   * 320 bytes — one P25 voice frame (160 16-bit LE samples = 20 ms of audio)
+#   * 2 bytes   — a flag word (drain/drop signal, used by sockaudio.py for
+#                 ALSA buffer management).  We ignore these for browser audio.
+#
+# The companion "+1" port (e.g. 23457) carries the second TDMA slot when
+# the decoder is in phase-2 mode; we bind it too so both slots are heard.
+
+_DEFAULT_AUDIO_PORT = 23456
+_AUDIO_FRAME_BYTES  = 320
+_AUDIO_FLAG_BYTES   = 2
+
+
+def _discover_audio_ports(config: dict[str, Any] | None) -> list[tuple[str, int]]:
+    """Return the list of ``(host, port)`` pairs the decoder will UDP to.
+
+    Each channel with ``destination`` of the form ``udp://host:port``
+    contributes two ports — ``port`` (slot A) and ``port + 1`` (slot B,
+    used for TDMA phase-2).  If no UDP destinations are configured we
+    fall back to the OP25 default of ``127.0.0.1:23456``/``23457`` so the
+    browser stream still has a chance of receiving audio when the user
+    later adds a destination matching the default.
+    """
+    ports: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+
+    for ch in (config or {}).get('channels', []) or []:
+        dest = str(ch.get('destination', '') or '').strip()
+        if not dest.startswith('udp://'):
+            continue
+        try:
+            parsed = urlparse(dest)
+            host   = parsed.hostname or '127.0.0.1'
+            port   = int(parsed.port or 0)
+        except (TypeError, ValueError):
+            continue
+        if port <= 0:
+            continue
+        for p in (port, port + 1):
+            key = (host, p)
+            if key not in seen:
+                seen.add(key)
+                ports.append(key)
+
+    if not ports:
+        ports = [('127.0.0.1', _DEFAULT_AUDIO_PORT),
+                 ('127.0.0.1', _DEFAULT_AUDIO_PORT + 1)]
+
+    return ports
+
+
+class UdpAudioReceiver(threading.Thread):
+    """Background thread: UDP → :data:`audio_manager`.
+
+    Binds one socket per ``(host, port)`` pair and ``select()``s across
+    them in a single thread.  PCM bytes go to ``audio_manager.push_audio``;
+    flag packets are counted but discarded.  Periodically logs throughput
+    so a user staring at "no audio in browser" can see whether bytes are
+    arriving from the decoder at all.
+    """
+
+    LOG_INTERVAL = 5.0   # seconds between throughput log lines
+
+    def __init__(self, endpoints: list[tuple[str, int]]) -> None:
+        super().__init__(name='ws-audio-udp', daemon=True)
+        self._endpoints     = endpoints
+        self._socks: list[socket.socket] = []
+        self.keep_running   = True
+
+        # Diagnostics
+        self.packets_pcm    = 0
+        self.packets_flag   = 0
+        self.packets_other  = 0
+        self.bytes_in       = 0
+        self._last_log      = 0.0
+        self._last_logged_bytes = 0
+
+    def _open_sockets(self) -> None:
+        for host, port in self._endpoints:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+                s.setblocking(False)
+                self._socks.append(s)
+                sys.stderr.write('ws audio: listening on udp %s:%d\n' % (host, port))
+            except OSError as exc:
+                sys.stderr.write(
+                    'ws audio: failed to bind udp %s:%d (%s) — '
+                    'is sockaudio.py or another OP25 audio consumer already '
+                    'using this port?\n' % (host, port, exc)
+                )
+
+    def _close_sockets(self) -> None:
+        for s in self._socks:
+            try:
+                s.close()
+            except OSError:
+                pass
+        self._socks.clear()
+
+    def stop(self) -> None:
+        self.keep_running = False
+
+    def run(self) -> None:
+        self._open_sockets()
+        if not self._socks:
+            sys.stderr.write('ws audio: no UDP sockets bound — browser audio will be silent\n')
+            return
+
+        while self.keep_running:
+            try:
+                readable, _, _ = select.select(self._socks, [], [], 1.0)
+            except (OSError, ValueError):
+                break
+
+            for s in readable:
+                try:
+                    data, _addr = s.recvfrom(4096)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    continue
+
+                self.bytes_in += len(data)
+                if len(data) == _AUDIO_FLAG_BYTES:
+                    self.packets_flag += 1
+                elif len(data) >= _AUDIO_FRAME_BYTES and (len(data) % 2 == 0):
+                    self.packets_pcm += 1
+                    audio_manager.push_audio(data)
+                else:
+                    # Unknown packet shape — log once-ish via the throttle.
+                    self.packets_other += 1
+
+            self._maybe_log()
+
+        self._close_sockets()
+
+    def _maybe_log(self) -> None:
+        now = time.time()
+        if self._last_log == 0.0:
+            self._last_log = now
+            return
+        if now - self._last_log < self.LOG_INTERVAL:
+            return
+
+        delta_bytes = self.bytes_in - self._last_logged_bytes
+        rate_kbps   = (delta_bytes * 8) / (now - self._last_log) / 1000.0
+        buffered    = audio_manager.buffered_bytes()
+
+        sys.stderr.write(
+            'ws audio: rx pcm=%d flag=%d other=%d  in=%d B (+%d, %.1f kbps)  '
+            'buf=%d B  pushed=%d  yielded=%d  underruns=%d  dropped=%d\n' % (
+                self.packets_pcm, self.packets_flag, self.packets_other,
+                self.bytes_in, delta_bytes, rate_kbps,
+                buffered,
+                audio_manager.bytes_pushed,
+                audio_manager.bytes_yielded,
+                audio_manager.underruns,
+                audio_manager.bytes_dropped,
+            )
+        )
+        self._last_log = now
+        self._last_logged_bytes = self.bytes_in
+
+
+_audio_receiver: UdpAudioReceiver | None = None
+
 
 # ---------------------------------------------------------------------------
 # Message-type constants (mirrors the TypeScript definitions)
@@ -492,6 +729,14 @@ class ws_terminal(threading.Thread):
         server_t.start()
         sys.stderr.write('WebSocket terminal server starting on %s:%d\n' % (self._host, self._port))
 
+        # Start the UDP audio receiver that feeds /api/stream.  Ports are
+        # discovered from the channels' "destination" fields so the user
+        # doesn't have to configure audio separately for the browser.
+        global _audio_receiver
+        if _audio_receiver is None:
+            _audio_receiver = UdpAudioReceiver(_discover_audio_ports(_config))
+            _audio_receiver.start()
+
         # Register upstream WebSocket handlers that forward client commands
         # to the decoder via output_q.
         self._register_upstream_handlers()
@@ -507,6 +752,10 @@ class ws_terminal(threading.Thread):
 
     def end_terminal(self) -> None:
         self.keep_running = False
+        global _audio_receiver
+        if _audio_receiver is not None:
+            _audio_receiver.stop()
+            _audio_receiver = None
 
     # ------------------------------------------------------------------
     # Thread body
