@@ -83,9 +83,13 @@ fi
 # -----------------------------------------------------------------------
 # Determine the Python3 provided by the Homebrew gnuradio formula
 # -----------------------------------------------------------------------
-# Homebrew's gnuradio brings its own Python; use that as the base for the
-# virtualenv so that gnuradio's C extension modules are accessible.
-GR_PYTHON=$(brew --prefix gnuradio)/bin/python3 2>/dev/null || true
+# Homebrew's gnuradio ships with an isolated venv at libexec/venv/.  Use that
+# Python as the base so the new venv shares the same ABI and inherits gnuradio.
+GR_PYTHON="$(brew --prefix gnuradio)/libexec/venv/bin/python3"
+if [ ! -x "${GR_PYTHON}" ]; then
+    # Older formula layout: python3 is a direct symlink under bin/
+    GR_PYTHON="$(brew --prefix gnuradio)/libexec/venv/bin/python"
+fi
 if [ ! -x "${GR_PYTHON}" ]; then
     # Fall back to any Homebrew python3
     GR_PYTHON="${BREW_PREFIX}/bin/python3"
@@ -93,20 +97,56 @@ fi
 if [ ! -x "${GR_PYTHON}" ]; then
     GR_PYTHON=$(command -v python3)
 fi
-echo "====== Using base Python: ${GR_PYTHON} ($(${GR_PYTHON} --version))"
+echo "====== Using base Python: ${GR_PYTHON} ($("${GR_PYTHON}" --version))"
 
 # -----------------------------------------------------------------------
-# Create a virtualenv with --system-site-packages
+# Create a virtualenv
 # -----------------------------------------------------------------------
-# --system-site-packages lets the venv inherit Homebrew's gnuradio,
-# osmosdr and other native modules, while still allowing pip installs
-# without hitting the "externally-managed-environment" restriction.
 APPS_DIR="$(pwd)/op25/gr-op25_repeater/apps"
 VENV_DIR="${APPS_DIR}/.venv"
 
 echo "====== Creating virtualenv at ${VENV_DIR} ..."
-"${GR_PYTHON}" -m venv --system-site-packages "${VENV_DIR}"
+"${GR_PYTHON}" -m venv "${VENV_DIR}"
 VENV_PYTHON="${VENV_DIR}/bin/python3"
+
+# -----------------------------------------------------------------------
+# Wire up GNURadio + gr-osmosdr (and other Homebrew GNURadio plugins) into
+# the new venv without --system-site-packages.
+#
+# Homebrew installs gnuradio's Python bindings into a private venv
+# (libexec/venv/) and uses two files to expose them:
+#   homebrew-gnuradio.pth  – adds the gnuradio Cellar site-packages to
+#                            sys.path and calls homebrew_gr_plugins
+#   homebrew_gr_plugins.py – calls site.addsitedir() on
+#                            /opt/homebrew/etc/gnuradio/plugins.d, where
+#                            each installed plugin (e.g. gr-osmosdr) drops
+#                            a .pth file pointing to its own site-packages.
+#
+# Copying those two files into our venv's site-packages replicates the same
+# path-extension chain, making `import gnuradio` and `import osmosdr` work.
+# -----------------------------------------------------------------------
+VENV_SITE=$("${VENV_PYTHON}" -c "import site; print(site.getsitepackages()[0])")
+GR_VENV_SITE=$("$(brew --prefix gnuradio)/libexec/venv/bin/python3" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
+
+if [ -n "${GR_VENV_SITE}" ] && [ -d "${GR_VENV_SITE}" ]; then
+    for pth_file in homebrew-gnuradio.pth homebrew_gr_plugins.py homebrew_deps.pth; do
+        if [ -f "${GR_VENV_SITE}/${pth_file}" ]; then
+            cp "${GR_VENV_SITE}/${pth_file}" "${VENV_SITE}/"
+            echo "====== Copied ${pth_file} → venv site-packages"
+        fi
+    done
+else
+    echo "WARNING: Could not locate GNURadio venv site-packages; gnuradio/osmosdr imports may fail."
+fi
+
+# Homebrew's sitecustomize.py only adds /opt/homebrew/lib/pythonX.Y/site-packages
+# when include-system-site-packages is true.  Since we skipped that flag, add it
+# explicitly via a .pth file so that gnuradio.op25 (installed there by cmake) is
+# visible.
+BREW_PY_VER=$("${VENV_PYTHON}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+echo "import site; site.addsitedir('/opt/homebrew/lib/python${BREW_PY_VER}/site-packages')" \
+    > "${VENV_SITE}/op25-homebrew-site.pth"
+echo "====== Wrote op25-homebrew-site.pth (adds /opt/homebrew/lib/python${BREW_PY_VER}/site-packages)"
 
 # -----------------------------------------------------------------------
 # Install Python dependencies into the virtualenv

@@ -26,25 +26,21 @@
 # 02110-1301, USA.
 
 "true" '''\'
-DEFAULT_PYTHON2=/usr/bin/python
-DEFAULT_PYTHON3=/usr/bin/python3
+DEFAULT_PYTHON3=$(command -v python3 2>/dev/null || echo /usr/bin/python3)
 if [ -f op25_python ]; then
     OP25_PYTHON=$(cat op25_python)
 else
-    OP25_PYTHON="/usr/bin/python"
+    OP25_PYTHON="${DEFAULT_PYTHON3}"
 fi
 
-if [ -x $OP25_PYTHON ]; then
-    echo Using Python $OP25_PYTHON >&2
-    exec $OP25_PYTHON "$0" "$@"
-elif [ -x $DEFAULT_PYTHON2 ]; then
-    echo Using Python $DEFAULT_PYTHON2 >&2
-    exec $DEFAULT_PYTHON2 "$0" "$@"
-elif [ -x $DEFAULT_PYTHON3 ]; then
-    echo Using Python $DEFAULT_PYTHON3 >&2
-    exec $DEFAULT_PYTHON3 "$0" "$@"
+if [ -x "${OP25_PYTHON}" ]; then
+    echo Using Python ${OP25_PYTHON} >&2
+    exec "${OP25_PYTHON}" "$0" "$@"
+elif [ -x "${DEFAULT_PYTHON3}" ]; then
+    echo Using Python ${DEFAULT_PYTHON3} >&2
+    exec "${DEFAULT_PYTHON3}" "$0" "$@"
 else
-    echo Unable to find Python >&2
+    echo Unable to find Python 3 >&2
 fi
 exit 127
 '''
