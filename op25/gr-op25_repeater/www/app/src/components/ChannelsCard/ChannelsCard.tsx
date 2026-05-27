@@ -1,4 +1,41 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+// Sorting helpers
+type SortKey = keyof TalkGroupRow;
+type SortDirection = 'asc' | 'desc';
+
+function sortRows(rows: TalkGroupRow[], sortKey: SortKey, direction: SortDirection): TalkGroupRow[] {
+  return [...rows].sort((a, b) => {
+    let aVal = a[sortKey];
+    let bVal = b[sortKey];
+    // For undefined/null, treat as smallest
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return direction === 'asc' ? -1 : 1;
+    if (bVal == null) return direction === 'asc' ? 1 : -1;
+    // Numeric sort for tgid, lastFreq
+    if (sortKey === 'tgid' || sortKey === 'lastFreq') {
+      return direction === 'asc' ? (Number(aVal) - Number(bVal)) : (Number(bVal) - Number(aVal));
+    }
+    // Date/time sort for lastActivity (string)
+    if (sortKey === 'lastActivity') {
+      return direction === 'asc'
+        ? String(aVal).localeCompare(String(bVal))
+        : String(bVal).localeCompare(String(aVal));
+    }
+    // String sort for tag
+    if (sortKey === 'tag') {
+      return direction === 'asc'
+        ? String(aVal).localeCompare(String(bVal))
+        : String(bVal).localeCompare(String(aVal));
+    }
+    // Boolean sort for configured/seen
+    if (sortKey === 'configured' || sortKey === 'seen') {
+      return direction === 'asc'
+        ? (Number(Boolean(aVal)) - Number(Boolean(bVal)))
+        : (Number(Boolean(bVal)) - Number(Boolean(aVal)));
+    }
+    return 0;
+  });
+}
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -13,6 +50,7 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Tooltip from '@mui/material/Tooltip';
+import TextField from '@mui/material/TextField';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import CardShell from '../CardShell/CardShell';
@@ -33,6 +71,11 @@ function formatFreqMHz(hz?: number): string {
 }
 
 export default function ChannelsCard() {
+  // Sorting state
+  const [sortKey, setSortKey] = useState<SortKey>('state');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  // Filter state
+  const [tagFilter, setTagFilter] = useState('');
   const {
     config,
     channels, channelIds,
@@ -110,8 +153,16 @@ export default function ChannelsCard() {
       }
     }
 
-    return Array.from(map.values()).sort((a, b) => a.tgid - b.tgid);
-  }, [system, channels]);
+    let arr = Array.from(map.values());
+    // Filter by tag
+    if (tagFilter.trim()) {
+      const filter = tagFilter.trim().toLowerCase();
+      arr = arr.filter(row => row.tag.toLowerCase().includes(filter));
+    }
+    // Sort
+    arr = sortRows(arr, sortKey, sortDirection);
+    return arr;
+  }, [system, channels, tagFilter, sortKey, sortDirection]);
 
   return (
     <CardShell title="Channels / Talkgroups">
@@ -180,22 +231,31 @@ export default function ChannelsCard() {
 
         {/* Talkgroup table */}
         <Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5, gap: 1 }}>
-            <Typography variant="subtitle2">Talk Groups</Typography>
-            <Typography variant="caption" color="text.secondary">
-              {rows.length} known
-            </Typography>
-            {heldTgid > 0 && (
-              <Chip
-                size="small"
-                color="warning"
-                icon={<LockIcon sx={{ fontSize: '0.9rem' }} />}
-                label={`Hold ${heldTgid}`}
-                onDelete={releaseHold}
-                deleteIcon={<LockOpenIcon />}
-                sx={{ ml: 'auto' }}
-              />
-            )}
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75, gap: 1, flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="subtitle2">Talk Groups</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {rows.length} known
+              </Typography>
+              {heldTgid > 0 && (
+                <Chip
+                  size="small"
+                  color="warning"
+                  icon={<LockIcon sx={{ fontSize: '0.9rem' }} />}
+                  label={`Hold ${heldTgid}`}
+                  onDelete={releaseHold}
+                  deleteIcon={<LockOpenIcon />}
+                />
+              )}
+            </Box>
+            <TextField
+              size="small"
+              label="Filter tag"
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              placeholder="Type to filter..."
+              sx={{ width: 240 }}
+            />
           </Box>
           {rows.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
@@ -206,11 +266,52 @@ export default function ChannelsCard() {
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    <TableCell>TGID</TableCell>
-                    <TableCell>Tag</TableCell>
-                    <TableCell>Freq</TableCell>
-                    <TableCell>Last</TableCell>
-                    <TableCell>State</TableCell>
+                    {/* Sortable headers */}
+                    <TableCell
+                      onClick={() => {
+                        setSortKey('tgid');
+                        setSortDirection(sortKey === 'tgid' && sortDirection === 'asc' ? 'desc' : 'asc');
+                      }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      TGID {sortKey === 'tgid' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                    </TableCell>
+                    <TableCell
+                      onClick={() => {
+                        setSortKey('tag');
+                        setSortDirection(sortKey === 'tag' && sortDirection === 'asc' ? 'desc' : 'asc');
+                      }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      Tag {sortKey === 'tag' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                    </TableCell>
+                    <TableCell
+                      onClick={() => {
+                        setSortKey('lastFreq');
+                        setSortDirection(sortKey === 'lastFreq' && sortDirection === 'asc' ? 'desc' : 'asc');
+                      }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      Freq {sortKey === 'lastFreq' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                    </TableCell>
+                    <TableCell
+                      onClick={() => {
+                        setSortKey('lastActivity');
+                        setSortDirection(sortKey === 'lastActivity' && sortDirection === 'asc' ? 'desc' : 'asc');
+                      }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      Last {sortKey === 'lastActivity' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                    </TableCell>
+                    <TableCell
+                      onClick={() => {
+                        setSortKey('configured');
+                        setSortDirection(sortKey === 'configured' && sortDirection === 'asc' ? 'desc' : 'asc');
+                      }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      State {sortKey === 'configured' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+                    </TableCell>
                     <TableCell align="right">Hold</TableCell>
                   </TableRow>
                 </TableHead>
