@@ -73,7 +73,9 @@ class wrap_gp(object):
         else:
             self.plot_name = plot_name + " "
 
-        self.attach_gp()
+        self.gp = None
+        if out_q is None:   # only need gnuplot when not using the web-UI queue
+            self.attach_gp()
 
     def attach_gp(self):
         args = [GNUPLOT]
@@ -85,12 +87,15 @@ class wrap_gp(object):
 
     def kill(self):
         try:
-            self.gp.stdin.close()   # closing pipe should cause subprocess to exit
+            if self.gp is not None:
+                self.gp.stdin.close()   # closing pipe should cause subprocess to exit
         except IOError:
             pass
         if self.out_q is not None:
             self.out_q.flush()
         self.out_q = None
+        if self.gp is None:
+            return
         sleep_count = 0
         while True:                     # wait politely, but only for so long
             self.gp.poll()
@@ -255,13 +260,14 @@ class wrap_gp(object):
                     plot_data['title'] = "%sSpectrum" % self.plot_name
         dat = '%splot %s\n%s' % (h, ','.join(plots), s)
         dat = bytes(dat, 'utf8')
-        self.gp.poll()
-        if self.gp.returncode is None:  # make sure gnuplot is still running
-            try:
-                self.gp.stdin.write(dat)
-                self.gp.stdin.flush()
-            except (IOError, ValueError):
-                pass
+        if self.gp is not None:
+            self.gp.poll()
+            if self.gp.returncode is None:  # make sure gnuplot is still running
+                try:
+                    self.gp.stdin.write(dat)
+                    self.gp.stdin.flush()
+                except (IOError, ValueError):
+                    pass
         if filename:
             self.filename = filename
 

@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useWebSocketService } from './websocketService';
@@ -11,6 +12,8 @@ import type {
   CallLogEntry,
   ChannelStatus,
   OP25Config,
+  PlotMode,
+  PlotPayload,
   TrunkSystem,
 } from '../types/op25';
 
@@ -33,6 +36,13 @@ export interface OP25ServiceContextType {
 
   /** Rolling list of recent calls (most-recent last). */
   callLog: CallLogEntry[];
+
+  /** Latest plot snapshot per `${chan}:${mode}`. */
+  plots: Record<string, PlotPayload>;
+  /** Modes the UI has requested for the selected channel. */
+  activePlotModes: Set<PlotMode>;
+  /** Toggle a plot mode on/off for the selected channel. */
+  togglePlotMode: (mode: PlotMode) => void;
 
   /** True once the decoder has sent at least one trunk/channel update. */
   decoderRunning: boolean;
@@ -61,6 +71,9 @@ const OP25ServiceContext = createContext<OP25ServiceContextType>({
   channels:           {},
   channelIds:         [],
   callLog:            [],
+  plots:              {},
+  activePlotModes:    new Set(),
+  togglePlotMode:     noop,
   decoderRunning:     false,
   selectedChannelId:  null,
   selectChannel:      noop,
@@ -82,6 +95,19 @@ export function useOp25Service(): OP25ServiceContextType {
 
 const CALL_LOG_MAX = 200;
 
+/** Minimum ms between successive plot setState calls for the same key.
+ *  gr_gnuplot may emit several frames per second; this keeps React happy. */
+const PLOT_THROTTLE_MS = 100;
+
+const PLOT_TYPE_BY_MODE: Record<PlotMode, number> = {
+  fft:           1,
+  constellation: 2,
+  symbol:        3,
+  eye:           4,
+  mixer:         5,
+  fll:           6,
+};
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -96,6 +122,11 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   const [callLog,  setCallLog]  = useState<CallLogEntry[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [decoderRunning, setDecoderRunning] = useState(false);
+  const [plots, setPlots] = useState<Record<string, PlotPayload>>({});
+  const [activePlotModes, setActivePlotModes] = useState<Set<PlotMode>>(new Set());
+
+  // Per-plot last-flush timestamp for client-side throttling.
+  const plotLastFlushRef = useRef<Record<string, number>>({});
 
   // When the WebSocket opens, request the full config from the decoder.
   useEffect(() => {
@@ -146,6 +177,15 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
           setChannels(next);
           setChannelIds(ids);
           setDecoderRunning(true);
+        } else if (p.json_type === 'plot') {
+          const plot = p as unknown as PlotPayload;
+          const key  = `${plot.chan}:${plot.mode}`;
+          const now  = Date.now();
+          const last = plotLastFlushRef.current[key] ?? 0;
+          if (now - last >= PLOT_THROTTLE_MS) {
+            plotLastFlushRef.current[key] = now;
+            setPlots((prev) => ({ ...prev, [key]: plot }));
+          }
         }
       } else if (msg.type === 'CALL_ACTIVITY') {
         const p = msg.payload as Record<string, unknown> & { json_type?: string };
@@ -207,12 +247,37 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     sendCommand('whitelist', tgid, resolveMsgqid());
   }, [sendCommand, resolveMsgqid]);
 
+  const togglePlotMode = useCallback((mode: PlotMode) => {
+    const msgqid = resolveMsgqid();
+    // Toggle the decoder-side sink. The same command both enables and disables.
+    sendCommand('toggle_plot', PLOT_TYPE_BY_MODE[mode], msgqid);
+    setActivePlotModes((prev) => {
+      const next = new Set(prev);
+      if (next.has(mode)) {
+        next.delete(mode);
+        // Drop the stale snapshot so the card hides immediately on disable.
+        setPlots((prevPlots) => {
+          const key = `${msgqid}:${mode}`;
+          if (!(key in prevPlots)) return prevPlots;
+          const { [key]: _drop, ...rest } = prevPlots;
+          return rest;
+        });
+      } else {
+        next.add(mode);
+      }
+      return next;
+    });
+  }, [sendCommand, resolveMsgqid]);
+
   const value = useMemo<OP25ServiceContextType>(() => ({
     config,
     systems,
     channels,
     channelIds,
     callLog,
+    plots,
+    activePlotModes,
+    togglePlotMode,
     decoderRunning,
     selectedChannelId,
     selectChannel,
@@ -221,7 +286,8 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     skipCall,
     lockoutTalkGroup,
     whitelistTalkGroup,
-  }), [config, systems, channels, channelIds, callLog, decoderRunning, selectedChannelId,
+  }), [config, systems, channels, channelIds, callLog, plots, activePlotModes,
+       togglePlotMode, decoderRunning, selectedChannelId,
        selectChannel, holdTalkGroup, releaseHold, skipCall,
        lockoutTalkGroup, whitelistTalkGroup]);
 

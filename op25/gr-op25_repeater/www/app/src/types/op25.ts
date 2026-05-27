@@ -130,6 +130,24 @@ export interface CallLogPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Signal-plot snapshot emitted by gr_gnuplot.py.  One arrives per channel
+// per plot mode while that plot is enabled.
+// ---------------------------------------------------------------------------
+
+export type PlotMode = 'fft' | 'constellation' | 'symbol' | 'eye' | 'mixer' | 'fll';
+
+export interface PlotPayload {
+  json_type: 'plot';
+  chan: number;
+  mode: PlotMode;
+  /** Array of [x, y] tuples. Coordinate space depends on `mode`. */
+  data: [number, number][];
+  xrange?: [number, number];
+  yrange?: [number, number];
+  title?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Static config (from /api/config — mirrors richland-single.json)
 // ---------------------------------------------------------------------------
 
