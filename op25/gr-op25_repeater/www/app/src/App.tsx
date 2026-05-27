@@ -6,11 +6,13 @@ import Header from './components/Header/Header';
 import type { NavItem } from './components/Header/Header';
 import { ThemeServiceProvider } from './services/themeService';
 import { WebSocketServiceProvider } from './services/websocketService';
+import { OP25ServiceProvider } from './services/op25Service';
 import PlayerCard from './components/PlayerCard/PlayerCard';
-import TalkGroupsCard from './components/TalkGroupsCard/TalkGroupsCard';
 import ChannelsCard from './components/ChannelsCard/ChannelsCard';
 import BandPlanCard from './components/BandPlanCard/BandPlanCard';
-import FrequenciesCard from './components/FrequenciesCard/FrequenciesCard';
+import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
+import AdjacentSitesCard from './components/AdjacentSitesCard/AdjacentSitesCard';
+import PatchesCard from './components/PatchesCard/PatchesCard';
 import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
 import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
 import SubscribersCard from './components/SubscribersCard/SubscribersCard';
@@ -26,34 +28,36 @@ export default function App() {
   return (
     <ThemeServiceProvider>
       <WebSocketServiceProvider>
-      <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-        <Header navItems={navItems} />
-        <Box component="main" sx={{ p: 3 }}>
-          {/* Offset below the fixed AppBar */}
-          <Toolbar />
-          <Stack
-            direction={{ xs: 'column', md: 'row' }}
-            spacing={2}
-            alignItems="flex-start"
-          >
-            <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
-              <PlayerCard />
-              <FrequenciesCard />
-              <BandPlanCard />
-              <TalkGroupsCard />
-            </Stack>
+        <OP25ServiceProvider>
+          <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+            <Header navItems={navItems} />
+            <Box component="main" sx={{ p: 3 }}>
+              {/* Offset below the fixed AppBar */}
+              <Toolbar />
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={2}
+                alignItems="flex-start"
+              >
+                <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
+                  <PlayerCard />
+                  <ChannelsCard />
+                  <CallHistoryCard />
+                  <SubscribersCard />
+                </Stack>
 
-            <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
-              <ChannelsCard />
-              <SignalPlotsCard />
-              <CallHistoryCard />
-              <SubscribersCard />
-            </Stack>
-
-          </Stack>
-        </Box>
-      </Box>
-    </WebSocketServiceProvider>
+                <Stack direction="column" spacing={2} sx={{ flex: 1, width: '100%' }}>
+                  <SiteInfoCard />
+                  <SignalPlotsCard />
+                  <BandPlanCard />
+                  <AdjacentSitesCard />
+                  <PatchesCard />
+                </Stack>
+              </Stack>
+            </Box>
+          </Box>
+        </OP25ServiceProvider>
+      </WebSocketServiceProvider>
     </ThemeServiceProvider>
   );
 }

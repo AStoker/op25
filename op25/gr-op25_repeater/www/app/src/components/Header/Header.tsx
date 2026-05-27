@@ -35,20 +35,6 @@ const APP_TITLE = 'OP25';
 export default function Header({ navItems }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { mode, toggleTheme } = useThemeService();
-  const { status: wsStatus } = useWebSocketService();
-
-  const wsChipColor: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
-    open:       'success',
-    connecting: 'warning',
-    closed:     'default',
-    error:      'error',
-  };
-  const wsChipLabel: Record<string, string> = {
-    open:       'Connected',
-    connecting: 'Connecting',
-    closed:     'Disconnected',
-    error:      'Error',
-  };
 
   const handleDrawerToggle = () => {
     setMobileOpen((prev) => !prev);
@@ -155,14 +141,6 @@ export default function Header({ navItems }: HeaderProps) {
               </Button>
             ))}
           </Box>
-
-          {/* Server status chip */}
-          <Chip
-            label={wsChipLabel[wsStatus] ?? wsStatus}
-            color={wsChipColor[wsStatus] ?? 'default'}
-            size="small"
-            sx={{ mr: 1 }}
-          />
 
           {/* Theme toggle */}
           <IconButton

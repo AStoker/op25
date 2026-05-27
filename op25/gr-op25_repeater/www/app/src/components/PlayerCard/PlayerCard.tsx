@@ -1,18 +1,18 @@
-import { useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import LockIcon from '@mui/icons-material/Lock';
+import LockOpenIcon from '@mui/icons-material/LockOpen';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
+import SkipNextIcon from '@mui/icons-material/SkipNext';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import CardShell from '../CardShell/CardShell';
 import { useWebSocketService } from '../../services/websocketService';
 import { useAudioStream } from '../../hooks/useAudioStream';
-import { useSystemState } from '../../hooks/useSystemState';
-import type { CallActivityPayload } from '../../types/websocket';
+import { useOp25Service, useSelectedChannel, useSelectedSystem } from '../../services/op25Service';
 
 const AUDIO_STREAM_URL = '/api/stream';
 
@@ -27,26 +27,24 @@ function InfoRow({ label, value }: InfoRowProps) {
       <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
         {label}
       </Typography>
-      <Typography variant="body2" fontWeight="medium">
+      <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere' }}>
         {value}
       </Typography>
     </Box>
   );
 }
 
-export default function PlayerCard() {
-  const { status, send, subscribe } = useWebSocketService();
-  const { start, stop, audioStatus } = useAudioStream(AUDIO_STREAM_URL);
-  const [activeCall, setActiveCall] = useState<CallActivityPayload | null>(null);
-  const systemState = useSystemState();
+function formatFreq(hz: number | null | undefined): string {
+  if (!hz || !Number.isFinite(hz)) return '—';
+  return `${(hz / 1e6).toFixed(4)} MHz`;
+}
 
-  useEffect(() => {
-    return subscribe((msg) => {
-      if (msg.type === 'CALL_ACTIVITY') {
-        setActiveCall(msg.payload);
-      }
-    });
-  }, [subscribe]);
+export default function PlayerCard() {
+  const { status, send } = useWebSocketService();
+  const { start, stop, audioStatus } = useAudioStream(AUDIO_STREAM_URL);
+  const channel        = useSelectedChannel();
+  const system         = useSelectedSystem();
+  const { decoderRunning, releaseHold, skipCall } = useOp25Service();
 
   function handlePlay() {
     start().catch(() => {});
@@ -61,59 +59,82 @@ export default function PlayerCard() {
   const connected = status === 'open';
   const playing   = audioStatus === 'playing' || audioStatus === 'loading';
 
-  const channelName = activeCall?.channel_name ?? '—';
-  const tgValue     = activeCall ? `${activeCall.tg_label} (${activeCall.tgid})` : '—';
-  const freqValue   = activeCall ? `${(activeCall.freq / 1e6).toFixed(4)} MHz` : '—';
-  const sourceValue = activeCall ? String(activeCall.src_id) : '—';
+  const channelName = channel?.name ?? '—';
+  const tgValue     = channel?.tgid
+    ? `${channel.tag || 'TG'} (${channel.tgid})`
+    : '—';
+  const freqValue   = formatFreq(channel?.freq);
+  const sourceValue = channel?.srcaddr
+    ? (channel.srctag ? `${channel.srctag} (${channel.srcaddr})` : String(channel.srcaddr))
+    : '—';
 
-  type ChipDef = { key: string; label: string; tooltip: string; color: 'default' | 'success' | 'error'; icon: React.ReactElement };
-  const chips: ChipDef[] = [
-    {
+  type ChipDef = { key: string; label: string; tooltip: string; color: 'default' | 'success' | 'error' | 'warning'; icon: React.ReactElement };
+  const chips: ChipDef[] = [];
+
+  if (channel) {
+    chips.push({
       key:     'enc',
-      label:   activeCall?.encrypted ? 'Encrypted' : 'Open',
-      tooltip: activeCall?.encrypted
+      label:   channel.encrypted ? 'Encrypted' : 'Open',
+      tooltip: channel.encrypted
         ? 'Call is encrypted — audio may not decode'
         : 'Call is unencrypted',
-      color: activeCall?.encrypted ? 'error' : 'success',
+      color: channel.encrypted ? 'error' : 'success',
       icon:  <LockIcon sx={{ fontSize: '0.9rem' }} />,
-    },
-    ...(activeCall?.emergency ? [{
-      key:     'emrg',
-      label:   'Emergency',
-      tooltip: 'Emergency call in progress',
-      color:   'error' as const,
-      icon:    <WarningAmberIcon sx={{ fontSize: '0.9rem' }} />,
-    }] : []),
-  ];
+    });
+    if (channel.emergency) {
+      chips.push({
+        key:     'emrg',
+        label:   'Emergency',
+        tooltip: 'Emergency call in progress',
+        color:   'error',
+        icon:    <WarningAmberIcon sx={{ fontSize: '0.9rem' }} />,
+      });
+    }
+    if (channel.hold_tgid) {
+      chips.push({
+        key:     'hold',
+        label:   `Held ${channel.hold_tgid}`,
+        tooltip: 'A talk-group hold is active on this channel',
+        color:   'warning',
+        icon:    <LockIcon sx={{ fontSize: '0.9rem' }} />,
+      });
+    }
+  }
 
-  const sysStatusColor: Record<string, 'success' | 'error' | 'default'> = {
-    running: 'success',
-    error:   'error',
-    stopped: 'default',
-  };
+  // Derive system identity from live trunk_update data.
+  const sysName   = system?.system ?? channel?.system ?? '';
+  const callsign  = system?.callsign ?? '';
+  const sysLabel  = [sysName, callsign].filter(Boolean).join(' / ') || 'System';
+  const chanLabel = channel?.name ?? system?.system ?? '—';
+
+  const decoderStatusLabel = !connected
+    ? 'offline'
+    : decoderRunning ? 'running' : 'connecting';
+  const decoderStatusColor: 'success' | 'warning' | 'default' =
+    decoderRunning ? 'success' : connected ? 'warning' : 'default';
 
   return (
     <CardShell title="Player">
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-        {/* System info */}
-        {systemState && (
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Box>
-              <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
-                {systemState.trunk_id || 'System'}
-              </Typography>
-              <Typography variant="body2" fontWeight="medium">
-                {systemState.site_name || '—'}
-              </Typography>
-            </Box>
+        {/* System info — always shown */}
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
+              {sysLabel}
+            </Typography>
+            <Typography variant="body2" fontWeight="medium">
+              {chanLabel}
+            </Typography>
+          </Box>
+          <Tooltip title="Decoder status">
             <Chip
-              label={systemState.status}
-              color={sysStatusColor[systemState.status] ?? 'default'}
+              label={decoderStatusLabel}
+              color={decoderStatusColor}
               size="small"
               sx={{ textTransform: 'capitalize' }}
             />
-          </Box>
-        )}
+          </Tooltip>
+        </Box>
 
         {/* Call info */}
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
@@ -124,13 +145,15 @@ export default function PlayerCard() {
         </Box>
 
         {/* Status chips */}
-        <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-          {chips.map(({ key, label, tooltip, color, icon }) => (
-            <Tooltip key={key} title={tooltip}>
-              <Chip label={label} color={color} size="small" icon={icon} />
-            </Tooltip>
-          ))}
-        </Box>
+        {chips.length > 0 && (
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+            {chips.map(({ key, label, tooltip, color, icon }) => (
+              <Tooltip key={key} title={tooltip}>
+                <Chip label={label} color={color} size="small" icon={icon} />
+              </Tooltip>
+            ))}
+          </Box>
+        )}
 
         {/* Playback controls */}
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
@@ -158,6 +181,26 @@ export default function PlayerCard() {
               </IconButton>
             </span>
           </Tooltip>
+          <Tooltip title="Skip current call">
+            <span>
+              <IconButton
+                onClick={skipCall}
+                disabled={!connected}
+                aria-label="skip"
+              >
+                <SkipNextIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+          {channel?.hold_tgid ? (
+            <Tooltip title="Release talk-group hold">
+              <span>
+                <IconButton onClick={releaseHold} disabled={!connected} aria-label="release hold">
+                  <LockOpenIcon />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
           {audioStatus === 'error' && (
             <Typography variant="caption" color="error.main" sx={{ ml: 'auto' }}>
               stream error
@@ -168,4 +211,3 @@ export default function PlayerCard() {
     </CardShell>
   );
 }
-

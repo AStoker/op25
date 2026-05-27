@@ -6,63 +6,73 @@
 // Downstream  (server → client):  SYSTEM_STATE | SDR_STATUS | CALL_ACTIVITY
 // Upstream    (client → server):  CALL_CONTROL | SYSTEM_CONTROL
 //
-// Payloads are intentionally flat so consumers can use shallow equality checks.
+// The Python decoder wraps every emission with a `json_type` field; the
+// FastAPI bridge then routes it to one of the WS message types defined in
+// websocket_server.py::_JSON_TYPE_TO_MSG.  Both the routed type and the
+// inner json_type are needed to fully discriminate a message.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type {
+  TrunkUpdatePayload,
+  ChannelUpdatePayload,
+  CallLogPayload,
+} from './op25';
+
 // ---------------------------------------------------------------------------
-// Downstream payload types
+// Initial SYSTEM_STATE snapshot sent from websocket_server.py on connect.
 // ---------------------------------------------------------------------------
 
-export interface SystemStatePayload {
-  /** Overall decoder state */
+export interface InitialSystemStatePayload {
   status: 'running' | 'stopped' | 'error';
-  /** Seconds since the decoder started */
   uptime: number;
   site_name: string;
   trunk_id: string;
-  /** Human-readable error detail when status === 'error' */
   error_detail: string;
 }
 
+// SYSTEM_STATE payload union — initial snapshot OR decoder-emitted updates
+// that fall through the json_type map (e.g. trunk_update, channel_update,
+// terminal_config, full_config, ws_instances).
+export type SystemStatePayload =
+  | InitialSystemStatePayload
+  | TrunkUpdatePayload
+  | ChannelUpdatePayload
+  | (Record<string, unknown> & { json_type: string });
+
 export interface SdrStatusPayload {
-  source: string;
-  frequency: number;
-  /** Gain in dB */
-  gain: number;
-  /** Frequency-lock indicator */
-  locked: boolean;
-  /** Signal level in dBm */
-  signal_level: number;
-  /** Bit-error rate (0–1) */
-  error_rate: number;
+  json_type?: string;
+  source?: string;
+  frequency?: number;
+  gain?: number;
+  locked?: boolean;
+  signal_level?: number;
+  error_rate?: number;
+  [k: string]: unknown;
 }
 
-export interface CallActivityPayload {
-  tgid: number;
-  tg_label: string;
-  src_id: number;
-  freq: number;
-  encrypted: boolean;
-  emergency: boolean;
-  /** Human-readable name of the active channel */
-  channel_name?: string;
-  /** Call duration in seconds (0 while active) */
-  duration: number;
-}
+// CALL_ACTIVITY payload — call_log / trunked_site_status / sys_info all
+// arrive on this channel with a json_type discriminator.
+export type CallActivityPayload =
+  | CallLogPayload
+  | (Record<string, unknown> & { json_type: string });
 
 // ---------------------------------------------------------------------------
 // Upstream payload types
+//
+// These must match the handlers registered in websocket_server.py
+// (`handle_call_control` / `handle_system_control`).  CALL_CONTROL is
+// forwarded to the GNURadio decoder as a raw `command/arg1/arg2` message,
+// so the wire shape mirrors the decoder's `send_command()` arguments.
 // ---------------------------------------------------------------------------
 
 export interface CallControlPayload {
-  action: 'hold' | 'skip' | 'lockout' | 'whitelist';
-  /** Target talk-group ID (omit to apply to the current call) */
-  tgid?: number;
+  command: string;        // e.g. 'hold' | 'skip' | 'lockout' | 'whitelist'
+  arg1?: number;          // typically tgid
+  arg2?: number;          // typically msgqid (channel index)
 }
 
 export interface SystemControlPayload {
-  action: 'start' | 'stop' | 'restart' | 'mute' | 'unmute';
-  /** Volume level 0–100 (only relevant for mute/unmute) */
+  action: 'start' | 'stop' | 'restart' | 'mute' | 'unmute' | 'quit';
   volume?: number;
 }
 
