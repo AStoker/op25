@@ -89,24 +89,15 @@ def convert_file(mode, src, dst):
                     idx += 1
                     if idx < 4:
                         continue
-                    if sys.version[0] > '2':
-                        dstfile.write(bytes(chr(d_out), 'iso8859-1'))
-                    else:
-                        dstfile.write(chr(d_out))
+                    dstfile.write(bytes(chr(d_out), 'iso8859-1'))
                     idx = 0
                     d_out = 0
                 else:           # SDRTrunk packed dibit format to OP25 single dibit
                     d_in = get_ordinals(d)
-                    if sys.version[0] > '2':
-                        dstfile.write(bytes((chr((d_in >> 6) & 3) + chr((d_in >> 4) & 3) + chr((d_in >> 2) & 3) + chr(d_in & 3)), 'iso8859-1'))
-                    else:
-                        dstfile.write(chr((d_in >> 6) & 3) + chr((d_in >> 4) & 3) + chr((d_in >> 2) & 3) + chr(d_in & 3))
+                    dstfile.write(bytes((chr((d_in >> 6) & 3) + chr((d_in >> 4) & 3) + chr((d_in >> 2) & 3) + chr(d_in & 3)), 'iso8859-1'))
             if (mode == 0) and (idx > 0):
                 d_out <<= (2 * (4 - idx))
-                if sys.version[0] > '2':
-                    dstfile.write(bytes(chr(d_out), 'iso8859-1'))
-                else:
-                    dstfile.write(chr(d_out))
+                dstfile.write(bytes(chr(d_out), 'iso8859-1'))
 
     except (IOError) as ex:
         sys.stderr.write("%s: %s\n" % (sys.argv[0], ex))

@@ -1733,119 +1733,119 @@ def make_fakecc_tsdu(params):
 
 if __name__ == "__main__":
 
-    from optparse import OptionParser
-    parser = OptionParser()
-    parser.add_option("--hdu", action="store_true", dest="hdu",
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--hdu", action="store_true", dest="hdu",
         default=False, help="Construct Header Data Unit")
-    parser.add_option("--ldu1", action="store_true", dest="ldu1",
+    parser.add_argument("--ldu1", action="store_true", dest="ldu1",
         default=False, help="Construct Logical Link Data Unit 1")
-    parser.add_option("--ldu2", action="store_true", dest="ldu2",
+    parser.add_argument("--ldu2", action="store_true", dest="ldu2",
         default=False, help="Construct Logical Link Data Unit 2")
-    parser.add_option("--stdu", action="store_true", dest="stdu",
+    parser.add_argument("--stdu", action="store_true", dest="stdu",
         default=False, help="Construct Simple Terminator Data Unit")
-    parser.add_option("--xtdu", action="store_true", dest="xtdu",
+    parser.add_argument("--xtdu", action="store_true", dest="xtdu",
         default=False, help="Construct Terminator Data Unit with Link Control")
-    parser.add_option("--tsdu", action="store_true", dest="tsdu",
+    parser.add_argument("--tsdu", action="store_true", dest="tsdu",
         default=False, help="Construct Trunking Signaling Data Unit")
-    parser.add_option("--cpdu", action="store_true", dest="cpdu",
+    parser.add_argument("--cpdu", action="store_true", dest="cpdu",
         default=False, help="Construct Confirmed Packet Data Unit")
-    parser.add_option("--rpdu", action="store_true", dest="rpdu",
+    parser.add_argument("--rpdu", action="store_true", dest="rpdu",
         default=False, help="Construct Response Packet Data Unit")
-    parser.add_option("--updu", action="store_true", dest="updu",
+    parser.add_argument("--updu", action="store_true", dest="updu",
         default=False, help="Construct Unconfirmed Packet Data Unit")
-    parser.add_option("--ambt", action="store_true", dest="ambt",
+    parser.add_argument("--ambt", action="store_true", dest="ambt",
         default=False,
         help="Construct Alternative Multiple Block Trunking Conrtol Packet")
-    parser.add_option("--inhibit", action="store_true", dest="inhibit",
+    parser.add_argument("--inhibit", action="store_true", dest="inhibit",
         default=False, help="Special packet: Inhibit")
-    parser.add_option("--uninhibit", action="store_true", dest="uninhibit",
+    parser.add_argument("--uninhibit", action="store_true", dest="uninhibit",
         default=False, help="Special packet: Uninhibit")
-    parser.add_option("--rum", action="store_true", dest="rum",
+    parser.add_argument("--rum", action="store_true", dest="rum",
         default=False, help="Special packet: Radio Unit Monitor")
-    parser.add_option("--superframes", type="int", default=0,
+    parser.add_argument("--superframes", type=int, default=0,
         help="Number of superframes to construct (Default: 0)")
-    parser.add_option("--sqtail", type="string", default="0:0:0",
+    parser.add_argument("--sqtail", type=str, default="0:0:0",
         help="Squelch tail (Default: 0:0:0)")
-    parser.add_option("--nac", type="int", default=0x293,
+    parser.add_argument("--nac", type=int, default=0x293,
         help="Network Access Code (Default: 0x293)")
-    parser.add_option("--ss", type="int", default=0,
+    parser.add_argument("--ss", type=int, default=0,
         help="Status Symbol (one value to be repeated) (Default: 0)")
-    parser.add_option("--mi", type="int", default=0,
+    parser.add_argument("--mi", type=int, default=0,
         help="Message Indicator (Default: 0x000000000000000000)")
-    parser.add_option("--mfid", type="int", default=0,
+    parser.add_argument("--mfid", type=int, default=0,
         help="Manufacturer ID (Default: 0x00)")
-    parser.add_option("--algid", type="int", default=0x80,
+    parser.add_argument("--algid", type=int, default=0x80,
         help="Algorithm ID (Default: 0x80)")
-    parser.add_option("--kid", type="int", default=0,
+    parser.add_argument("--kid", type=int, default=0,
         help="Key ID (Default: 0x0000)")
-    parser.add_option("--tgid", type="int", default=1,
+    parser.add_argument("--tgid", type=int, default=1,
         help="Talk Group ID (Default: 0x0001)")
-    parser.add_option("--lco", type="int", default=0,
+    parser.add_argument("--lco", type=int, default=0,
         help="Link Control Opcode (Default: 0x00)")
-    parser.add_option("--src", type="int", default=1,
+    parser.add_argument("--src", type=int, default=1,
         help="Source ID (Default: 0x000001)")
-    parser.add_option("--dst", type="int", default=1,
-        help="Destination ID (Default: 0x000001)") 
-    parser.add_option("--lsd", type="int", default=0,
+    parser.add_argument("--dst", type=int, default=1,
+        help="Destination ID (Default: 0x000001)")
+    parser.add_argument("--lsd", type=int, default=0,
         help="Entire Low Speed Data Word (Default: 0x00000000)")
-    parser.add_option("--lsd1", type="int", default=None,
-        help="Low Speed Data high word for LDU1 (Default: use --lsd)") 
-    parser.add_option("--lsd2", type="int", default=None,
+    parser.add_argument("--lsd1", type=int, default=None,
+        help="Low Speed Data high word for LDU1 (Default: use --lsd)")
+    parser.add_argument("--lsd2", type=int, default=None,
         help="Low Speed Data low word for LDU2 (Default: use --lsd)")
-    parser.add_option("--ntsbk", type="int", default=1,
-        help="Number of TSBKs per TSDU (Default: 1)") 
-    parser.add_option("--data", type="int", default=0,
+    parser.add_argument("--ntsbk", type=int, default=1,
+        help="Number of TSBKs per TSDU (Default: 1)")
+    parser.add_argument("--data", type=int, default=0,
         help="Packet data (Default: 0x0000000000000000)")
-    parser.add_option("--length", type="int", default=0,
+    parser.add_argument("--length", type=int, default=0,
         help="Packet data length in bytes (Default: auto)")
-    parser.add_option("--sapid", type="int", default=0,
+    parser.add_argument("--sapid", type=int, default=0,
         help="SAP ID (Default: 0x00)")
-    parser.add_option("--opcode", type="int", default=0,
+    parser.add_argument("--opcode", type=int, default=0,
         help="Opcode (Default: 0x00)")
-    parser.add_option("--dbtm", type="int", default=0,
+    parser.add_argument("--dbtm", type=int, default=0,
         help="Defined By Trunking Message AMBT field (Default: 0x0000)")
-    parser.add_option("--dho", type="int", default=0,
+    parser.add_argument("--dho", type=int, default=0,
         help="Data Header Offset (Default: 0x00)")
-    parser.add_option("--rclass", type="int", default=0,
+    parser.add_argument("--rclass", type=int, default=0,
         help="Response Class (Default: 0x0)")
-    parser.add_option("--rtype", type="int", default=0,
+    parser.add_argument("--rtype", type=int, default=0,
         help="Response Type (Default: 0x0)")
-    parser.add_option("--rstatus", type="int", default=0,
+    parser.add_argument("--rstatus", type=int, default=0,
         help="Response Status (Default: 0x0)")
-    parser.add_option("--ns", type="int", default=0,
+    parser.add_argument("--ns", type=int, default=0,
         help="N(S) sequence number (Default: 0x0)")
-    parser.add_option("--arg", type="int", default=0,
+    parser.add_argument("--arg", type=int, default=0,
         help="Trunking Control Opcode Argument (Default: 0x0000000000000000)")
-    parser.add_option("--svcopt", type="int", default=None,
+    parser.add_argument("--svcopt", type=int, default=None,
         help="Service Options byte (Default: use --pri, --emerg, etc.)")
-    parser.add_option("-e", "--emerg", action="store_true", dest="emerg",
+    parser.add_argument("-e", "--emerg", action="store_true", dest="emerg",
         default=False, help="Emergency Bit (Default: false)")
-    parser.add_option("-p", "--protected", action="store_true",
+    parser.add_argument("-p", "--protected", action="store_true",
         dest="protected", default=False, help="Protected Bit (Default: false)")
-    parser.add_option("-d", "--duplex", action="store_true", dest="duplex",
+    parser.add_argument("-d", "--duplex", action="store_true", dest="duplex",
         default=False, help="Duplex Bit (Default: false)")
-    parser.add_option("-m", "--mode", action="store_true", dest="mode",
+    parser.add_argument("-m", "--mode", action="store_true", dest="mode",
         default=False, help="Mode Bit (Default: false)")
-    parser.add_option("-r", "--reserved", action="store_true",
+    parser.add_argument("-r", "--reserved", action="store_true",
         dest="reserved", default=False, help="Reserved Bit (Default: false)")
-    parser.add_option("--pri", type="int", default=0,
+    parser.add_argument("--pri", type=int, default=0,
         help="Priority Level (Default: 0")
-    parser.add_option("-t", "--1011", action="store_true", dest="hz1011",
+    parser.add_argument("-t", "--1011", action="store_true", dest="hz1011",
         default=False, help="1011 Hz test tone (Default: false)")
-    parser.add_option("-s", "--silence", action="store_true", dest="silence",
+    parser.add_argument("-s", "--silence", action="store_true", dest="silence",
         default=False, help="audio silence (Default: false)")
-    parser.add_option("-o", "--output-file", type="string", default=None,
+    parser.add_argument("-o", "--output-file", type=str, default=None,
         help="Binary output file (Default: None)")
-    parser.add_option("-q", "--quiet", action="store_true", dest="quiet",
+    parser.add_argument("-q", "--quiet", action="store_true", dest="quiet",
         default=False, help="Supress text output (Default: false)")
-    parser.add_option("-f", "--flip", action="store_true", dest="flip",
+    parser.add_argument("-f", "--flip", action="store_true", dest="flip",
         default=False, help="invert frequency deviations (Default: false)")
-    parser.add_option("-l", "--late-entry", action="store_true", dest="late",
+    parser.add_argument("-l", "--late-entry", action="store_true", dest="late",
         default=False, help="Simulate late receiver entry (Default: false)")
-    parser.add_option("-i", "--inbound", action="store_true", dest="inbound",
+    parser.add_argument("-i", "--inbound", action="store_true", dest="inbound",
         default=False, help="Inbound packet (Default: false (outbound))")
 
-    (options, args) = parser.parse_args()
+    options = parser.parse_args()
 
     assert options.nac     <= 0xfff
     assert options.ss      <= 0b11

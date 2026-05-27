@@ -42,10 +42,9 @@ running this script when using method B.
 
 from gnuradio import gr, eng_notation, blocks, digital
 from gnuradio import audio, filter, analog
-from gnuradio.eng_option import eng_option
 from gnuradio.fft import window
-from optparse import OptionParser
 from usrpm import usrp_dbid
+import argparse
 import math
 import sys
 import osmosdr
@@ -55,6 +54,12 @@ from gnuradio.wxgui import stdgui2, fftsink2
 import wx
 
 import op25_c4fm_mod
+
+def eng_float(v):
+    try:
+        return eng_notation.str_to_num(str(v))
+    except:
+        raise argparse.ArgumentTypeError(f"invalid value: {v}")
 
 ########################################################
 # instantiate one transmit chain for each call
@@ -122,39 +127,35 @@ class fm_tx_block(stdgui2.std_top_block):
         MAX_CHANNELS = 7
         stdgui2.std_top_block.__init__ (self, frame, panel, vbox, argv)
 
-        parser = OptionParser (option_class=eng_option)
-        parser.add_option("-T", "--tx-subdev-spec", type="subdev", default=None,
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-T", "--tx-subdev-spec", type=str, default=None,
                           help="select USRP Tx side A or B")
-        parser.add_option("-e","--enable-fft", action="store_true", default=False,
+        parser.add_argument("-e","--enable-fft", action="store_true", default=False,
                           help="enable spectrum plot (and use more CPU)")
-        parser.add_option("-f", "--freq", type="eng_float", default=None,
+        parser.add_argument("-f", "--freq", type=eng_float, default=None,
                            help="set Tx frequency to FREQ [required]", metavar="FREQ")
-        parser.add_option("-i","--file-input", action="store_true", default=False,
+        parser.add_argument("-i","--file-input", action="store_true", default=False,
                           help="input from baseband-0.dat, baseband-1.dat ...")
-        parser.add_option("-g", "--audio-gain", type="eng_float", default=1.0,
+        parser.add_argument("-g", "--audio-gain", type=eng_float, default=1.0,
                            help="input audio gain multiplier")
-        parser.add_option("-n", "--nchannels", type="int", default=1,
+        parser.add_argument("-n", "--nchannels", type=int, default=1,
                            help="number of Tx channels [1,4]")
-        parser.add_option("-a", "--udp-addr", type="string", default="127.0.0.1",
+        parser.add_argument("-a", "--udp-addr", type=str, default="127.0.0.1",
                            help="UDP host IP address")
-        parser.add_option("--args", type="string", default="",
+        parser.add_argument("--args", type=str, default="",
                            help="device args")
-        parser.add_option("--gains", type="string", default="",
+        parser.add_argument("--gains", type=str, default="",
                            help="gains")
-        parser.add_option("-p", "--udp-port", type="int", default=0,
+        parser.add_argument("-p", "--udp-port", type=int, default=0,
                            help="UDP port number")
-        parser.add_option("-r","--repeat", action="store_true", default=False,
+        parser.add_argument("-r","--repeat", action="store_true", default=False,
                           help="continuously replay input file")
-        parser.add_option("-S", "--stretch", type="int", default=0,
+        parser.add_argument("-S", "--stretch", type=int, default=0,
                            help="elastic buffer trigger value")
-        parser.add_option("-v","--verbose", action="store_true", default=False,
+        parser.add_argument("-v","--verbose", action="store_true", default=False,
                           help="print out stats")
-        parser.add_option("-I", "--audio-input", type="string", default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
-        (options, args) = parser.parse_args ()
-
-        if len(args) != 0:
-            parser.print_help()
-            sys.exit(1)
+        parser.add_argument("-I", "--audio-input", type=str, default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
+        options = parser.parse_args()
 
         if options.nchannels < 1 or options.nchannels > MAX_CHANNELS:
             sys.stderr.write ("op25_tx: nchannels out of range.  Must be in [1,%d]\n" % MAX_CHANNELS)

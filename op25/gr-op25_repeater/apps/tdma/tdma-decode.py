@@ -32,7 +32,7 @@ using the low-order two bits of each byte
 
 import sys
 import numpy as np
-from optparse import OptionParser
+import argparse
 
 from bit_utils import *
 import isch
@@ -43,16 +43,13 @@ from vf import process_v
 SUPERFRAME_LEN = 2160
 
 def main():
-    parser = OptionParser()
-    parser.add_option("-v", "--verbose", action="store_true", default=False)
-    parser.add_option("-i", "--input-file", type="string", default=None, help="input file name")
-    parser.add_option("-n", "--nac", type="int", default=0, help="NAC")
-    parser.add_option("-s", "--sysid", type="int", default=0, help="sysid")
-    parser.add_option("-w", "--wacn", type="int", default=0, help="WACN")
-    (options, args) = parser.parse_args()
-    if len(args) != 0:
-        parser.print_help()
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--verbose", action="store_true", default=False)
+    parser.add_argument("-i", "--input-file", type=str, default=None, help="input file name")
+    parser.add_argument("-n", "--nac", type=int, default=0, help="NAC")
+    parser.add_argument("-s", "--sysid", type=int, default=0, help="sysid")
+    parser.add_argument("-w", "--wacn", type=int, default=0, help="WACN")
+    options = parser.parse_args()
     file = options.input_file
 
     my_isch = isch.p25p2_isch()

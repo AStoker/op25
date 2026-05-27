@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 from gnuradio import gr, audio, eng_notation, blocks
-from gnuradio.eng_option import eng_option
-from optparse import OptionParser
+import argparse
 
 class app_top_block(gr.top_block):
     def __init__(self, options):
@@ -15,11 +14,11 @@ class app_top_block(gr.top_block):
         self.connect(IN, UNPACK, OUT)
 
 def main():
-    parser = OptionParser(option_class=eng_option)
-    parser.add_option("-i", "--input-file", type="string", default="in.dat", help="specify the input file")
-    parser.add_option("-o", "--output", type="string", default="out.dat", help="specify the output file")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input-file", type=str, default="in.dat", help="specify the input file")
+    parser.add_argument("-o", "--output", type=str, default="out.dat", help="specify the output file")
 
-    (options, args) = parser.parse_args()
+    options = parser.parse_args()
  
     tb = app_top_block(options)
     try:

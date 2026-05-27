@@ -32,7 +32,8 @@ import sys
 from packaging.version import Version
 from gnuradio import gr, eng_notation
 from gnuradio import filter, analog, digital, blocks
-from gnuradio.eng_option import eng_option
+# eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
+# 3.10 and is not used anywhere in this file.
 from gnuradio.fft import window
 import pmt
 import gnuradio.op25 as op25
@@ -314,7 +315,7 @@ class p25_demod_fb(p25_demod_base):
         self.set_symbol_rate(rate)
         try: # only supported by op25.fsk4_demod_ff()
             self.fsk4_demod.set_rate(self.if_rate, self.symbol_rate)
-        except:
+        except AttributeError:
             pass
 
     def set_tdma(self, enabled = True):

@@ -32,9 +32,8 @@ import os
 import math
 from gnuradio import gr, audio, eng_notation
 from gnuradio import filter, blocks, analog, digital
-from gnuradio.eng_option import eng_option
 from gnuradio.fft import window
-from optparse import OptionParser
+import argparse
 
 import osmosdr
 import gnuradio.op25 as op25
@@ -102,25 +101,25 @@ class pipeline(gr.hier_block2):
 class my_top_block(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self)
-        parser = OptionParser(option_class=eng_option)
+        parser = argparse.ArgumentParser()
 
-        parser.add_option("-a", "--args", type="string", default="", help="device args")
-        parser.add_option("-A", "--do-audio", action="store_true", default=False, help="live input audio")
-        parser.add_option("-b", "--bt", type="float", default=0.5, help="specify bt value")
-        parser.add_option("-f", "--file", type="string", default=None, help="specify the input file (mono 8000 sps S16_LE)")
-        parser.add_option("-g", "--gain", type="float", default=1.0, help="input gain")
-        parser.add_option("-i", "--if-rate", type="int", default=480000, help="output rate to sdr")
-        parser.add_option("-I", "--audio-input", type="string", default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
-        parser.add_option("-N", "--gains", type="string", default=None, help="gain settings")
-        parser.add_option("-o", "--if-offset", type="float", default=100000, help="channel spacing (Hz)")
-        parser.add_option("-q", "--frequency-correction", type="float", default=0.0, help="ppm")
-        parser.add_option("-Q", "--frequency", type="float", default=0.0, help="Hz")
-        parser.add_option("-r", "--repeat", action="store_true", default=False, help="input file repeat")
-        parser.add_option("-R", "--fullrate-mode", action="store_true", default=False, help="ysf fullrate")
-        parser.add_option("-s", "--modulator-rate", type="int", default=48000, help="must be submultiple of IF rate")
-        parser.add_option("-S", "--alsa-rate", type="int", default=48000, help="sound source/sink sample rate")
-        parser.add_option("-v", "--verbose", type="int", default=0, help="additional output")
-        (options, args) = parser.parse_args()
+        parser.add_argument("-a", "--args", type=str, default="", help="device args")
+        parser.add_argument("-A", "--do-audio", action="store_true", default=False, help="live input audio")
+        parser.add_argument("-b", "--bt", type=float, default=0.5, help="specify bt value")
+        parser.add_argument("-f", "--file", type=str, default=None, help="specify the input file (mono 8000 sps S16_LE)")
+        parser.add_argument("-g", "--gain", type=float, default=1.0, help="input gain")
+        parser.add_argument("-i", "--if-rate", type=int, default=480000, help="output rate to sdr")
+        parser.add_argument("-I", "--audio-input", type=str, default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
+        parser.add_argument("-N", "--gains", type=str, default=None, help="gain settings")
+        parser.add_argument("-o", "--if-offset", type=float, default=100000, help="channel spacing (Hz)")
+        parser.add_argument("-q", "--frequency-correction", type=float, default=0.0, help="ppm")
+        parser.add_argument("-Q", "--frequency", type=float, default=0.0, help="Hz")
+        parser.add_argument("-r", "--repeat", action="store_true", default=False, help="input file repeat")
+        parser.add_argument("-R", "--fullrate-mode", action="store_true", default=False, help="ysf fullrate")
+        parser.add_argument("-s", "--modulator-rate", type=int, default=48000, help="must be submultiple of IF rate")
+        parser.add_argument("-S", "--alsa-rate", type=int, default=48000, help="sound source/sink sample rate")
+        parser.add_argument("-v", "--verbose", type=int, default=0, help="additional output")
+        options = parser.parse_args()
 
         assert options.file # input file name (-f filename) required
 

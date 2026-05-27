@@ -31,7 +31,8 @@ import json
 import sys
 from gnuradio import gr, eng_notation
 from gnuradio import blocks, audio
-from gnuradio.eng_option import eng_option
+# eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
+# 3.10 and is not used anywhere in this file.
 import gnuradio.op25 as op25
 import gnuradio.op25_repeater as op25_repeater
 

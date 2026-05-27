@@ -241,9 +241,8 @@ def http_request(environ, start_response):
                         ('Content-Length', str(len(output)))] + CORS_HEADERS
     start_response(status, response_headers)
 
-    if sys.version[0] > '2':
-        if type(output) is str:
-            output = output.encode()
+    if type(output) is str:
+        output = output.encode()
 
     return [output]
 

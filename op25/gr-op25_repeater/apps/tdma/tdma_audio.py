@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 
 from gnuradio import gr, audio, eng_notation, analog, blocks, filter
-from gnuradio.eng_option import eng_option
-from optparse import OptionParser
+import argparse
 import numpy as np
 
 import gnuradio.op25_repeater as op25_repeater
@@ -44,17 +43,14 @@ class app_top_block(gr.top_block):
         self.connect(IN, FRAMER, S2F, M, SINK)
 
 def main():
-    parser = OptionParser(option_class=eng_option)
-    parser.add_option("-v", "--verbose", action="store_true", default=False)
-    parser.add_option("-i", "--input-file", type="string", default=None, help="input file name")
-    parser.add_option("-n", "--nac", type="int", default=0, help="NAC")
-    parser.add_option("-s", "--sysid", type="int", default=0, help="sysid")
-    parser.add_option("-t", "--tdma-slotid", type="int", default=0, help="tdma-slotid (0 or 1)")
-    parser.add_option("-w", "--wacn", type="int", default=0, help="WACN")
-    (options, args) = parser.parse_args()
-    if len(args) != 0:
-        parser.print_help()
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--verbose", action="store_true", default=False)
+    parser.add_argument("-i", "--input-file", type=str, default=None, help="input file name")
+    parser.add_argument("-n", "--nac", type=int, default=0, help="NAC")
+    parser.add_argument("-s", "--sysid", type=int, default=0, help="sysid")
+    parser.add_argument("-t", "--tdma-slotid", type=int, default=0, help="tdma-slotid (0 or 1)")
+    parser.add_argument("-w", "--wacn", type=int, default=0, help="WACN")
+    options = parser.parse_args()
 
     assert options.tdma_slotid == 0 or options.tdma_slotid == 1
  

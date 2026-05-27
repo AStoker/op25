@@ -53,9 +53,11 @@ import osmosdr
 import importlib
 
 from gnuradio import audio, eng_notation, gr, filter, blocks, fft, analog, digital
-from gnuradio.eng_option import eng_option
+# eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
+# 3.10 and is not used by any option defined in this file; all radio parameters
+# (frequencies, sample rates, gains) come from the JSON config file, not CLI flags.
 from math import pi
-from optparse import OptionParser
+import argparse
 
 import gnuradio.op25 as op25
 import gnuradio.op25_repeater as op25_repeater
@@ -1014,28 +1016,15 @@ class du_queue_watcher(threading.Thread):
 
 class rx_main(object):
     def __init__(self):
-        def byteify(input):    # thx so
-            if sys.version[0] != '2':
-                return input
-            if isinstance(input, dict):
-                return {byteify(key): byteify(value)
-                        for key, value in list(input.items())}
-            elif isinstance(input, list):
-                return [byteify(element) for element in input]
-            elif isinstance(input, str):
-                return input.encode('utf-8')
-            else:
-                return input
-
         self.keep_running = True
 
         # command line argument parsing
-        parser = OptionParser(option_class=eng_option)
-        parser.add_option("-c", "--config-file", type="string", default=None, help="specify config file name")
-        parser.add_option("-v", "--verbosity", type="int", default=0, help="message debug level")
-        parser.add_option("-p", "--pause", action="store_true", default=False, help="block on startup")
-        parser.add_option("-d", "--dev-mode", action="store_true", default=False, help="enable developer mode")
-        (options, args) = parser.parse_args()
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-c", "--config-file", type=str, default=None, help="specify config file name")
+        parser.add_argument("-v", "--verbosity", type=int, default=0, help="message debug level")
+        parser.add_argument("-p", "--pause", action="store_true", default=False, help="block on startup")
+        parser.add_argument("-d", "--dev-mode", action="store_true", default=False, help="enable developer mode")
+        options = parser.parse_args()
 
         #if options.dev_mode:
         #    globals()["p25_demodulator"] = importlib.import_module("p25_demodulator_dev")
@@ -1046,10 +1035,7 @@ class rx_main(object):
         sys.stderr.write("Starting OP25 (pid = %d)\n" % (os.getpid()))
         if options.pause:
             sys.stdout.write("Ready for GDB to attach (pid = %d)\n" % (os.getpid(),))
-            if sys.version[0] > '2':
-                input("Press 'Enter' to continue...")
-            else:
-                raw_input("Press 'Enter' to continue...")
+            input("Press 'Enter' to continue...")
 
         if options.config_file == '-':
             config = json.loads(sys.stdin.read())
@@ -1057,11 +1043,8 @@ class rx_main(object):
             if options.config_file is None:
                 parser.print_help()
                 exit(1)
-            if sys.version[0] == '2':
-                config = json.loads(open(options.config_file).read())
-            else:
-                config = json.loads(open(options.config_file, encoding="utf-8-sig").read())
-        self.tb = rx_block(options.verbosity, config = byteify(config))
+            config = json.loads(open(options.config_file, encoding="utf-8-sig").read())
+        self.tb = rx_block(options.verbosity, config = config)
         self.q_watcher = du_queue_watcher(self.tb.ui_out_q, self.process_qmsg)
         sys.stderr.write('python version detected: %s\n' % sys.version)
 
@@ -1095,8 +1078,5 @@ class rx_main(object):
             self.keep_running = False
 
 if __name__ == "__main__":
-    if sys.version[0] > '2':
-        pass
-        #sys.stderr = io.TextIOWrapper(sys.stderr.detach().detach(), write_through=True) # disable stderr buffering
     rx = rx_main()
     rx.run()

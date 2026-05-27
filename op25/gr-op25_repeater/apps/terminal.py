@@ -530,9 +530,8 @@ class curses_terminal(threading.Thread):
     def send_command(self, command, arg1 = 0, arg2 = 0):
         if self.sock:
             js = json.dumps({'command': command, 'arg1': arg1, 'arg2': arg2})
-            if sys.version[0] > '2':
-                if type(js) is str:
-                    js = js.encode()
+            if type(js) is str:
+                js = js.encode()
             self.sock.send(js)
         else:
             msg = gr.message().make_from_string(command, -2, arg1, arg2)

@@ -47,7 +47,7 @@ import signal
 import sys
 import time
 
-from optparse import OptionParser
+import argparse
 from sockaudio import socket_audio
 
 def signal_handler(signal, frame):
@@ -55,17 +55,14 @@ def signal_handler(signal, frame):
    audio_handler.stop()
    sys.exit(0)
 
-parser = OptionParser()
-parser.add_option("-O", "--audio-output", type="string", default="default", help="audio output device name")
-parser.add_option("-u", "--wireshark-port", type="int", default=23456, help="Wireshark port")
-parser.add_option("-2", "--two-channel", action="store_true", default=False, help="single or two channel audio")
-parser.add_option("-x", "--audio-gain", type="float", default="1.0", help="audio gain (default = 1.0)")
-parser.add_option("-s", "--stdout", action="store_true", default=False, help="write to stdout instead of audio device")
- 
-(options, args) = parser.parse_args()
-if len(args) != 0:
-   parser.print_help()
-   sys.exit(1)
+parser = argparse.ArgumentParser()
+parser.add_argument("-O", "--audio-output", type=str, default="default", help="audio output device name")
+parser.add_argument("-u", "--wireshark-port", type=int, default=23456, help="Wireshark port")
+parser.add_argument("-2", "--two-channel", action="store_true", default=False, help="single or two channel audio")
+parser.add_argument("-x", "--audio-gain", type=float, default=1.0, help="audio gain (default = 1.0)")
+parser.add_argument("-s", "--stdout", action="store_true", default=False, help="write to stdout instead of audio device")
+
+options = parser.parse_args()
 
 audio_handler = socket_audio("0.0.0.0", options.wireshark_port, options.audio_output, options.two_channel, options.audio_gain, options.stdout)
 

@@ -23,9 +23,12 @@ import time
 import subprocess
 import json
 
+import shutil
+
 from gnuradio import gr, eng_notation
 from gnuradio import blocks, audio
-from gnuradio.eng_option import eng_option
+# eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
+# 3.10 and is not used anywhere in this file.
 import numpy as np
 from gnuradio import gr
 
@@ -35,7 +38,7 @@ _def_debug = 0
 _def_sps = 5
 _def_sps_mult = 2
 
-GNUPLOT = '/usr/bin/gnuplot'
+GNUPLOT = shutil.which('gnuplot') or '/usr/bin/gnuplot'
 
 Y_AVG    = 0.03
 FFT_AVG  = 0.05
@@ -251,8 +254,7 @@ class wrap_gp(object):
                     h+= 'set title "%sSpectrum"\n' % self.plot_name
                     plot_data['title'] = "%sSpectrum" % self.plot_name
         dat = '%splot %s\n%s' % (h, ','.join(plots), s)
-        if sys.version[0] != '2':
-            dat = bytes(dat, 'utf8')
+        dat = bytes(dat, 'utf8')
         self.gp.poll()
         if self.gp.returncode is None:  # make sure gnuplot is still running
             try:

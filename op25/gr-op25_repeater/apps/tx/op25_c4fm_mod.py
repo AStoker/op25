@@ -33,8 +33,6 @@ with additions for RRC (for dmr/ysf) and dstar gmsk
 from gnuradio import gr, eng_notation
 from gnuradio.digital import modulation_utils
 from gnuradio import filter, digital, blocks
-from gnuradio.eng_option import eng_option
-from optparse import OptionParser
 import math
 from math import sin, cos, pi
 import numpy as np
