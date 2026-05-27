@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, forwardRef } from 'react';
+import { TableVirtuoso } from 'react-virtuoso';
+import type { TableComponents } from 'react-virtuoso';
 // Sorting helpers
 type SortKey = keyof TalkGroupRow;
 type SortDirection = 'asc' | 'desc';
@@ -51,6 +53,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Tooltip from '@mui/material/Tooltip';
 import TextField from '@mui/material/TextField';
+import TableContainer from '@mui/material/TableContainer';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import CardShell from '../CardShell/CardShell';
@@ -69,6 +72,28 @@ function formatFreqMHz(hz?: number): string {
   if (!hz || !Number.isFinite(hz)) return '—';
   return `${(hz / 1e6).toFixed(4)}`;
 }
+
+interface ChannelsContext {
+  heldTgid: number;
+  holdTalkGroup: (tgid: number) => void;
+  releaseHold: () => void;
+}
+
+const VirtuosoTableComponents: TableComponents<TalkGroupRow, ChannelsContext> = {
+  Scroller: forwardRef<HTMLDivElement>((props, ref) => (
+    <TableContainer {...props} ref={ref} />
+  )),
+  Table: (props) => <Table size="small" sx={{ tableLayout: 'fixed' }} {...props} />,
+  TableHead: forwardRef<HTMLTableSectionElement>((props, ref) => (
+    <TableHead {...props} ref={ref} />
+  )),
+  TableRow: ({ item, context, ...props }) => (
+    <TableRow hover selected={item?.tgid === context?.heldTgid} {...props} />
+  ),
+  TableBody: forwardRef<HTMLTableSectionElement>((props, ref) => (
+    <TableBody {...props} ref={ref} />
+  )),
+};
 
 export default function ChannelsCard() {
   // Sorting state
@@ -163,6 +188,84 @@ export default function ChannelsCard() {
     arr = sortRows(arr, sortKey, sortDirection);
     return arr;
   }, [system, channels, tagFilter, sortKey, sortDirection]);
+
+  const fixedHeaderContent = () => (
+    <TableRow>
+      <TableCell
+        variant="head"
+        onClick={() => { setSortKey('tgid'); setSortDirection(sortKey === 'tgid' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '10%' }}
+      >
+        TGID {sortKey === 'tgid' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+      </TableCell>
+      <TableCell
+        variant="head"
+        onClick={() => { setSortKey('tag'); setSortDirection(sortKey === 'tag' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '30%' }}
+      >
+        Tag {sortKey === 'tag' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+      </TableCell>
+      <TableCell
+        variant="head"
+        onClick={() => { setSortKey('lastFreq'); setSortDirection(sortKey === 'lastFreq' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '14%' }}
+      >
+        Freq {sortKey === 'lastFreq' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+      </TableCell>
+      <TableCell
+        variant="head"
+        onClick={() => { setSortKey('lastActivity'); setSortDirection(sortKey === 'lastActivity' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '18%' }}
+      >
+        Last {sortKey === 'lastActivity' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+      </TableCell>
+      <TableCell
+        variant="head"
+        onClick={() => { setSortKey('configured'); setSortDirection(sortKey === 'configured' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '20%' }}
+      >
+        State {sortKey === 'configured' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+      </TableCell>
+      <TableCell variant="head" align="right" sx={{ backgroundColor: 'background.paper', width: '8%' }}>Hold</TableCell>
+    </TableRow>
+  );
+
+  const rowContent = (_index: number, row: TalkGroupRow) => {
+    const isHeld = row.tgid === heldTgid;
+    return (
+      <>
+        <TableCell>{row.tgid}</TableCell>
+        <TableCell>{row.tag || '\u2014'}</TableCell>
+        <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>
+        <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>
+        <TableCell>
+          <Stack direction="row" spacing={0.5}>
+            {row.configured && 
+            <Tooltip title="This talk-group is configured in tgid_tags_file on the server">
+              <Chip size="small" label="cfg" variant="outlined" />
+            </Tooltip>
+            }
+            {row.seen       && 
+            <Tooltip title="This talk-group has been seen active on the air (from frequency_data updates)">
+              <Chip size="small" label="seen" color="success" variant="outlined" />
+            </Tooltip>
+            }
+          </Stack>
+        </TableCell>
+        <TableCell align="right">
+          <Tooltip title={isHeld ? 'Release hold' : `Hold ${row.tgid}`}>
+            <IconButton
+              size="small"
+              onClick={() => (isHeld ? releaseHold() : holdTalkGroup(row.tgid))}
+              color={isHeld ? 'warning' : 'default'}
+            >
+              {isHeld ? <LockOpenIcon fontSize="small" /> : <LockIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+        </TableCell>
+      </>
+    );
+  };
 
   return (
     <CardShell title="Channels / Talkgroups">
@@ -262,90 +365,14 @@ export default function ChannelsCard() {
               No talk-groups seen yet.
             </Typography>
           ) : (
-            <Box sx={{ maxHeight: 360, overflow: 'auto' }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    {/* Sortable headers */}
-                    <TableCell
-                      onClick={() => {
-                        setSortKey('tgid');
-                        setSortDirection(sortKey === 'tgid' && sortDirection === 'asc' ? 'desc' : 'asc');
-                      }}
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                    >
-                      TGID {sortKey === 'tgid' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-                    </TableCell>
-                    <TableCell
-                      onClick={() => {
-                        setSortKey('tag');
-                        setSortDirection(sortKey === 'tag' && sortDirection === 'asc' ? 'desc' : 'asc');
-                      }}
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                    >
-                      Tag {sortKey === 'tag' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-                    </TableCell>
-                    <TableCell
-                      onClick={() => {
-                        setSortKey('lastFreq');
-                        setSortDirection(sortKey === 'lastFreq' && sortDirection === 'asc' ? 'desc' : 'asc');
-                      }}
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                    >
-                      Freq {sortKey === 'lastFreq' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-                    </TableCell>
-                    <TableCell
-                      onClick={() => {
-                        setSortKey('lastActivity');
-                        setSortDirection(sortKey === 'lastActivity' && sortDirection === 'asc' ? 'desc' : 'asc');
-                      }}
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                    >
-                      Last {sortKey === 'lastActivity' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-                    </TableCell>
-                    <TableCell
-                      onClick={() => {
-                        setSortKey('configured');
-                        setSortDirection(sortKey === 'configured' && sortDirection === 'asc' ? 'desc' : 'asc');
-                      }}
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                    >
-                      State {sortKey === 'configured' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-                    </TableCell>
-                    <TableCell align="right">Hold</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {rows.map((row) => {
-                    const isHeld = row.tgid === heldTgid;
-                    return (
-                      <TableRow key={row.tgid} hover selected={isHeld}>
-                        <TableCell>{row.tgid}</TableCell>
-                        <TableCell>{row.tag || '—'}</TableCell>
-                        <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>
-                        <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={0.5}>
-                            {row.configured && <Chip size="small" label="cfg" variant="outlined" />}
-                            {row.seen       && <Chip size="small" label="seen" color="success" variant="outlined" />}
-                          </Stack>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Tooltip title={isHeld ? 'Release hold' : `Hold ${row.tgid}`}>
-                            <IconButton
-                              size="small"
-                              onClick={() => (isHeld ? releaseHold() : holdTalkGroup(row.tgid))}
-                              color={isHeld ? 'warning' : 'default'}
-                            >
-                              {isHeld ? <LockOpenIcon fontSize="small" /> : <LockIcon fontSize="small" />}
-                            </IconButton>
-                          </Tooltip>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+            <Box sx={{ height: 360 }}>
+              <TableVirtuoso
+                data={rows}
+                context={{ heldTgid, holdTalkGroup, releaseHold }}
+                components={VirtuosoTableComponents}
+                fixedHeaderContent={fixedHeaderContent}
+                itemContent={rowContent}
+              />
             </Box>
           )}
         </Box>

@@ -2,6 +2,7 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
+import Tooltip from '@mui/material/Tooltip';
 import CardShell from '../CardShell/CardShell';
 import { useSelectedSystem } from '../../services/op25Service';
 import type { FrequencyDataEntry } from '../../types/op25';
@@ -10,8 +11,8 @@ function formatFreq(hz: number): string {
   return `${(hz / 1e6).toFixed(4)} MHz`;
 }
 
-function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
+function InfoRow({ label, value, tooltip }: { label: string; value: React.ReactNode; tooltip?: string }) {
+  const content = (
     <Box>
       <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
         {label}
@@ -20,6 +21,14 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
         {value}
       </Typography>
     </Box>
+  );
+
+  if (!tooltip) return content;
+
+  return (
+    <Tooltip title={tooltip} placement="top" arrow enterDelay={400}>
+      {content}
+    </Tooltip>
   );
 }
 
@@ -50,18 +59,27 @@ export default function SiteInfoCard() {
     <CardShell title="Site Information">
       <Stack spacing={1.5}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
-          <InfoRow label="System"   value={`${system.system} (${system.type})`} />
-          <InfoRow label="Callsign" value={system.callsign || '—'} />
-          <InfoRow label="NAC"      value={`0x${system.nac.toString(16).toUpperCase()}`} />
-          <InfoRow label="WACN"     value={`0x${system.wacn.toString(16).toUpperCase()}`} />
-          <InfoRow label="SysID"    value={`0x${system.sysid.toString(16).toUpperCase()}`} />
-          <InfoRow label="RFSS / Site" value={`${system.rfid}.${system.stid}`} />
-          <InfoRow label="Control RX" value={formatFreq(system.rxchan)} />
-          <InfoRow label="Control TX" value={formatFreq(system.txchan)} />
+          <InfoRow label="System"   value={`${system.system} (${system.type})`}
+            tooltip="The system name and its P25 phase/type (e.g. Phase 1 FDMA or Phase 2 TDMA)." />
+          <InfoRow label="Callsign" value={system.callsign || '—'}
+            tooltip="The FCC-assigned callsign for this radio system, if broadcast by the site." />
+          <InfoRow label="NAC"      value={`0x${system.nac.toString(16).toUpperCase()}`}
+            tooltip="Network Access Code — a 12-bit identifier (0x000–0xFFF) used to gate access to a P25 channel and distinguish networks sharing the same frequency." />
+          <InfoRow label="WACN"     value={`0x${system.wacn.toString(16).toUpperCase()}`}
+            tooltip="Wide Area Communications Network ID — a 20-bit identifier that groups multiple P25 systems belonging to the same wide-area network (e.g. a state or regional network)." />
+          <InfoRow label="SysID"    value={`0x${system.sysid.toString(16).toUpperCase()}`}
+            tooltip="System ID — a 12-bit value that uniquely identifies this P25 system within its WACN." />
+          <InfoRow label="RFSS / Site" value={`${system.rfid}.${system.stid}`}
+            tooltip="RF Sub-System ID (RFSS) and Site ID — together they pinpoint the physical tower site within the system. RFSS groups sites into sub-systems; Site ID identifies the individual site." />
+          <InfoRow label="Control RX" value={formatFreq(system.rxchan)}
+            tooltip="The receive frequency of the current control channel — the channel OP25 is monitoring to track calls and system activity." />
+          <InfoRow label="Control TX" value={formatFreq(system.txchan)}
+            tooltip="The transmit (uplink) frequency of the control channel — the frequency radios use when talking back to the site. Not used by OP25 for receiving." />
           <InfoRow label="Secondary CCs"
                    value={system.secondary?.length
                      ? system.secondary.map(formatFreq).join(', ')
-                     : '—'} />
+                     : '—'}
+            tooltip="Secondary (alternate) control channel frequencies broadcast by the site. OP25 can fall back to these if the primary control channel is lost." />
         </Box>
 
         {system.top_line && (

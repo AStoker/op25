@@ -1,4 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, forwardRef } from 'react';
+import { TableVirtuoso } from 'react-virtuoso';
+import type { TableComponents } from 'react-virtuoso';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Table from '@mui/material/Table';
@@ -6,6 +8,7 @@ import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
+import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
 
@@ -29,6 +32,20 @@ function fmtTime(epoch: number): string {
   return d.toLocaleTimeString();
 }
 
+const VirtuosoTableComponents: TableComponents<Row> = {
+  Scroller: forwardRef<HTMLDivElement>((props, ref) => (
+    <TableContainer {...props} ref={ref} />
+  )),
+  Table: (props) => <Table size="small" sx={{ tableLayout: 'fixed' }} {...props} />,
+  TableHead: forwardRef<HTMLTableSectionElement>((props, ref) => (
+    <TableHead {...props} ref={ref} />
+  )),
+  TableRow: ({ item: _item, ...props }) => <TableRow hover {...props} />,
+  TableBody: forwardRef<HTMLTableSectionElement>((props, ref) => (
+    <TableBody {...props} ref={ref} />
+  )),
+};
+
 export default function CallHistoryCard() {
   const system    = useSelectedSystem();
   const { callLog } = useOp25Service();
@@ -40,7 +57,6 @@ export default function CallHistoryCard() {
       return callLog
         .slice()
         .reverse()
-        .slice(0, 100)
         .map((e, i) => ({
           key:    `${e.time}-${i}`,
           time:   fmtTime(e.time),
@@ -71,8 +87,30 @@ export default function CallHistoryCard() {
         });
       }
     }
-    return out.slice(0, 100);
+    return out;
   }, [callLog, system]);
+
+  const fixedHeaderContent = () => (
+    <TableRow>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '16%' }}>Time</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '14%' }}>Freq</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '10%' }}>TG</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '28%' }}>Tag</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '32%' }}>Source</TableCell>
+    </TableRow>
+  );
+
+  const rowContent = (_index: number, r: Row) => (
+    <>
+      <TableCell>{r.time || '\u2014'}</TableCell>
+      <TableCell>{fmtFreq(r.freq)}</TableCell>
+      <TableCell>{r.tgid || '\u2014'}</TableCell>
+      <TableCell>{r.tag || '\u2014'}</TableCell>
+      <TableCell>
+        {r.src ? (r.srcTag ? `${r.srcTag} (${r.src})` : r.src) : '\u2014'}
+      </TableCell>
+    </>
+  );
 
   return (
     <CardShell title="Call History">
@@ -81,31 +119,13 @@ export default function CallHistoryCard() {
           No calls yet.
         </Typography>
       ) : (
-        <Box sx={{ maxHeight: 320, overflow: 'auto' }}>
-          <Table size="small" stickyHeader>
-            <TableHead>
-              <TableRow>
-                <TableCell>Time</TableCell>
-                <TableCell>Freq</TableCell>
-                <TableCell>TG</TableCell>
-                <TableCell>Tag</TableCell>
-                <TableCell>Source</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.key} hover>
-                  <TableCell>{r.time || '—'}</TableCell>
-                  <TableCell>{fmtFreq(r.freq)}</TableCell>
-                  <TableCell>{r.tgid || '—'}</TableCell>
-                  <TableCell>{r.tag || '—'}</TableCell>
-                  <TableCell>
-                    {r.src ? (r.srcTag ? `${r.srcTag} (${r.src})` : r.src) : '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        <Box sx={{ height: 320 }}>
+          <TableVirtuoso
+            data={rows}
+            components={VirtuosoTableComponents}
+            fixedHeaderContent={fixedHeaderContent}
+            itemContent={rowContent}
+          />
         </Box>
       )}
     </CardShell>
