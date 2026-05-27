@@ -97,7 +97,7 @@ const VirtuosoTableComponents: TableComponents<TalkGroupRow, ChannelsContext> = 
 
 export default function ChannelsCard() {
   // Sorting state
-  const [sortKey, setSortKey] = useState<SortKey>('state');
+  const [sortKey, setSortKey] = useState<SortKey>('configured');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   // Filter state
   const [tagFilter, setTagFilter] = useState('');

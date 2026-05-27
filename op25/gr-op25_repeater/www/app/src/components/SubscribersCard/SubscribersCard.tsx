@@ -48,7 +48,12 @@ export default function SubscribersCard() {
   const rows = useMemo<SubscriberRow[]>(() => {
     if (!system?.wuid_data) return [];
     return Object.entries(system.wuid_data)
-      .map(([key, entry]) => ({ ...entry, key }))
+      .map(([key, entry]) => ({
+        ...entry,
+        key,
+        aff_ga_tag:  entry.aff_ga_tag  ?? undefined,
+        aff_aga_tag: entry.aff_aga_tag ?? undefined,
+      }))
       .sort((a, b) => b.time - a.time);
   }, [system]);
 
