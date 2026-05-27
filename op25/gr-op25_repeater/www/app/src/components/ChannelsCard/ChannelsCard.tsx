@@ -94,22 +94,24 @@ export default function ChannelsCard() {
       }
     }
 
-    // TODO: when the server exposes the parsed tgid_tags_file we can mark
-    // configured talk-groups here.  For now flag any TG that appears in the
-    // trunking config's whitelist as configured.
-    const whitelist = config?.trunking?.chans?.[0]?.whitelist;
-    if (whitelist) {
-      for (const tok of whitelist.split(/[,\s]+/).filter(Boolean)) {
-        const tgid = Number(tok);
-        if (!Number.isFinite(tgid)) continue;
+    // Configured talk-groups from tgid_tags (populated by tgid_tags_file on the server).
+    if (system?.tgid_tags) {
+      for (const [tgidStr, tgData] of Object.entries(system.tgid_tags)) {
+        if (!tgData.configured) continue;
+        const tgid = Number(tgidStr);
+        if (!Number.isFinite(tgid) || tgid <= 0) continue;
         const existing = map.get(tgid);
-        if (existing) existing.configured = true;
-        else map.set(tgid, { tgid, tag: '', configured: true, seen: false });
+        if (existing) {
+          existing.configured = true;
+          if (tgData.tag && !existing.tag) existing.tag = tgData.tag;
+        } else {
+          map.set(tgid, { tgid, tag: tgData.tag || '', configured: true, seen: false });
+        }
       }
     }
 
     return Array.from(map.values()).sort((a, b) => a.tgid - b.tgid);
-  }, [system, channels, config]);
+  }, [system, channels]);
 
   return (
     <CardShell title="Channels / Talkgroups">

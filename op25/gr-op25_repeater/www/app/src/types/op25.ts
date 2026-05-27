@@ -72,6 +72,9 @@ export interface TrunkSystem {
   last_tsbk: number;
   adjacent_data: Record<string, AdjacentEntry>;
   band_plan: Record<string, BandPlanEntry>;
+  /** All known talkgroups keyed by TGID string. `configured` is true for
+   *  entries loaded from tgid_tags_file at startup. */
+  tgid_tags?: Record<string, { tag: string; configured: boolean }>;
 }
 
 export interface TrunkUpdatePayload {

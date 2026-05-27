@@ -76,6 +76,7 @@ def add_default_tgid(tgs, tgid):
         tgs[tgid]['tgid'] = tgid
         tgs[tgid]['prio'] = TGID_DEFAULT_PRIO
         tgs[tgid]['tag'] = ""
+        tgs[tgid]['configured'] = False
         tgs[tgid]['srcaddr'] = 0
         tgs[tgid]['time'] = 0
         tgs[tgid]['frequency'] = None
@@ -533,6 +534,7 @@ class p25_system(object):
                             add_default_tgid(self.talkgroups, tgid)
                         self.talkgroups[tgid]['tag'] = tag
                         self.talkgroups[tgid]['prio'] = prio
+                        self.talkgroups[tgid]['configured'] = True
                     if self.debug > 1:
                         sys.stderr.write("%s [%s] setting tgid(%d), prio(%d), tag(%s)\n" % (log_ts.get(), self.sysname, tgid, prio, tag))
         except (IOError) as ex:
@@ -2002,6 +2004,16 @@ class p25_system(object):
 
         # Band Plan (from iden_up)
         d['band_plan'] = self.freq_table
+
+        # Talkgroup tags: all known TGs with tag and configured flag for the GUI
+        tgid_tags = {}
+        with self.talkgroups_mutex:
+            for tgid, tg in self.talkgroups.items():
+                tgid_tags[str(tgid)] = {
+                    'tag':        tg.get('tag', ''),
+                    'configured': tg.get('configured', False),
+                }
+        d['tgid_tags'] = tgid_tags
 
         return json.dumps(d)
 
