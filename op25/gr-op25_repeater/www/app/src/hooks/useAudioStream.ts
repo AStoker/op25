@@ -12,22 +12,10 @@ const WAV_HEADER_BYTES = 44;
 
 /**
  * How many seconds to schedule ahead of the playhead.
- * 60 ms is enough headroom to prevent gaps; keeping it small reduces
- * the perceived lag between the radio transmission and browser audio.
+ * 60 ms is enough headroom to prevent gaps with 20 ms chunks while
+ * keeping latency low enough that the UI feels in sync with the radio.
  */
 const SCHEDULE_LOOKAHEAD = 0.06;
-
-/**
- * Hard cap: never schedule audio more than this many seconds ahead of now.
- *
- * Without a cap, TCP can deliver several silence chunks in one burst, each
- * advancing scheduleUntil by CHUNK_DURATION.  Real audio then gets queued
- * far in the future and "disappears" from the user's perspective.
- * Clamping scheduleUntil every iteration keeps the schedule anchored to
- * the current playhead, so audio is always heard within ~200 ms of the
- * decoder producing it.
- */
-const MAX_SCHEDULE_AHEAD = 0.2;
 
 export type AudioStreamStatus = 'idle' | 'loading' | 'playing' | 'stopped' | 'error';
 
@@ -137,12 +125,9 @@ export function useAudioStream(url: string): UseAudioStreamResult {
           src.buffer = audioBuffer;
           src.connect(ctx.destination);
 
-          // Clamp scheduleUntil before each chunk to prevent drift accumulation.
-          // When TCP delivers several silence chunks at once, the inner while loop
-          // schedules them all immediately; without this clamp, scheduleUntil races
-          // ahead of currentTime and real audio ends up queued seconds in the future.
-          scheduleUntil = Math.min(scheduleUntil, ctx.currentTime + MAX_SCHEDULE_AHEAD);
-          const startAt = Math.max(ctx.currentTime + 0.005, scheduleUntil);
+          // Schedule gaplessly; keep a small margin ahead of now so the
+          // first chunk in a burst has time to decode before its start.
+          const startAt = Math.max(ctx.currentTime + 0.02, scheduleUntil);
           src.start(startAt);
           scheduleUntil = startAt + audioBuffer.duration;
         }
