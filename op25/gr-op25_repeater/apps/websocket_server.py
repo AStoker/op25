@@ -102,9 +102,9 @@ def _initial_system_state() -> dict[str, Any]:
 _SAMPLE_RATE   = 8_000   # Hz
 _SAMPLE_WIDTH  = 2       # bytes  (16-bit signed PCM)
 _CHANNELS      = 1       # mono
-_CHUNK_MS      = 100     # chunk duration — 100 ms balances latency vs. overhead
-_CHUNK_SAMPLES = _SAMPLE_RATE * _CHUNK_MS // 1_000   # 800 samples
-_CHUNK_BYTES   = _CHUNK_SAMPLES * _SAMPLE_WIDTH       # 1 600 bytes
+_CHUNK_MS      = 20      # chunk duration — 20 ms matches one P25 voice frame (160 samples)
+_CHUNK_SAMPLES = _SAMPLE_RATE * _CHUNK_MS // 1_000   # 160 samples
+_CHUNK_BYTES   = _CHUNK_SAMPLES * _SAMPLE_WIDTH       # 320 bytes
 
 
 def _wav_stream_header() -> bytes:

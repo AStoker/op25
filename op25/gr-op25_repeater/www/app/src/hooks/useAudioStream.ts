@@ -1,19 +1,33 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * These constants MUST match websocket_server.py:
  *   _SAMPLE_RATE, _CHUNK_SAMPLES, _SAMPLE_WIDTH
  */
-const SERVER_SAMPLE_RATE = 8_000;
-const SERVER_CHUNK_SAMPLES = 800;
-const SERVER_CHUNK_BYTES = SERVER_CHUNK_SAMPLES * 2;  // 16-bit LE PCM = 2 bytes/sample
+const SERVER_SAMPLE_RATE   = 8_000;
+const SERVER_CHUNK_MS      = 20; // chunk duration — 20 ms matches one P25 voice frame (160 samples)
+const SERVER_CHUNK_SAMPLES = SERVER_SAMPLE_RATE * SERVER_CHUNK_MS / 1_000;  // 160 samples
+const SERVER_CHUNK_BYTES   = SERVER_CHUNK_SAMPLES * 2;  // 16-bit LE PCM = 2 bytes/sample
 const WAV_HEADER_BYTES = 44;
 
 /**
  * How many seconds to schedule ahead of the playhead.
- * 150 ms prevents gaps while keeping latency low enough for radio use.
+ * 60 ms is enough headroom to prevent gaps; keeping it small reduces
+ * the perceived lag between the radio transmission and browser audio.
  */
-const SCHEDULE_LOOKAHEAD = 0.15;
+const SCHEDULE_LOOKAHEAD = 0.06;
+
+/**
+ * Hard cap: never schedule audio more than this many seconds ahead of now.
+ *
+ * Without a cap, TCP can deliver several silence chunks in one burst, each
+ * advancing scheduleUntil by CHUNK_DURATION.  Real audio then gets queued
+ * far in the future and "disappears" from the user's perspective.
+ * Clamping scheduleUntil every iteration keeps the schedule anchored to
+ * the current playhead, so audio is always heard within ~200 ms of the
+ * decoder producing it.
+ */
+const MAX_SCHEDULE_AHEAD = 0.2;
 
 export type AudioStreamStatus = 'idle' | 'loading' | 'playing' | 'stopped' | 'error';
 
@@ -46,7 +60,7 @@ export function useAudioStream(url: string): UseAudioStreamResult {
   const [audioStatus, setAudioStatus] = useState<AudioStreamStatus>('idle');
 
   const ctxRef = useRef<AudioContext | null>(null);
-  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+    const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const activeRef = useRef(false);
 
   const stop = useCallback(() => {
@@ -123,8 +137,12 @@ export function useAudioStream(url: string): UseAudioStreamResult {
           src.buffer = audioBuffer;
           src.connect(ctx.destination);
 
-          // Schedule gaplessly; always keep at least a tiny margin ahead of now.
-          const startAt = Math.max(ctx.currentTime + 0.02, scheduleUntil);
+          // Clamp scheduleUntil before each chunk to prevent drift accumulation.
+          // When TCP delivers several silence chunks at once, the inner while loop
+          // schedules them all immediately; without this clamp, scheduleUntil races
+          // ahead of currentTime and real audio ends up queued seconds in the future.
+          scheduleUntil = Math.min(scheduleUntil, ctx.currentTime + MAX_SCHEDULE_AHEAD);
+          const startAt = Math.max(ctx.currentTime + 0.005, scheduleUntil);
           src.start(startAt);
           scheduleUntil = startAt + audioBuffer.duration;
         }
