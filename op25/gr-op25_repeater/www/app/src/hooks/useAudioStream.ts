@@ -4,17 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * These constants MUST match websocket_server.py:
  *   _SAMPLE_RATE, _CHUNK_SAMPLES, _SAMPLE_WIDTH
  */
-const SERVER_SAMPLE_RATE   = 8_000;
-const SERVER_CHUNK_MS      = 20; // chunk duration — 20 ms matches one P25 voice frame (160 samples)
+const SERVER_SAMPLE_RATE = 8_000;
+const SERVER_CHUNK_MS = 20;  // chunk duration — 20 ms matches one P25 voice frame (160 samples)
 const SERVER_CHUNK_SAMPLES = SERVER_SAMPLE_RATE * SERVER_CHUNK_MS / 1_000;  // 160 samples
-const SERVER_CHUNK_BYTES   = SERVER_CHUNK_SAMPLES * 2;  // 16-bit LE PCM = 2 bytes/sample
+const SERVER_CHUNK_BYTES = SERVER_CHUNK_SAMPLES * 2;  // 16-bit LE PCM = 2 bytes/sample
 const WAV_HEADER_BYTES = 44;
-
-/**
- * How many seconds to schedule ahead of the playhead.
- * 60 ms is enough headroom to prevent gaps with 20 ms chunks while
- * keeping latency low enough that the UI feels in sync with the radio.
- */
 const SCHEDULE_LOOKAHEAD = 0.06;
 
 export type AudioStreamStatus = 'idle' | 'loading' | 'playing' | 'stopped' | 'error';
@@ -48,7 +42,7 @@ export function useAudioStream(url: string): UseAudioStreamResult {
   const [audioStatus, setAudioStatus] = useState<AudioStreamStatus>('idle');
 
   const ctxRef = useRef<AudioContext | null>(null);
-    const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const activeRef = useRef(false);
 
   const stop = useCallback(() => {
@@ -72,13 +66,20 @@ export function useAudioStream(url: string): UseAudioStreamResult {
     setAudioStatus('loading');
 
     try {
+      // Use custom sampleRate to allow the browser to use native hardware clocks (44.1k / 48k)
       // AudioContext must be created (or resumed) inside a user-gesture handler.
       // Since start() is always called from a button click this is always safe.
-      const ctx = new AudioContext({ sampleRate: SERVER_SAMPLE_RATE });
+      const ctx = new AudioContext();
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
       ctxRef.current = ctx;
+
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = 6.0; // Keep a solid boost for quiet radio decodes
+      gainNode.connect(ctx.destination);
+
+      console.log(`AudioContext initialized successfully at native rate: ${ctx.sampleRate}Hz`);
 
       const response = await fetch(url);
       if (!response.ok || !response.body) {
@@ -97,7 +98,12 @@ export function useAudioStream(url: string): UseAudioStreamResult {
 
       while (activeRef.current) {
         const { done, value } = await reader.read();
-        if (done || !activeRef.current) break;
+
+        // DIAGNOSTIC LOG: Check if the server explicitly disconnected us
+        if (done || !activeRef.current) {
+          console.warn(`Stream read terminated loop. Server closed connection (done=${done}), hook active=${activeRef.current}`);
+          break;
+        }
 
         pending = concat(pending, value);
 
@@ -108,36 +114,53 @@ export function useAudioStream(url: string): UseAudioStreamResult {
           headerDone = true;
         }
 
+
         // Decode and schedule every complete PCM chunk in the buffer.
         while (pending.length >= SERVER_CHUNK_BYTES) {
           const chunk = pending.slice(0, SERVER_CHUNK_BYTES);
           pending = pending.slice(SERVER_CHUNK_BYTES);
 
-          // Convert Int16 LE → Float32 normalised to [-1, 1]
+          // We keep this buffer natively at 8000Hz; the context upsamples it automatically
           const audioBuffer = ctx.createBuffer(1, SERVER_CHUNK_SAMPLES, SERVER_SAMPLE_RATE);
           const channel = audioBuffer.getChannelData(0);
-          const dv = new DataView(chunk.buffer, chunk.byteOffset, SERVER_CHUNK_BYTES);
+          const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+
           for (let i = 0; i < SERVER_CHUNK_SAMPLES; i++) {
-            channel[i] = dv.getInt16(i * 2, true) / 32_768;
+            channel[i] = view.getInt16(i * 2, true) / 32_768.0;
           }
 
           const src = ctx.createBufferSource();
           src.buffer = audioBuffer;
-          src.connect(ctx.destination);
+          src.connect(gainNode);
+
+          const now = ctx.currentTime;
 
           // Schedule gaplessly; keep a small margin ahead of now so the
           // first chunk in a burst has time to decode before its start.
-          const startAt = Math.max(ctx.currentTime + 0.02, scheduleUntil);
+          if (scheduleUntil > now + 0.15) {
+            scheduleUntil = now + 0.05;
+          }
+
+          const startAt = Math.max(now + 0.02, scheduleUntil);
           src.start(startAt);
           scheduleUntil = startAt + audioBuffer.duration;
         }
       }
-    } catch {
+    } catch (error) {
+      console.error('Audio stream runtime crash: ', error);
       if (activeRef.current) {
         setAudioStatus('error');
       }
     }
   }, [url]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      activeRef.current = false;
+      ctxRef.current?.close().catch(() => { });
+    };
+  }, []);
 
   return { start, stop, audioStatus };
 }
