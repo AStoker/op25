@@ -68,6 +68,10 @@ export default function PlayerCard() {
     ? (channel.srctag ? `${channel.srctag} (${channel.srcaddr})` : String(channel.srcaddr))
     : '—';
 
+  // Look up a tag name for a TGID from the trunked-system's tag table.
+  const tgTag = (tgid: number): string | null =>
+    system?.tgid_tags?.[String(tgid)]?.tag ?? null;
+
   type ChipDef = { key: string; label: string; tooltip: string; color: 'default' | 'success' | 'error' | 'warning'; icon: React.ReactElement };
   const chips: ChipDef[] = [];
 
@@ -91,10 +95,13 @@ export default function PlayerCard() {
       });
     }
     if (channel.hold_tgid) {
+      const holdName = tgTag(channel.hold_tgid);
       chips.push({
         key:     'hold',
-        label:   `Held ${channel.hold_tgid}`,
-        tooltip: 'A talk-group hold is active on this channel',
+        label:   holdName ? `Held: ${holdName}` : `Held ${channel.hold_tgid}`,
+        tooltip: holdName
+          ? `Talk-group hold active: ${holdName} (TGID ${channel.hold_tgid})`
+          : `Talk-group hold active: TGID ${channel.hold_tgid}`,
         color:   'warning',
         icon:    <LockIcon sx={{ fontSize: '0.9rem' }} />,
       });
@@ -201,11 +208,11 @@ export default function PlayerCard() {
               </span>
             </Tooltip>
           ) : null}
-          {audioStatus === 'error' && (
+            {audioStatus === 'error' && (
             <Typography variant="caption" color="error.main" sx={{ ml: 'auto' }}>
-              stream error
-            </Typography>
-          )}
+                stream error
+              </Typography>
+            )}
         </Box>
       </Box>
     </CardShell>
