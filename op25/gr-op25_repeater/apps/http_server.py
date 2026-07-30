@@ -1,4 +1,5 @@
 # Copyright 2017, 2018 Max H. Parke KA1RBI
+# Copyright 2026  Graham J. Norbury
 # 
 # This file is part of OP25
 # 
@@ -25,6 +26,8 @@ import json
 import socket
 import traceback
 import threading
+import uuid
+import collections
 
 from gnuradio import gr
 from waitress.server import create_server
@@ -35,6 +38,10 @@ my_input_q = None
 my_output_q = None
 my_recv_q = None
 my_port = None
+my_uuids = []
+q_mutex = threading.Lock()
+u_mutex = threading.Lock()
+
 
 # ── Optional WebSocket control server ─────────────────────────────────────────
 try:
@@ -53,10 +60,10 @@ async def _ws_handler(websocket, *args):
     """Handle a single WebSocket client connection.
 
     For each batch of commands received, this mirrors what post_req() does over
-    HTTP: put commands on my_output_q, wait briefly for processing, then drain
-    my_recv_q and send the accumulated responses back to the client.
-    This guarantees the client always gets a reply, regardless of whether
-    _ws_push() works from the queue_watcher thread.
+    HTTP: tag the batch with its own uuid, put the commands on my_output_q, then
+    wait for the reply carrying that same uuid and send it to this client.
+    Matching on uuid keeps concurrent clients from consuming each other's
+    replies. Unsolicited updates are delivered separately by _ws_push().
     """
     with _ws_clients_lock:
         _ws_clients.add(websocket)
@@ -64,31 +71,48 @@ async def _ws_handler(websocket, *args):
         async for message in websocket:
             if not isinstance(message, str):
                 continue
+            ws_uuid = str(uuid.uuid4())
+            with u_mutex:
+                my_uuids.append(ws_uuid)
+            valid_req = False
             try:
                 data = json.loads(message)
                 for d in data:
+                    d['uuid'] = ws_uuid
                     msg = gr.message().make_from_string(
-                        str(d['command']), -2, float(d['arg1']), float(d['arg2'])
+                        json.dumps(d), -2, float(d['arg1']), float(d['arg2'])
                     )
                     if not my_output_q.full_p():
                         my_output_q.insert_tail(msg)
+                valid_req = True
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 sys.stderr.write('ws_handler: error processing message: %s\n' % message)
-                continue
 
-            # Mirror post_req: wait for the backend to process then send responses.
-            await asyncio.sleep(0.2)
-            resp_msgs = []
-            while not my_recv_q.empty_p():
-                resp = my_recv_q.delete_head_nowait()
-                if resp is not None and resp.type() == -4:
-                    try:
-                        resp_msgs.append(json.loads(resp.to_string()))
-                    except Exception:
-                        pass
-            if resp_msgs:
+            # Mirror post_req: wait for the reply bearing our uuid, or time out.
+            resp_msg = []
+            valid_resp = False
+            t_expiry = time.time() + 0.2
+            while valid_req and not valid_resp and (time.time() < t_expiry):
+                if len(my_recv_q) > 0:
+                    with u_mutex:
+                        with q_mutex:
+                            m_uuid = my_recv_q[0][0]        # inspect uuid of first message
+                            if m_uuid == ws_uuid:           # message for me can be handled
+                                (m_uuid, resp_msg) = my_recv_q.popleft()
+                                valid_resp = True
+                            elif m_uuid not in my_uuids:
+                                my_recv_q.popleft()         # orphaned message can be discarded
+                            else:
+                                pass                        # message for someone else
+                await asyncio.sleep(0.005)                  # yield to the event loop
+            with u_mutex:
                 try:
-                    await websocket.send(json.dumps(resp_msgs))
+                    my_uuids.remove(ws_uuid)
+                except (ValueError):
+                    pass
+            if resp_msg:
+                try:
+                    await websocket.send(json.dumps(resp_msg))
                 except Exception:
                     break
     except Exception:
@@ -98,15 +122,15 @@ async def _ws_handler(websocket, *args):
             _ws_clients.discard(websocket)
 
 
-def _ws_push(msg_str):
-    """Push a JSON string to all connected WS clients (thread-safe, non-blocking)."""
+def _ws_push(msg_list):
+    """Push a list of JSON dicts to all connected WS clients (thread-safe, non-blocking)."""
     if not _HAS_WEBSOCKETS or _ws_loop is None:
         return
     with _ws_clients_lock:
         clients = set(_ws_clients)
     if not clients:
         return
-    payload = '[' + msg_str + ']'
+    payload = json.dumps(msg_list)
 
     async def _broadcast():
         disconnected = set()
@@ -187,31 +211,57 @@ def static_file(environ, start_response):
     return status, content_type, output
 
 def post_req(environ, start_response, postdata):
-    global my_input_q, my_output_q, my_recv_q, my_port
+    global my_input_q, my_output_q, my_recv_q, my_port, q_mutex, u_mutex
     valid_req = False
+    num_req = 0
+    post_uuid = str(uuid.uuid4())
+    with u_mutex:
+        my_uuids.append(post_uuid)
     try:
         data = json.loads(postdata)
         for d in data:
+            num_req += 1
+            d['uuid'] = post_uuid
             arg1 = float(d['arg1'])
             arg2 = float(d['arg2'])
-            msg = gr.message().make_from_string(str(d['command']), -2, arg1, arg2)
+            msg = gr.message().make_from_string(json.dumps(d), -2, arg1, arg2)
+            #sys.stderr.write("post_req: req=%s\n" % json.dumps(d))
             if not my_output_q.full_p():
                 my_output_q.insert_tail(msg)
         valid_req = True
-        time.sleep(0.2)
     except (json.JSONDecodeError, KeyError, TypeError):
         sys.stderr.write('post_req: error processing input: %s\n%s\n' % (postdata, traceback.format_exc()))
 
+    # Each POST_REQ should result in one Response
     resp_msg = []
-    while not my_recv_q.empty_p():
-        msg = my_recv_q.delete_head()
-        if msg.type() == -4:
-            resp_msg.append(json.loads(msg.to_string()))
+    valid_resp = False
+    t_expiry = time.time() + 0.2
+    while valid_req and not valid_resp and (time.time() < t_expiry):  # wait for a message or timeout
+        if (len(my_recv_q) > 0):
+            with u_mutex:
+                with q_mutex:
+                    m_uuid = my_recv_q[0][0]            # inspect uuid of first message
+                    if m_uuid == post_uuid:             # message for me can be handled
+                        (m_uuid, msg) = my_recv_q.popleft()
+                        resp_msg = msg
+                        valid_resp = True
+                    elif m_uuid not in my_uuids:
+                        my_recv_q.popleft()             # orphaned message can be discarded
+                        sys.stderr.write("post_req: discard m_uuid=%s [%s]\n" % (m_uuid, msg))
+                    else:
+                        pass                            # message for someone else
+        time.sleep(0)                                   # yield to other threads
     if not valid_req:
         resp_msg = []
+    with u_mutex:
+        try:
+            my_uuids.remove(post_uuid)
+        except (ValueError):
+            pass    
     status = '200 OK'
     content_type = 'application/json'
     output = json.dumps(resp_msg)
+    #sys.stderr.write("post_req: resp=%s\n" % output)
     return status, content_type, output
 
 CORS_HEADERS = [
@@ -257,18 +307,23 @@ def application(environ, start_response):
     return result
 
 def process_qmsg(msg):
-    if my_recv_q.full_p():
-        my_recv_q.delete_head_nowait()   # ignores result
-    if my_recv_q.full_p():
-        return
-    if not my_recv_q.full_p():
-        my_recv_q.insert_tail(msg)
-    # Push to any connected WebSocket clients immediately
-    if msg.type() == -4:
-        try:
-            _ws_push(msg.to_string())
-        except Exception:
-            pass
+    if msg.type() == -4:                # we are only interested in JSON messages
+      try:
+        m_uuid = "no-uuid"
+        m = json.loads(msg.to_string()) # incoming json formatted message is a list of dictionaries
+        if len(m) == 0:
+            return
+        if "uuid" in m[0] and m[0]['uuid'] is not None: # first dict in list will contain uuid of originator
+            m_uuid = m[0]['uuid']
+            m[0].pop('uuid', None)
+        if m_uuid == "no-uuid":         # unsolicited update, not a reply to any client request
+            try:
+                _ws_push(m)             # replies are delivered by uuid in _ws_handler instead
+            except Exception:
+                pass
+        my_recv_q.append((m_uuid, m))   # collections.deque automatically limits queue size to maxlen items
+      except (KeyError, ValueError):
+        sys.stderr.write("process_qmsg: improperly formatted message=%s\n" % json.dumps(m))
 
 class http_server(object):
     def __init__(self, input_q, output_q, endpoint, **kwds):
@@ -280,7 +335,7 @@ class http_server(object):
         my_output_q = output_q
         my_port = int(port)
 
-        my_recv_q = gr.msg_queue(10)
+        my_recv_q = collections.deque(maxlen = 10)
         self.q_watcher = queue_watcher(my_input_q, process_qmsg)
 
         try:

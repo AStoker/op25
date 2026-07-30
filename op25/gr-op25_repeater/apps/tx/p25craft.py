@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 #
 # p25craft.py - utility for crafting APCO P25 packets
 #
@@ -52,7 +52,8 @@ quiet = False
 outfile = ""
 flip = 0x000
 quiet = True
-outfile = open('p25.out', 'w')
+# default binary output file (write bytes under Python 3)
+outfile = open('p25.out', 'wb')
 
 
 #####################
@@ -61,6 +62,8 @@ outfile = open('p25.out', 'w')
 
 def text_out(text):
     if not quiet:
+        sys.stdout.write(text)
+    else:
         sys.stdout.write(text)
 
 # Print a list of dibits.
@@ -99,7 +102,8 @@ def print_spec(data):
             byte = 0
             for j in range(4):
                 byte |= data[i+j] << (6 - j*2)
-            outfile.write(struct.pack('B1', (byte ^ flip & 0xff)))
+            # pack a single unsigned byte and write bytes to binary outfile
+            outfile.write(struct.pack('B', (byte ^ (flip & 0xff))))
 
 # Split an integer into list of bytes.
 def split_bytes(data, len):
@@ -1091,7 +1095,7 @@ def construct_tsdu(nac, ss, blocks, mfid, opcode, arg):
 
     duid  = 0x7
 
-    numss = (56 + (blocks * 98) + 34) / 35
+    numss = (56 + (blocks * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID  = %01x\n" % duid)
@@ -1137,7 +1141,7 @@ def construct_tsdu3(nac, ss, blocks, mfid, opcodes, args):
 
     duid  = 0x7
 
-    numss = (56 + (blocks * 98) + 34) / 35
+    numss = (56 + (blocks * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID  = %01x\n" % duid)
@@ -1181,7 +1185,7 @@ def construct_cpdu(nac, ss, data, length, an, io, sapid,
 
     # account for length of packet CRC appended to data
     length += 4
-    blocks = (length + 15) / 16
+    blocks = (length + 15) // 16
     assert blocks <= 127
 
     # account for padding to end of next full block
@@ -1197,7 +1201,7 @@ def construct_cpdu(nac, ss, data, length, an, io, sapid,
     data <<= (4 * 8)
     data |= packet_crc
 
-    numss = (56 + ((blocks + 1) * 98) + 34) / 35
+    numss = (56 + ((blocks + 1) * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID = %01x\n" % duid)
@@ -1271,7 +1275,7 @@ def construct_rpdu(nac, ss, data, length, io, rclass, rtype,
     if (length > 0):
         # account for length of packet CRC appended to data
         length += 4
-        blocks = (length + 11) / 12
+        blocks = (length + 11) // 12
 
         packet_crc = crc_32(data, (length - 4) * 8)
         data <<= (4 * 8)
@@ -1279,7 +1283,7 @@ def construct_rpdu(nac, ss, data, length, io, rclass, rtype,
     else:
         blocks = 0
 
-    numss = (56 + ((blocks + 1) * 98) + 34) / 35
+    numss = (56 + ((blocks + 1) * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID = %01x\n" % duid)
@@ -1331,7 +1335,7 @@ def construct_updu(nac, ss, data, length, io, sapid, mfid, llid, dho):
 
     # account for length of packet CRC appended to data
     length += 4
-    blocks = (length + 11) / 12
+    blocks = (length + 11) // 12
     assert blocks <= 127
 
     # account for padding to end of next full block
@@ -1345,7 +1349,7 @@ def construct_updu(nac, ss, data, length, io, sapid, mfid, llid, dho):
     data <<= (4 * 8)
     data |= packet_crc
 
-    numss = (56 + ((blocks + 1) * 98) + 34) / 35
+    numss = (56 + ((blocks + 1) * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID = %01x\n" % duid)
@@ -1397,7 +1401,7 @@ def construct_ambt(nac, ss, data, length, io, sapid, mfid, llid, opcode, dbtm):
 
     # account for length of packet CRC appended to data
     length += 4
-    blocks = (length + 11) / 12
+    blocks = (length + 11) // 12
     assert blocks <= 3
 
     # make sure the data fill the blocks
@@ -1408,7 +1412,7 @@ def construct_ambt(nac, ss, data, length, io, sapid, mfid, llid, opcode, dbtm):
     data <<= (4 * 8)
     data |= packet_crc
 
-    numss = (56 + ((blocks + 1) * 98) + 34) / 35
+    numss = (56 + ((blocks + 1) * 98) + 34) // 35
     ssyms = (ss,) * numss
 
     text_out("\tDUID = %01x\n" % duid)
@@ -1437,6 +1441,61 @@ def construct_ambt(nac, ss, data, length, io, sapid, mfid, llid, opcode, dbtm):
     print_spec(insert_status(symbols, ssyms))
 
 
+def construct_grp_aff_req(nac, ss, sysid, tgid, src):
+	text_out("Group affiliation request")
+	
+	opcode = 0b101000
+	args = sysid << 40
+	args |= tgid << 24
+	args |= src
+	construct_tsdu(nac, ss, 1, 0x00, opcode, args)
+
+def construct_u_reg_req(nac, ss, wacnid, sysid, src):
+	text_out("Unit registration request")
+	
+	opcode = 0x2C
+	args = wacnid << 36
+	args |= sysid << 24
+	args |= src
+	construct_tsdu(nac, ss, 1, 0x00, opcode, args)
+
+def construct_u_dereg_req(nac, ss, wacnid, sysid, src):
+	text_out("Unit deregistration request")
+	
+	opcode = 0x2B
+	args = wacnid << 36
+	args |= sysid << 24
+	args |= src
+	construct_tsdu(nac, ss, 1, 0x00, opcode, args)
+	
+def construct_p_parm_req(nac, ss, wacnid, sysid, src):
+	text_out("Protection parameter request")
+	
+	opcode = 0x30
+	args = wacnid << 36
+	args |= sysid << 24
+	args |= src
+	construct_tsdu(nac, ss, 1, 0x00, opcode, args)
+	
+
+
+def construct_grp_v_req(nac, ss, tgid, src):
+	text_out("Group voice service request")
+	
+	opcode = 0x00
+	emergency = 0 # non-emergency
+	protected = 1 # encrypted
+	duplex = 0 # half-duplex
+	mode = 0 # circuit mode
+	prio = 0b100 # default
+	svcopts = construct_svcopt(emergency, protected, duplex, mode, 0, prio)
+	
+	#svc_opts = 0b01000100
+	args = svcopts << 56
+	args |= tgid << 24
+	args |= src
+	construct_tsdu(nac, ss, 1, 0x00, opcode, args)
+
 #############################
 # construct special packets #
 #############################
@@ -1455,8 +1514,8 @@ def construct_rad_mon_cmd(nac, ss, src, dst):
     text_out("Special Packet: Radio Unit Monitor Command\n")
 
     opcode = 0x1d # Radio Unit Monitor Command
-    txtime = 0x00 # transmit time in seconds
-    sm = 0        # silent mode
+    txtime = 15 # transmit time in seconds
+    sm = 1        # silent mode
     txmult = 0x3  # multiply radio's configured tx duration
     args = txtime  << 56
     args |= sm     << 55
@@ -1502,9 +1561,9 @@ def construct_rad_mon_req(nac, ss, src, dst):
     text_out("Special Packet: Radio Unit Monitor Request\n")
 
     opcode = 0x1d # Radio Unit Monitor Request
-    txtime = 0x00 # transmit time in seconds
-    sm = 0        # silent mode
-    txmult = 0x3  # multiply radio's configured tx duration
+    txtime = 0x04 # transmit time in seconds
+    sm = 1       # silent mode
+    txmult = 0x1  # multiply radio's configured tx duration
     args = txtime  << 56
     args |= sm     << 55
     args |= txmult << 48
@@ -1697,14 +1756,14 @@ def make_fakecc_tsdu(params):
         int(12.5 / 0.125),
         (25 * 4),
         int(12.5 / 0.125),
-        902012500/5)
+        902012500//5)
     opcodes.append(op)
     args.append(arg)
     op, arg = format_network_status_broadcast(
         0,
         params['wacn'],
         params['system_id'],
-        (params['cc_freq'] - 902012500) / 12500,
+        (params['cc_freq'] - 902012500) // 12500,
         0x70)
     opcodes.append(op)
     args.append(arg)
@@ -1713,7 +1772,7 @@ def make_fakecc_tsdu(params):
         params['system_id'],
         params['subsystem_id'],
         params['site_id'],
-        (params['cc_freq'] - 902012500) / 12500,
+        (params['cc_freq'] - 902012500) // 12500,
         0x70)
     opcodes.append(op)
     args.append(arg)
@@ -1723,7 +1782,7 @@ def make_fakecc_tsdu(params):
     mfid = 0
     construct_tsdu3(nac, ss, blocks, mfid, opcodes, args)
     ga = 666
-    ch = (params['vc_freq'] - 902012500) / 12500
+    ch = (params['vc_freq'] - 902012500) // 12500
     opcode, args = format_group_voice_channel_grant_update(ch, ga, ch, ga)
     construct_tsdu (nac, ss, blocks, mfid, opcode, args)
 
@@ -1734,6 +1793,16 @@ def make_fakecc_tsdu(params):
 if __name__ == "__main__":
 
     import argparse
+
+    def auto_int(x):
+        """Parse an integer, honoring 0x/0o/0b prefixes.
+
+        argparse's type=int is base-10 only, whereas the optparse type="int"
+        this script used to use accepted prefixed literals. Every numeric
+        option below documents its default in hex, so keep accepting them.
+        """
+        return int(x, 0)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--hdu", action="store_true", dest="hdu",
         default=False, help="Construct Header Data Unit")
@@ -1761,62 +1830,88 @@ if __name__ == "__main__":
     parser.add_argument("--uninhibit", action="store_true", dest="uninhibit",
         default=False, help="Special packet: Uninhibit")
     parser.add_argument("--rum", action="store_true", dest="rum",
-        default=False, help="Special packet: Radio Unit Monitor")
-    parser.add_argument("--superframes", type=int, default=0,
+        default=False, help="Special packet: Radio Unit Monitor Command")
+    parser.add_argument("--rumr", action="store_true", dest="rumr",
+        default=False, help="Special packet: Radio Unit Monitor Request")
+    parser.add_argument("--aff", action="store_true", dest="aff",
+        default=False, help="Group Affiliation Request")
+    parser.add_argument("--reg", action="store_true", dest="reg",
+        default=False, help="Unit registration request")
+    parser.add_argument("--dereg", action="store_true", dest="dereg",
+        default=False, help="Unit deregistration request")
+    parser.add_argument("--alrt", action="store_true", dest="alrt",
+        default=False, help="Call alert request")
+    parser.add_argument("--emrg", action="store_true", dest="emrg",
+        default=False, help="Emergency alarm request")
+    parser.add_argument("--pparm", action="store_true", dest="pparm",
+        default=False, help="Protection parameter request")
+    parser.add_argument("--check", action="store_true", dest="check",
+        default=False, help="Radio check")
+    parser.add_argument("--inhibitrsp", action="store_true", dest="inhibitrsp",
+        default=False, help="Inhibit response")
+    parser.add_argument("--grp_v_req", action="store_true", dest="grp_v_req",
+        default=False, help="Group voice service request")
+    parser.add_argument("--superframes", type=auto_int, default=0,
         help="Number of superframes to construct (Default: 0)")
     parser.add_argument("--sqtail", type=str, default="0:0:0",
         help="Squelch tail (Default: 0:0:0)")
-    parser.add_argument("--nac", type=int, default=0x293,
+    parser.add_argument("--nac", type=auto_int, default=0x293,
         help="Network Access Code (Default: 0x293)")
-    parser.add_argument("--ss", type=int, default=0,
+    parser.add_argument("--ss", type=auto_int, default=0,
         help="Status Symbol (one value to be repeated) (Default: 0)")
-    parser.add_argument("--mi", type=int, default=0,
+    parser.add_argument("--mi", type=auto_int, default=0,
         help="Message Indicator (Default: 0x000000000000000000)")
-    parser.add_argument("--mfid", type=int, default=0,
+    parser.add_argument("--mfid", type=auto_int, default=0,
         help="Manufacturer ID (Default: 0x00)")
-    parser.add_argument("--algid", type=int, default=0x80,
+    parser.add_argument("--algid", type=auto_int, default=0x80,
         help="Algorithm ID (Default: 0x80)")
-    parser.add_argument("--kid", type=int, default=0,
+    parser.add_argument("--kid", type=auto_int, default=0,
         help="Key ID (Default: 0x0000)")
-    parser.add_argument("--tgid", type=int, default=1,
+    parser.add_argument("--tgid", type=auto_int, default=1,
         help="Talk Group ID (Default: 0x0001)")
-    parser.add_argument("--lco", type=int, default=0,
+    parser.add_argument("--atg", type=auto_int, default=1,
+        help="Announcement Talk Group ID (Default: 0x0001)")
+    parser.add_argument("--lco", type=auto_int, default=0,
         help="Link Control Opcode (Default: 0x00)")
-    parser.add_argument("--src", type=int, default=1,
+    parser.add_argument("--src", type=auto_int, default=1,
         help="Source ID (Default: 0x000001)")
-    parser.add_argument("--dst", type=int, default=1,
+    parser.add_argument("--sysid", type=auto_int, default=1,
+        help="System ID (Default: 0x000001)")
+    parser.add_argument("--wacnid", type=auto_int, default=1,
+        help="WACN ID (Default: 0x000001)")
+    parser.add_argument("--dst", type=auto_int, default=1,
         help="Destination ID (Default: 0x000001)")
-    parser.add_argument("--lsd", type=int, default=0,
+    parser.add_argument("--lsd", type=auto_int, default=0,
         help="Entire Low Speed Data Word (Default: 0x00000000)")
-    parser.add_argument("--lsd1", type=int, default=None,
+    parser.add_argument("--lsd1", type=auto_int, default=None,
         help="Low Speed Data high word for LDU1 (Default: use --lsd)")
-    parser.add_argument("--lsd2", type=int, default=None,
+    parser.add_argument("--lsd2", type=auto_int, default=None,
         help="Low Speed Data low word for LDU2 (Default: use --lsd)")
-    parser.add_argument("--ntsbk", type=int, default=1,
+    parser.add_argument("--ntsbk", type=auto_int, default=1,
         help="Number of TSBKs per TSDU (Default: 1)")
-    parser.add_argument("--data", type=int, default=0,
+    parser.add_argument("--data", type=auto_int, default=0,
         help="Packet data (Default: 0x0000000000000000)")
-    parser.add_argument("--length", type=int, default=0,
+    parser.add_argument("--length", type=auto_int, default=0,
         help="Packet data length in bytes (Default: auto)")
-    parser.add_argument("--sapid", type=int, default=0,
+    parser.add_argument("--sapid", type=auto_int, default=0,
         help="SAP ID (Default: 0x00)")
-    parser.add_argument("--opcode", type=int, default=0,
+    parser.add_argument("--opcode", type=auto_int, default=0,
         help="Opcode (Default: 0x00)")
-    parser.add_argument("--dbtm", type=int, default=0,
+    parser.add_argument("--dbtm", type=auto_int, default=0,
         help="Defined By Trunking Message AMBT field (Default: 0x0000)")
-    parser.add_argument("--dho", type=int, default=0,
+    parser.add_argument("--dho", type=auto_int, default=0,
         help="Data Header Offset (Default: 0x00)")
-    parser.add_argument("--rclass", type=int, default=0,
+    parser.add_argument("--rclass", type=auto_int, default=0,
         help="Response Class (Default: 0x0)")
-    parser.add_argument("--rtype", type=int, default=0,
+    parser.add_argument("--rtype", type=auto_int, default=0,
         help="Response Type (Default: 0x0)")
-    parser.add_argument("--rstatus", type=int, default=0,
+    parser.add_argument("--rstatus", type=auto_int, default=0,
         help="Response Status (Default: 0x0)")
-    parser.add_argument("--ns", type=int, default=0,
+    parser.add_argument("--ns", type=auto_int, default=0,
         help="N(S) sequence number (Default: 0x0)")
-    parser.add_argument("--arg", type=int, default=0,
+    parser.add_argument("--arg", type=auto_int, default=0,
         help="Trunking Control Opcode Argument (Default: 0x0000000000000000)")
-    parser.add_argument("--svcopt", type=int, default=None,
+    parser.add_argument("--svcopt", type=auto_int, default=None,
         help="Service Options byte (Default: use --pri, --emerg, etc.)")
     parser.add_argument("-e", "--emerg", action="store_true", dest="emerg",
         default=False, help="Emergency Bit (Default: false)")
@@ -1828,7 +1923,7 @@ if __name__ == "__main__":
         default=False, help="Mode Bit (Default: false)")
     parser.add_argument("-r", "--reserved", action="store_true",
         dest="reserved", default=False, help="Reserved Bit (Default: false)")
-    parser.add_argument("--pri", type=int, default=0,
+    parser.add_argument("--pri", type=auto_int, default=0,
         help="Priority Level (Default: 0")
     parser.add_argument("-t", "--1011", action="store_true", dest="hz1011",
         default=False, help="1011 Hz test tone (Default: false)")
@@ -1847,6 +1942,7 @@ if __name__ == "__main__":
 
     options = parser.parse_args()
 
+    # validate options (handle None for optional ints)
     assert options.nac     <= 0xfff
     assert options.ss      <= 0b11
     assert options.mi      <= 0xffffffffffffffffff
@@ -1854,14 +1950,20 @@ if __name__ == "__main__":
     assert options.algid   <= 0xff
     assert options.kid     <= 0xffff
     assert options.tgid    <= 0xffff
+    assert options.atg     <= 0xffff
     assert options.lco     <= 0x3f
     assert options.src     <= 0xffffff
+    assert options.sysid   <= 0xfff
+    assert options.wacnid  <= 0xfffff
     assert options.dst     <= 0xffffff
     assert options.lsd     <= 0xffffffff
-    assert options.lsd1    <= 0xffff
-    assert options.lsd2    <= 0xffff
+    if options.lsd1 is not None:
+        assert options.lsd1    <= 0xffff
+    if options.lsd2 is not None:
+        assert options.lsd2    <= 0xffff
     assert options.pri     <= 0x7
-    assert options.svcopt  <= 0xff
+    if options.svcopt is not None:
+        assert options.svcopt  <= 0xff
     assert options.ntsbk   >= 1
     assert options.ntsbk   <= 3
     assert options.sapid   <= 0x3f
@@ -1879,10 +1981,11 @@ if __name__ == "__main__":
 
     if options.output_file:
         if options.output_file == '-':
-            outfile = sys.stdout
-            quiet = True
+            # write binary to stdout
+            outfile = sys.stdout.buffer
+            #quiet = True
         else:
-            outfile = open(options.output_file, 'w')
+            outfile = open(options.output_file, 'wb')
 
     # set up inversion of frequency deviations
     if options.flip:
@@ -1910,7 +2013,7 @@ if __name__ == "__main__":
     # Auto-detect the length in bytes of --data.  The --length option overrides
     # this, which is useful when you want leading zeros.
     if (options.data > 0) and (options.length == 0):
-        options.length = (options.data.bit_length() + 7) / 8
+        options.length = (options.data.bit_length() + 7) // 8
 
     # make sure we have IMBE data if we need it
     if options.ldu1 or options.ldu2 or options.superframes:
@@ -2002,6 +2105,36 @@ if __name__ == "__main__":
         elif options.rum:
             construct_rad_mon_cmd(options.nac, options.ss,
                     options.src, options.dst)
+        elif options.rumr:
+            construct_rad_mon_req(options.nac, options.ss,
+                    options.src, options.dst)
+        elif options.aff:
+            construct_grp_aff_req(options.nac, options.ss,
+            options.sysid, options.tgid, options.src)
+        elif options.reg:
+            construct_u_reg_req(options.nac, options.ss,
+            options.wacnid, options.sysid, options.src)
+        elif options.dereg:
+            construct_u_dereg_req(options.nac, options.ss,
+            options.wacnid, options.sysid, options.src)
+        elif options.alrt:
+            construct_call_alrt_req(options.nac, options.ss,
+            options.src, options.dst)
+        elif options.emrg:
+            construct_emrg_alrm_req(options.nac, options.ss,
+            options.src, options.tgid)
+        elif options.pparm:
+            construct_p_parm_req(options.nac, options.ss,
+            options.wacnid, options.sysid, options.src)
+        elif options.check:
+            construct_ext_fnct_rsp_check(options.nac, options.ss,
+            options.src, options.dst)
+        elif options.inhibitrsp:
+            construct_ext_fnct_rsp_inhibit(options.nac, options.ss,
+            options.src, options.dst)
+        elif options.grp_v_req:
+            construct_grp_v_req(options.nac, options.ss,
+            options.tgid, options.src)
         else:
             sys.stderr.write("error: must specify packet type or number of superframes (try -h or --help)\n")
 

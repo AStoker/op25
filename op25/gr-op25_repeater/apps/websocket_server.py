@@ -795,6 +795,7 @@ class ws_terminal(threading.Thread):
             data: dict[str, Any] = json.loads(msg.to_string())
         except Exception:
             return
+        data.pop('uuid', None)  # internal request-correlation tag; not part of the client protocol
         json_type = data.get('json_type', '')
         ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
         _broadcast_from_thread(ws_type, data)
