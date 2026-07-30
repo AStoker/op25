@@ -771,7 +771,12 @@ class ws_terminal(threading.Thread):
             if not self.input_q.empty_p():
                 msg = self.input_q.delete_head_nowait()
                 if msg is not None:
-                    self._dispatch(msg)
+                    # Never let one malformed message kill the bridge — the
+                    # heartbeat above is the only thing driving decoder updates.
+                    try:
+                        self._dispatch(msg)
+                    except Exception:
+                        sys.stderr.write('ws_terminal: dispatch error:\n%s\n' % traceback.format_exc())
             else:
                 time.sleep(0.01)
 
@@ -788,17 +793,28 @@ class ws_terminal(threading.Thread):
             self.output_q.insert_tail(msg)
 
     def _dispatch(self, msg: Any) -> None:
-        """Broadcast a decoder message to all WebSocket clients."""
+        """Broadcast decoder message(s) to all WebSocket clients.
+
+        multi_rx.py enqueues a JSON *list* of dicts — a single 'update'
+        command yields trunk_update, channel_update, call_log and rx_update
+        entries in one message — so normalize to a list and route each entry
+        on its own json_type.
+        """
         if msg.type() != -4:
             return
         try:
-            data: dict[str, Any] = json.loads(msg.to_string())
+            data: Any = json.loads(msg.to_string())
         except Exception:
             return
-        data.pop('uuid', None)  # internal request-correlation tag; not part of the client protocol
-        json_type = data.get('json_type', '')
-        ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
-        _broadcast_from_thread(ws_type, data)
+        for entry in (data if isinstance(data, list) else [data]):
+            if not isinstance(entry, dict):
+                continue
+            entry.pop('uuid', None)  # internal request-correlation tag; not part of the client protocol
+            if not entry:
+                continue  # e.g. ui_plot_update() returns {} for non-http terminals
+            json_type = entry.get('json_type', '')
+            ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
+            _broadcast_from_thread(ws_type, entry)
 
     def _register_upstream_handlers(self) -> None:
         """Wire upstream WebSocket messages to decoder commands."""

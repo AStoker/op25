@@ -51,6 +51,11 @@ the encryption on traffic with unknown keys.
 - DES-OFB
 - AES-256
 
+## Installation
+
+- Debian based Linux (including Raspberry Pi): [README-installation.md](README-installation.md)
+- macOS (Apple Silicon or Intel): [README-macos.md](README-macos.md)
+
 ## HTTP / WebSocket Communication
 
 The web-based GUI communicates with the Python backend over HTTP and WebSockets.
