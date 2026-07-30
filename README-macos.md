@@ -4,27 +4,29 @@ Tested on Apple Silicon with Homebrew GNURadio 3.10 and an RTL-SDR Blog V4.
 Intel Macs use the same steps; only the Homebrew prefix differs
 (`/usr/local` instead of `/opt/homebrew`).
 
-## What works, and the one thing that doesn't
+## What works
 
-Decoding, trunking, the web GUI and **browser audio** all work on macOS.
+Decoding, trunking, the web GUI, signal plots, **browser audio** and **local
+speaker output** all work on macOS.
 
-The one real limitation: **there is no local speaker output.** `sockaudio.py`
-talks to ALSA (`libasound.so.2`) or PulseAudio (`libpulse-simple.so.0`)
-directly via ctypes — both are Linux-only shared libraries. On macOS neither
-loads, so the audio module prints
+Local audio goes through PortAudio (CoreAudio underneath), because
+`sockaudio.py`'s other two backends — ALSA (`libasound.so.2`) and PulseAudio
+(`libpulse-simple.so.0`) — are Linux-only shared libraries. The backend is
+selected automatically, so a config written for Linux that says
+`"device_name": "pulse"` still works here; you will just see
 
 ```
-unable to load PulseAudio library
-unable to load ALSA library
+audio: 'pulse' is Linux-only, using PortAudio on darwin
+audio: using portaudio sound system
+portaudio: output 'MacBook Pro Speakers' 8000Hz 2ch latency 102ms prime 120ms
 ```
 
-and continues with no sound device. It does not crash, but you get silence.
+`device_name` can also name a backend (`portaudio`, `coreaudio`) or a specific
+PortAudio output device by name or numeric index; `default` uses the system
+default output.
 
-**Listen in the browser instead.** The `audio` section of the config is
-optional (`multi_rx.py` only reads it `if "audio" in config`), so leave it out
-entirely on macOS and let the web GUI play the stream. This is why
-`cfg.json` — which ships an `audio` block with `"device_name": "pulse"` — is a
-poor starting point on a Mac.
+If PortAudio is missing entirely, op25 logs `no working sound system found,
+local audio disabled` and carries on without sound rather than failing.
 
 ## 1. Prerequisites
 
@@ -53,7 +55,9 @@ The script must be run from the repository root. It will:
    resolve. This path-plumbing is the fiddly part of a Mac install and the most
    likely thing to break after a `brew upgrade`.
 4. `pip install` numpy, waitress, requests, websockets, fastapi,
-   `uvicorn[standard]`.
+   `uvicorn[standard]` and `sounddevice`. The last one provides local speaker
+   output via PortAudio; its macOS wheel bundles libportaudio, so no Homebrew
+   package is needed.
 5. Write the venv's interpreter path into
    `op25/gr-op25_repeater/apps/op25_python`.
 6. Configure and build with cmake, then `sudo make install` into the Homebrew
@@ -79,13 +83,13 @@ Check the Python side:
 ```bash
 cd op25/gr-op25_repeater/apps
 for m in numpy gnuradio osmosdr gnuradio.op25_repeater gnuradio.op25 \
-         waitress requests websockets fastapi uvicorn; do
+         waitress requests websockets fastapi uvicorn sounddevice; do
     printf '%-24s ' "$m"
     $(cat op25_python) -c "import $m; print('OK')" 2>&1 | tail -1
 done
 ```
 
-All ten must print `OK`. Anything else means the `.pth` plumbing from step 2
+All eleven must print `OK`. Anything else means the `.pth` plumbing from step 2
 didn't take — re-run `./install-mac.sh`.
 
 ## 4. Configure
@@ -145,13 +149,33 @@ Mac-friendly single-dongle P25 trunking config:
 
 Points that matter on macOS:
 
-- **No `audio` section.** See the caveat above.
+- The config above has **no `audio` section**, so audio plays in the browser
+  only. The section is optional (`multi_rx.py` reads it `if "audio" in config`).
+  To hear audio from the Mac's own speakers instead, add:
+  ```json
+  "audio": {
+      "module": "sockaudio.py",
+      "instances": [
+          { "instance_name": "audio0", "device_name": "default",
+            "udp_port": 23456, "audio_gain": 1.0, "number_channels": 1 }
+      ]
+  }
+  ```
+  Set `audio_gain` explicitly — it defaults to `0.0`, which is silence.
+- **To get local speakers *and* browser audio at once**, give the channel a
+  second UDP destination. A unicast UDP port has only one consumer, so local
+  audio takes 23456 and the web server picks up the spare automatically:
+  ```json
+  "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458"
+  ```
+  With only one destination and an `audio` section, local audio wins and the
+  server logs that browser audio is disabled, telling you exactly this. If you
+  need to pin the server to a specific port rather than let it choose, set
+  `"audio_ports": [23458]` in the `terminal` block.
 - `"args": "rtl=00000001"` selects the dongle by serial — take it from the
   `SN:` field in `rtl_test -t` output. Plain `"rtl"` also works with one dongle.
-- `"destination": "udp://127.0.0.1:23456"` is what the browser audio path
-  reads. `websocket_server.py` currently discovers audio ports from a config it
-  does not actually load when run under `multi_rx.py`, so it falls back to
-  `23456`/`23457` — **keep 23456 or browser audio will be silent.**
+- `gains` values must be **integers**: `"LNA:49"` is fine, `"LNA:49.6"` aborts
+  at startup with `invalid literal for int()`.
 - `terminal.module` selects the UI stack. `websocket_server.py` with
   `ws:host:port` is the current React GUI. The older stack is `terminal.py`
   with `http:host:port`, and `terminal.py` with `curses` gives a TUI (curses
@@ -227,16 +251,29 @@ server logs throughput once a second:
 ws audio: rx pcm=54 flag=97 ... pushed=17280 yielded=60480 underruns=162
 ```
 
-`pcm=0` after real traffic means the UDP port doesn't match; check the
-`destination` port is 23456. `underruns` simply count silence padding between
-transmissions and are expected on a quiet system. You can also grab the raw
-stream directly, bypassing the browser:
+`pcm=0` after real traffic means nothing is arriving on the port the server
+bound. Check the `ws audio: listening on udp ...` lines at startup against your
+channel's `destination`. If you also configured local audio on the same port,
+look for the message saying browser audio was disabled — that is the
+one-consumer-per-port rule, and the fix is the second destination described
+above. `underruns` simply count silence padding between transmissions and are
+expected on a quiet system. You can also grab the raw stream directly,
+bypassing the browser:
 
 ```bash
 curl --max-time 20 http://127.0.0.1:8080/api/stream -o /tmp/op25.wav
 afplay /tmp/op25.wav
 ```
 
-**Signal plots stay empty.** Expected — plots are not yet implemented for the
-`ws:` terminal, regardless of platform. `gnuplot` is installed for the legacy
-`http:` stack, which does render them.
+**No sound from the Mac's speakers.** Check which backend was chosen — you want
+`audio: using portaudio sound system` followed by a `portaudio: output ...`
+line naming your device. `no working sound system found` means the
+`sounddevice` module is missing; reinstall with
+`$(cat op25_python) -m pip install sounddevice`. If audio is choppy, raise the
+jitter buffer: `OP25_PORTAUDIO_PRIME_MS=240 ./op25.sh`. And check `audio_gain`
+is set — it defaults to `0.0`.
+
+**Signal plots stay empty.** Toggle a mode in the Signal Plots card; the
+decoder only generates a plot once asked. Plots need no `gnuplot` process on
+the `ws:` terminal — the browser draws them from the data stream. If a mode
+stays blank, check `stderr.2` for errors from the plot sink.

@@ -33,7 +33,7 @@ if [ ${GR_VER} = "3.10" ]; then
     sudo apt-get update
     echo "Installing dependencies"
     sudo apt-get build-dep gnuradio $([ "$FORCE" = true ] && echo "-y")
-    sudo apt-get install gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev libhackrf-dev liborc-dev cmake git build-essential pkg-config doxygen clang-format python3-pybind11 python3-numpy python3-waitress python3-requests python3-websockets gnuplot-x11 libsndfile1-dev libspdlog-dev $([ "$FORCE" = true ] && echo "-y")
+    sudo apt-get install gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev libhackrf-dev liborc-dev cmake git build-essential pkg-config doxygen clang-format python3-pybind11 python3-numpy python3-waitress python3-requests python3-websockets gnuplot-x11 libsndfile1-dev libspdlog-dev libportaudio2 python3-sounddevice $([ "$FORCE" = true ] && echo "-y")
 
     echo "Installing Python web server dependencies"
     # --break-system-packages is required on Debian/Ubuntu 23+ with PEP 668

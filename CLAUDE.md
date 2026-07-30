@@ -83,35 +83,90 @@ React UI fully populated → browser audio. Specifically confirmed:
   voice content (peak ~28k, ~28% non-silent during normal traffic).
 - No JS console errors.
 
-## Known gaps in the new stack
+## Audio backends
 
-1. **Signal plots are not implemented on the backend.** This is a bigger gap
-   than it looks — the new UI changed the plot design. `www/app` expects
-   `json_type: "plot"` messages carrying raw `data: [x, y][]` (plus `mode`,
-   `chan`, `xrange`, `yrange`) and renders them client-side (see
-   `PlotPayload` in `www/app/src/types/op25.ts` and `SignalPlotsCard`).
-   **No Python code emits `json_type: "plot"`.** The legacy path instead
-   produced gnuplot **PNG files** announced via `json_type: "rx_update"`, and
-   `multi_rx.py` only generates those when `terminal_type == "http"`
-   (`multi_rx.py:321`, `multi_rx.py:960`) — `ws_terminal.get_terminal_type()`
-   returns `"ws"`. So the "FFT / Constellation / Symbol / Eye / Mixer / FLL"
-   toggles render an empty card. Closing this means emitting sample data from
-   the plot sinks over the WS, not re-enabling the gnuplot path.
-2. **`websocket_server._config` is never populated under `multi_rx.py`.**
-   `load_config()` is only called by the standalone `websocket_server` class;
-   the `op25_terminal()` factory that `multi_rx.py` actually uses leaves the
-   global at `None`. Consequences: `GET /api/config` returns **404**, the
-   initial `SYSTEM_STATE` snapshot has empty `site_name`/`trunk_id`, and audio
-   ports fall back to the `23456/23457` default instead of being read from each
-   channel's `destination`. Config still reaches the UI, but only via the
-   `get_full_config` WS command — so a non-default audio port would break
-   browser audio.
-3. `www/dist` is a **committed build artifact**. It can drift from `www/app/src`
+`sockaudio.py` is the single choke point for local speaker output — `audio.py`,
+`rx.py` and `multi_rx.py` all go through `socket_audio`. It has three backends
+behind one duck-typed interface (`open/close/setup/write/drain/drop/dump/check`):
+
+| Backend | Library | Platforms |
+|---|---|---|
+| `pa_sound` | `libpulse-simple.so.0` | Linux only |
+| `alsasound` | `libasound.so.2` | Linux only |
+| `portaudio_sound` | `sounddevice` / PortAudio | **cross-platform** (CoreAudio on macOS) |
+
+`socket_audio.open_pcm_backend()` picks one. Linux keeps its historical order
+(PulseAudio when `device_name` asks for it, else ALSA), falling back to
+PortAudio only if neither library loads. Anything not Linux goes straight to
+PortAudio, so an existing config that says `"device_name": "pulse"` still works
+on a Mac. `device_name` may also name a backend directly (`portaudio`,
+`coreaudio`, `alsa`, `pulse`) or a PortAudio device name/index.
+
+**PortAudio needs a jitter buffer, not blocking writes.** The decoder produces
+20 ms of audio every 20 ms, so feeding a PortAudio stream directly leaves it
+permanently on the edge of empty and it underruns on nearly every callback.
+`portaudio_sound` therefore runs a callback plus a ring buffer, priming
+`PORTAUDIO_PRIME_MS` (120 ms) before playback starts and re-priming whenever it
+runs dry. Do not "simplify" this back to `stream.write()`.
+
+Also do not map `PCM_BUFFER_SIZE` onto PortAudio's `latency`: they are not the
+same quantity. Measured on CoreAudio at 8 kHz, requesting 0.5 s yields ~2.5 s of
+real delay. `latency='low'` gives ~102 ms. Tunable via
+`OP25_PORTAUDIO_LATENCY`, `OP25_PORTAUDIO_PRIME_MS`, `OP25_PORTAUDIO_MAX_MS`.
+
+### Local audio and browser audio on the same channel
+
+A unicast UDP port has exactly one consumer, so `sockaudio` and
+`websocket_server`'s `UdpAudioReceiver` cannot share one. Local audio wins:
+`_discover_audio_ports()` excludes any port claimed by an `audio.instances[]`
+entry. To run both, give the channel a second destination and let discovery find
+it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
+
+```json
+"destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458"
+```
+
+`terminal.audio_ports` is an explicit override that wins outright.
+`apps/richland-mac.json` is a working example of this dual-audio setup.
+
+## Signal plots
+
+The new UI renders plots client-side from raw data rather than displaying
+gnuplot images. `wrap_gp.send_plot()` emits `json_type: "plot"` with
+`{chan, mode, data: [[x,y],...], xrange, yrange, title}`, matching
+`PlotPayload` in `www/app/src/types/op25.ts`. All six modes work: `fft`,
+`constellation`, `symbol`, `eye`, `mixer`, `fll`.
+
+Things to know:
+
+- `wrap_gp` skips `attach_gp()` when `out_q` is set, and `multi_rx.py` **always**
+  passes `out_q`. So gnuplot is only started if `set_output_dir()` is also
+  called, which the `http` terminal does for its PNGs. `rx.py` passes no
+  `out_q`, so its curses/x11 plots are unaffected.
+- Payloads are decimated to `PLOT_MAX_POINTS` (1200) by striding, not
+  truncating, so a long trace still spans its full range.
+- Eye traces are overlaid by setting x to the position within the trace, which
+  reproduces what gnuplot draws as separate line segments.
+- Rate is `http_plot_interval` (default 1.0s) for the `ws` terminal — *not*
+  `curses_plot_interval`, which defaults to 0.0 and would emit every buffer.
+- The decoder owns plot on/off state and it survives a page reload, so
+  `op25Service.tsx` adopts any mode it sees data for. Without that, a reload
+  leaves the toggle dark while data streams, and the next click switches the
+  decoder off while switching the display on.
+
+## Known remaining gaps
+
+1. `www/dist` is a **committed build artifact**. It can drift from `www/app/src`
    — rebuild before testing UI changes.
-4. `call_log` is a **draining delta feed**: `tk_p25.get_call_log()` clears the
+2. `call_log` is a **draining delta feed**: `tk_p25.get_call_log()` clears the
    buffer on every read, and `ws_terminal` polls once per second whether or not
    a client is attached. Clients must accumulate (the frontend does), and a
    client that connects late permanently misses earlier calls.
+3. `gains` values must be **integers** — `multi_rx.py:150` does `int(gain)`, so
+   `"LNA:49.6"` raises `ValueError` at startup.
+4. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
+   path in particular is unchanged in its ALSA/PulseAudio ordering but has only
+   been exercised through the fallback chain on macOS.
 
 ## Testing the running stack without a browser
 
@@ -148,8 +203,10 @@ $(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests (`pytest` from `apps/`, specs are `tests/*_spec.py`) currently
-cover only the legacy `http_server.py`.
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`).
+`tests/websocket_server_spec.py` covers the new server's static file serving,
+SPA fallback, path traversal, method handling and CORS — 21 tests, in-process
+via FastAPI's `TestClient`, no network or dongle needed. Requires `httpx`.
 
 ## Local config files (gitignored)
 

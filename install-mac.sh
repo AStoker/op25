@@ -160,6 +160,10 @@ PIP_PACKAGES=(
     websockets
     "fastapi"
     "uvicorn[standard]"
+    sounddevice                       # PortAudio bindings: local speaker output
+                                      # (ALSA/PulseAudio are Linux-only).  The
+                                      # macOS wheel bundles libportaudio, so no
+                                      # Homebrew package is required.
 )
 
 "${VENV_PYTHON}" -m pip install --upgrade pip

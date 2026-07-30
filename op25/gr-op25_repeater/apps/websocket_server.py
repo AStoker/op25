@@ -220,10 +220,16 @@ class AudioStreamManager:
         interval = _CHUNK_MS / 1_000.0
         t        = 0.0
         loop     = asyncio.get_event_loop()
+        # Absolute send schedule.  Sleeping for "interval minus work done" looks
+        # right but silently runs slow: asyncio.sleep overshoots by a millisecond
+        # or two every iteration and that error accumulates, so the stream
+        # delivers a few percent less than real time.  The client's buffer then
+        # drains until it starves, which sounds like a periodic dropout no
+        # matter how much it buffers.  Pacing against an absolute deadline
+        # absorbs the overshoot instead of compounding it.
+        next_send = loop.time()
 
         while True:
-            t0 = loop.time()
-
             real_bytes, real_len = self._take_chunk()
             if real_len == _CHUNK_BYTES:
                 chunk = real_bytes
@@ -241,7 +247,15 @@ class AudioStreamManager:
 
             self.bytes_yielded += len(chunk)
             yield chunk
-            await asyncio.sleep(max(0.0, interval - (loop.time() - t0)))
+
+            next_send += interval
+            delay = next_send - loop.time()
+            if delay < -interval:
+                # Fell badly behind (scheduler stall).  Resync rather than
+                # bursting a backlog of chunks at the client all at once.
+                next_send = loop.time()
+                delay = 0.0
+            await asyncio.sleep(max(0.0, delay))
 
 
 audio_manager = AudioStreamManager()
@@ -284,25 +298,66 @@ def _discover_audio_ports(config: dict[str, Any] | None) -> list[tuple[str, int]
     ports: list[tuple[str, int]] = []
     seen: set[tuple[str, int]] = set()
 
+    # An explicit "audio_ports" in the terminal config wins outright.  It is the
+    # escape hatch for running local speaker output and browser audio at once:
+    # point the channel at two udp destinations and name the spare one here.
+    override = (config or {}).get('terminal', {}).get('audio_ports')
+    if override:
+        for entry in (override if isinstance(override, list) else [override]):
+            try:
+                ports.append(('127.0.0.1', int(entry)))
+            except (TypeError, ValueError):
+                sys.stderr.write('ws audio: ignoring invalid audio_ports entry %r\n' % (entry,))
+        if ports:
+            return ports
+
     for ch in (config or {}).get('channels', []) or []:
-        dest = str(ch.get('destination', '') or '').strip()
-        if not dest.startswith('udp://'):
-            continue
+        # 'destination' is a comma-separated list of destinations — op25_audio.cc
+        # tokenizes on ',' — so a channel may feed udp and ws sinks at once,
+        # e.g. "udp://0.0.0.0:23456, ws://0.0.0.0:9000".  Only the udp ones
+        # carry the PCM this server re-streams to the browser.
+        for dest in str(ch.get('destination', '') or '').split(','):
+            dest = dest.strip()
+            if not dest.startswith('udp://'):
+                continue
+            try:
+                parsed = urlparse(dest)
+                host   = parsed.hostname or '127.0.0.1'
+                port   = int(parsed.port or 0)
+            except (TypeError, ValueError):
+                continue
+            if port <= 0:
+                continue
+            for p in (port, port + 1):
+                key = (host, p)
+                if key not in seen:
+                    seen.add(key)
+                    ports.append(key)
+
+    # Ports sockaudio.py will bind for local speaker output.  A unicast UDP port
+    # has exactly one consumer, so binding these as well would only make
+    # whichever thread loses the race go silent.  Compare on port number alone —
+    # a destination of 0.0.0.0 and sockaudio's 127.0.0.1 carry the same traffic.
+    local: set[int] = set()
+    for inst in (config or {}).get('audio', {}).get('instances', []) or []:
         try:
-            parsed = urlparse(dest)
-            host   = parsed.hostname or '127.0.0.1'
-            port   = int(parsed.port or 0)
+            port = int(inst.get('udp_port', _DEFAULT_AUDIO_PORT))
         except (TypeError, ValueError):
             continue
-        if port <= 0:
-            continue
-        for p in (port, port + 1):
-            key = (host, p)
-            if key not in seen:
-                seen.add(key)
-                ports.append(key)
+        local.update((port, port + 1))       # sockaudio binds both TDMA slots
 
-    if not ports:
+    if local:
+        kept = [(h, p) for (h, p) in ports if p not in local]
+        if ports and not kept:
+            sys.stderr.write(
+                'ws audio: every UDP audio port is claimed by the local audio module, '
+                'so browser audio is disabled.  To run both, give the channel a second '
+                'destination on a free port and point this server at it, e.g.\n'
+                '    "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458"\n'
+                '    "terminal": { ..., "audio_ports": [23458] }\n')
+        ports = kept
+
+    if not ports and not local:
         ports = [('127.0.0.1', _DEFAULT_AUDIO_PORT),
                  ('127.0.0.1', _DEFAULT_AUDIO_PORT + 1)]
 
@@ -850,13 +905,25 @@ class ws_terminal(threading.Thread):
         register_upstream_handler(MSG_SYSTEM_CONTROL, handle_system_control)
 
 
-def op25_terminal(input_q: Any, output_q: Any, terminal_type: str) -> ws_terminal:
+def op25_terminal(
+    input_q: Any,
+    output_q: Any,
+    terminal_type: str,
+    config: dict[str, Any] | None = None,
+) -> ws_terminal:
     """Factory matching the terminal.py ``op25_terminal`` interface.
 
     ``terminal_type`` should be ``"ws:<host>:<port>"``, e.g.
     ``"ws:0.0.0.0:8080"``.  The ``"ws:"`` prefix is stripped before the
     endpoint is passed to :class:`ws_terminal`.
+
+    ``config`` is the fully parsed config dict from multi_rx.py.  It must be
+    installed before :class:`ws_terminal` is constructed, because that is what
+    binds the UDP audio ports derived from it.
     """
+    global _config
+    if config is not None:
+        _config = config
     if terminal_type.startswith('ws:'):
         endpoint = terminal_type[3:]
     else:

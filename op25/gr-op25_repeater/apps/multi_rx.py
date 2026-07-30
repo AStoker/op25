@@ -47,6 +47,7 @@ import json
 import traceback
 import osmosdr
 import importlib
+import inspect
 
 from gnuradio import audio, eng_notation, gr, filter, blocks, fft, analog, digital
 # eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
@@ -315,12 +316,17 @@ class channel(object):
             self.tb.unlock()
             self.raw_sink = None
 
-    def set_plot_destination(self, plot): # only required for http terminal
+    def set_plot_destination(self, plot): # match plot rate/output to the terminal in use
         if plot is None or plot not in self.sinks or self.tb.terminal_type is None:
             return
         if self.tb.terminal_type == "http":
             self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
             self.sinks[plot][0].gnuplot.set_output_dir(self.tb.http_plot_directory)
+        elif self.tb.terminal_type == "ws":
+            # The browser renders these from the data stream, so no image
+            # directory is needed — but throttle to the same rate the http
+            # terminal uses for its images rather than sending every buffer.
+            self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
         else:
             self.sinks[plot][0].gnuplot.set_interval(self.tb.curses_plot_interval)
 
@@ -655,7 +661,19 @@ class rx_block (gr.top_block):
             sys.stderr.write("Error: unable to import terminal module: %s\n%s\n" % (config['module'], e))
             return
         term_type = str(from_dict(config,'terminal_type', "curses"))
-        self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type)
+        # Hand the terminal module the whole config.  websocket_server.py needs
+        # it to serve /api/config, to report system identity before the decoder
+        # produces its first update, and to discover the UDP audio ports it must
+        # bind.  Passed by keyword and only when accepted, so a third-party
+        # terminal module written against the original three-argument signature
+        # keeps working.
+        term_kwargs = {}
+        try:
+            if 'config' in inspect.signature(terminal.op25_terminal).parameters:
+                term_kwargs['config'] = self.config
+        except (TypeError, ValueError):
+            pass
+        self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type, **term_kwargs)
         self.terminal_type = self.terminal.get_terminal_type()
         self.terminal_config = config
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))

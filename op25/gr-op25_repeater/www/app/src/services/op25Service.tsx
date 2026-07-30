@@ -180,6 +180,13 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
         } else if (p.json_type === 'plot') {
           const plot = p as unknown as PlotPayload;
           const key  = `${plot.chan}:${plot.mode}`;
+          // The decoder owns plot on/off state, and it survives a page reload.
+          // Adopt any mode it is actually sending so the toggle reflects
+          // reality — otherwise a reload leaves the button dark while data
+          // streams, and the next click would switch the decoder off while
+          // switching the display on.
+          setActivePlotModes((prev) =>
+            prev.has(plot.mode) ? prev : new Set(prev).add(plot.mode));
           const now  = Date.now();
           const last = plotLastFlushRef.current[key] ?? 0;
           if (now - last >= PLOT_THROTTLE_MS) {

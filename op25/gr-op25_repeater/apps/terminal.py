@@ -627,7 +627,10 @@ class udp_terminal(threading.Thread):
             self.remote_port = addr[1]
             self.keepalive_until = time.time() + KEEPALIVE_TIME
 
-def op25_terminal(input_q,  output_q, terminal_type):
+def op25_terminal(input_q,  output_q, terminal_type, config = None):
+        # 'config' is accepted for interface parity with websocket_server.py,
+        # which needs the full config; the terminals here get everything they
+        # need from the decoder's message stream.
         if terminal_type == 'curses':
             return curses_terminal(input_q, output_q)
         elif terminal_type[0].isdigit():

@@ -32,9 +32,38 @@ import ctypes
 import numpy as np
 from log_ts import log_ts
 
+# Optional cross-platform PortAudio backend (python-sounddevice).  ALSA and
+# PulseAudio are Linux-only shared libraries, so this is what gives macOS
+# (CoreAudio) local speaker output.  A missing portaudio library must degrade
+# to "backend unavailable" rather than breaking the whole audio module, so the
+# import error is captured instead of raised.
+try:
+    import sounddevice as _sounddevice
+except Exception as e:
+    _sounddevice = None
+    _sounddevice_error = e
+else:
+    _sounddevice_error = None
+
 # OP25 defaults
 PCM_RATE = 8000             # audio sample rate (Hz)
 PCM_BUFFER_SIZE = 4000      # size of ALSA buffer in frames
+
+# PortAudio latency hint.  Deliberately NOT derived from PCM_BUFFER_SIZE: the
+# two are not the same quantity, and PortAudio inflates a requested latency
+# substantially.  Measured on CoreAudio at 8kHz, asking for PCM_BUFFER_SIZE
+# (0.5s) yields ~2.5s of real delay, which is unusable for a scanner, while
+# 'low' resolves to ~165ms — about eight 20ms voice frames of jitter tolerance.
+# Override with OP25_PORTAUDIO_LATENCY ('low', 'high', or a value in seconds).
+PORTAUDIO_LATENCY = os.environ.get('OP25_PORTAUDIO_LATENCY', 'low')
+
+# Depth of the PortAudio jitter buffer, in milliseconds of audio.  PRIME is how
+# much must accumulate before playback starts (and again after the buffer runs
+# dry); it trades start-of-transmission delay against robustness to jitter.
+# MAX bounds the queue so a stalled device cannot make playback drift further
+# and further behind real time.
+PORTAUDIO_PRIME_MS = int(os.environ.get('OP25_PORTAUDIO_PRIME_MS', '120'))
+PORTAUDIO_MAX_MS   = int(os.environ.get('OP25_PORTAUDIO_MAX_MS', '1000'))
 
 MAX_SUPERFRAME_SIZE = 320   # maximum size of incoming UDP audio buffer
 
@@ -338,6 +367,214 @@ class pa_sound(object):
         return 0
 
 
+# PCM output via PortAudio, using the python-sounddevice module.
+#
+# Implements the same duck-typed interface as alsasound and pa_sound
+# (open/close/setup/write/drain/drop/dump/check) so socket_audio can use any of
+# them interchangeably.  This is the only cross-platform backend: it is the
+# default on macOS, where it reaches CoreAudio, and is available on Linux both
+# as an explicit choice and as a last-resort fallback.
+class portaudio_sound(object):
+    # Device strings that mean "use the system default output" rather than
+    # naming a specific PortAudio device.  "pulse" is included so an existing
+    # Linux config keeps working unchanged when run on macOS.
+    DEFAULT_ALIASES = ("", "default", "pulse", "pulseaudio", "portaudio", "coreaudio", "sounddevice")
+
+    # ALSA device syntax has no PortAudio equivalent; fall back to the default.
+    ALSA_PREFIXES = ("hw:", "plughw:", "sysdefault", "dmix", "dsnoop", "surround")
+
+    def __init__(self, instance_name = "OP25"):
+        if _sounddevice is None:
+            raise RuntimeError("sounddevice/portaudio unavailable: %s" % _sounddevice_error)
+        self.instance_name = instance_name
+        self.stream = None
+        self.device = None
+        self.channels = 2
+        self.rate = PCM_RATE
+        self.framesize = 4          # 2 channels * 2 bytes (S16_LE)
+        # Jitter buffer shared with the PortAudio callback thread.  A blocking
+        # write() cannot work here: the decoder produces 20ms of audio every
+        # 20ms, so a directly-fed stream sits permanently on the edge of empty
+        # and underruns on virtually every callback.  Buffering a short prime
+        # before playback starts, and re-priming whenever the buffer runs dry,
+        # keeps the device fed through normal network and scheduling jitter.
+        self.buf = bytearray()
+        self.buf_lock = threading.Lock()
+        self.primed = False
+        self.prime_bytes = 0
+        self.max_bytes = 0
+        self.underruns = 0
+        self.last_xrun_log = 0.0
+
+    def _resolve_device(self, hwdev):
+        """Map an op25 device string onto a PortAudio device, or None for default."""
+        name = (hwdev or "").strip()
+        if name.lower() in self.DEFAULT_ALIASES:
+            return None
+        if name.lower().startswith(self.ALSA_PREFIXES):
+            sys.stderr.write("portaudio: '%s' is ALSA-only syntax, using default output device\n" % name)
+            return None
+        try:
+            return int(name)        # numeric PortAudio device index
+        except ValueError:
+            pass
+        try:
+            _sounddevice.query_devices(name)     # substring match; raises if missing/ambiguous
+            return name
+        except Exception as e:
+            sys.stderr.write("portaudio: device '%s' not usable (%s), using default output device\n" % (name, e))
+            return None
+
+    def open(self, hwdev):
+        self.device = self._resolve_device(hwdev)
+        return 0
+
+    def close(self):
+        if self.stream is None:
+            return
+        try:
+            self.stream.stop()
+            self.stream.close()
+        except Exception as e:
+            sys.stderr.write("portaudio: close failed: %s\n" % e)
+        self.stream = None
+
+    def _latency(self):
+        """PORTAUDIO_LATENCY as either a float (seconds) or a PortAudio keyword."""
+        try:
+            return float(PORTAUDIO_LATENCY)
+        except (TypeError, ValueError):
+            return PORTAUDIO_LATENCY
+
+    def _callback(self, outdata, frames, time_info, status):
+        """Fill one PortAudio output block from the jitter buffer.
+
+        Runs on the PortAudio thread.  Missing audio is filled with silence
+        rather than left as stale data, and running dry re-arms priming so the
+        buffer refills before playback continues.
+        """
+        need = frames * self.framesize
+        with self.buf_lock:
+            if not self.primed:
+                if len(self.buf) < self.prime_bytes:
+                    outdata[:] = bytes(need)        # still filling — output silence
+                    return
+                self.primed = True
+            avail = min(need, len(self.buf))
+            if avail:
+                outdata[:avail] = bytes(self.buf[:avail])
+                del self.buf[:avail]
+            if avail < need:
+                outdata[avail:] = bytes(need - avail)
+                self.primed = False
+                self.underruns += 1
+
+    def setup(self, pcm_format, pcm_channels, pcm_rate, pcm_buffer_size):
+        # pcm_format is an ALSA enum; op25 only ever asks for S16_LE.
+        if pcm_format != SND_PCM_FORMAT_S16_LE.value:
+            sys.stderr.write("portaudio: unsupported format %d requested, using S16_LE\n" % pcm_format)
+        self.channels = pcm_channels
+        self.rate = pcm_rate
+        self.framesize = pcm_channels * 2
+        self.prime_bytes = int(pcm_rate * PORTAUDIO_PRIME_MS / 1000.0) * self.framesize
+        # Hard cap on queued audio.  If the device stalls or the decoder floods
+        # us, drop the oldest audio rather than growing without bound and
+        # playing back further and further behind real time.
+        self.max_bytes = int(pcm_rate * PORTAUDIO_MAX_MS / 1000.0) * self.framesize
+        self.close()
+        with self.buf_lock:
+            self.buf = bytearray()
+            self.primed = False
+        try:
+            # pcm_buffer_size is intentionally unused — see PORTAUDIO_LATENCY.
+            self.stream = _sounddevice.RawOutputStream(
+                    samplerate = pcm_rate,
+                    channels   = pcm_channels,
+                    dtype      = 'int16',
+                    device     = self.device,
+                    latency    = self._latency(),
+                    callback   = self._callback)
+            self.stream.start()
+        except Exception as e:
+            sys.stderr.write("portaudio: unable to open output stream: %s\n" % e)
+            self.stream = None
+            return -1
+        try:
+            dev_name = _sounddevice.query_devices(self.stream.device)['name']
+        except Exception:
+            dev_name = "default"
+        sys.stderr.write("portaudio: output '%s' %dHz %dch latency %.0fms prime %dms\n" %
+                         (dev_name, pcm_rate, pcm_channels, self.stream.latency * 1000, PORTAUDIO_PRIME_MS))
+        return 0
+
+    def write(self, pcm_data):
+        if self.stream is None:
+            sys.stderr.write("PCM device is closed\n")
+            return -1
+        # PortAudio only consumes whole frames.
+        n_frames = len(pcm_data) // self.framesize
+        if n_frames == 0:
+            return 0
+        with self.buf_lock:
+            self.buf.extend(pcm_data[:n_frames * self.framesize])
+            excess = len(self.buf) - self.max_bytes
+            if excess > 0:
+                del self.buf[:excess]
+        self._log_xruns()
+        return n_frames
+
+    def _log_xruns(self):
+        """Report accumulated underruns at most once a second.
+
+        Gaps between transmissions legitimately empty the buffer, so this would
+        otherwise log constantly on a quiet system.
+        """
+        if not LOG_AUDIO_XRUNS or not self.underruns:
+            return
+        now = time.time()
+        if now - self.last_xrun_log < 1.0:
+            return
+        self.last_xrun_log = now
+        count, self.underruns = self.underruns, 0
+        sys.stderr.write("%s PCM underrun (x%d)\n" % (log_ts.get(), count))
+
+    def drain(self):
+        # End of transmission.  Let the buffered tail play out; stopping the
+        # stream here would truncate the end of the call.
+        return 0
+
+    def drop(self):
+        # Discard buffered audio (talkgroup skip / hold change) so the next
+        # transmission is not preceded by stale audio.
+        if self.stream is None:
+            return -1
+        with self.buf_lock:
+            self.buf = bytearray()
+            self.primed = False
+        return 0
+
+    def dump(self):
+        if _sounddevice is None:
+            return
+        try:
+            sys.stderr.write("%s\n" % _sounddevice.query_devices())
+        except Exception:
+            pass
+
+    def check(self):
+        # Called when the UDP sockets have gone quiet.  Make sure the stream
+        # did not get stopped underneath us, e.g. by the default output device
+        # changing when headphones are unplugged.
+        if self.stream is None:
+            return -1
+        try:
+            if not self.stream.active:
+                self.stream.start()
+        except Exception as e:
+            sys.stderr.write("portaudio: unable to restart stream: %s\n" % e)
+            return -1
+        return 0
+
 
 # Wrapper to emulate pcm writes of sound samples to stdout (for liquidsoap)
 class stdout_wrapper(object): 
@@ -399,20 +636,7 @@ class socket_audio(object):
             sys.stdout = os.fdopen(sys.stdout.fileno(), 'wb', 0) # reopen stdout with buffering disabled
             self.pcm = stdout_wrapper()
         else:
-            if pcm_device.lower() == "pulse":
-                try:
-                    self.pcm = pa_sound(self.instance_name)   # first try to open PulseAudio
-                    sys.stderr.write("using PulseAudio sound system\n")
-                except Exception as e:
-                    self.pcm = None
-                    sys.stderr.write("unable to load PulseAudio library\n%s\n" % e)
-                    pcm_device = "default"
-            if self.pcm is None:
-                try:
-                    self.pcm = alsasound()  # if PulseAudio not available, try to use ALSA
-                    sys.stderr.write("using ALSA sound system\n")
-                except Exception as e:
-                    sys.stderr.write("unable to load ALSA library\n%s\n" % e)
+            self.pcm, pcm_device = self.open_pcm_backend(pcm_device)
 
         if self.pcm is not None:
             self.setup_pcm(pcm_device)
@@ -420,6 +644,65 @@ class socket_audio(object):
             self.keep_running = False
 
         self.setup_sockets(udp_host, udp_port)
+
+    # "device_name" values that select a sound system rather than a device
+    # within one.  Anything else (e.g. "default", "hw:0,0", a PortAudio device
+    # name or index) is treated as a device name for the platform default.
+    BACKEND_ALIASES = {
+            "pulse":       "pulseaudio",
+            "pulseaudio":  "pulseaudio",
+            "alsa":        "alsa",
+            "portaudio":   "portaudio",
+            "coreaudio":   "portaudio",
+            "sounddevice": "portaudio",
+            }
+
+    def open_pcm_backend(self, pcm_device):
+        """Pick a PCM backend that actually exists on this platform.
+
+        ALSA and PulseAudio are Linux-only shared libraries.  On macOS (and
+        anything else that is not Linux) go straight to PortAudio, which
+        reaches CoreAudio.  On Linux keep the historical behavior — PulseAudio
+        when asked for, otherwise ALSA — and only fall back to PortAudio if
+        neither library loads.
+
+        Returns (backend_or_None, device_name_to_open).
+        """
+        requested = self.BACKEND_ALIASES.get((pcm_device or "").strip().lower())
+
+        if sys.platform.startswith("linux"):
+            if requested == "pulseaudio":
+                order = ["pulseaudio", "alsa", "portaudio"]
+            elif requested == "portaudio":
+                order = ["portaudio"]
+            else:
+                order = ["alsa", "portaudio"]
+        else:
+            if requested in ("pulseaudio", "alsa"):
+                sys.stderr.write("audio: '%s' is Linux-only, using PortAudio on %s\n" % (pcm_device, sys.platform))
+            order = ["portaudio"]
+
+        for backend in order:
+            # 'pulse' is not a device name ALSA can be relied on to open, so
+            # reset to 'default' when falling back off PulseAudio.
+            device = pcm_device
+            if backend == "alsa" and requested == "pulseaudio":
+                device = "default"
+            try:
+                if backend == "pulseaudio":
+                    pcm = pa_sound(self.instance_name)
+                elif backend == "alsa":
+                    pcm = alsasound()
+                else:
+                    pcm = portaudio_sound(self.instance_name)
+            except Exception as e:
+                sys.stderr.write("audio: %s unavailable (%s)\n" % (backend, e))
+                continue
+            sys.stderr.write("audio: using %s sound system\n" % backend)
+            return pcm, device
+
+        sys.stderr.write("audio: no working sound system found, local audio disabled\n")
+        return None, pcm_device
 
     def run(self):
         rc = 0

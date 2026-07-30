@@ -1,6 +1,6 @@
 # Server Tests
 
-Tests for `http_server_new.py` using pytest. Tests run entirely in-process — no network, no running server required.
+Tests for `websocket_server.py` using pytest. Tests run entirely in-process — no network, no running server required.
 
 ## Setup
 
@@ -22,11 +22,11 @@ pip install -r requirements-dev.txt
 .venv/bin/pytest -v
 
 # A specific file
-.venv/bin/pytest tests/http_server_new_spec.py
+.venv/bin/pytest tests/websocket_server_spec.py
 
 # A specific test class or function
-.venv/bin/pytest tests/http_server_new_spec.py::TestCORSHeaders
-.venv/bin/pytest tests/http_server_new_spec.py::TestCORSHeaders::test_cors_origin_is_wildcard
+.venv/bin/pytest tests/websocket_server_spec.py::TestCORSHeaders
+.venv/bin/pytest tests/websocket_server_spec.py::TestCORSHeaders::test_cors_origin_is_wildcard
 ```
 
 ## Writing tests
@@ -37,14 +37,14 @@ pip install -r requirements-dev.txt
 
 | Fixture | What it gives you |
 |---|---|
-| `client` | A `WSGITestClient` pointed at a fake `dist/` with `index.html` and a few assets |
+| `client` | A FastAPI `TestClient` pointed at a fake `dist/` with `index.html` and a few assets |
 | `dist_dir` | The `pathlib.Path` to that fake dist directory (use to add extra files) |
-| `empty_dist_dir` | A `WSGITestClient` with an empty dist (simulates an unbuilt frontend) |
+| `empty_dist_dir` | A FastAPI `TestClient` with an empty dist (simulates an unbuilt frontend) |
 
 ### Example
 
 ```python
-def test_my_new_behaviour(client: WSGITestClient) -> None:
+def test_my_new_behaviour(client: Any) -> None:
     resp = client.get("/some/path")
     assert resp.status_code == 200
     assert resp.headers["Content-type"] == "text/html"
@@ -55,10 +55,10 @@ To test with a custom file in dist:
 
 ```python
 def test_custom_asset(dist_dir, monkeypatch) -> None:
-    import http_server_new
+    import websocket_server
     (dist_dir / "custom.js").write_bytes(b"export default 42")
-    monkeypatch.setattr(http_server_new, "_DIST_DIR", str(dist_dir))
-    client = WSGITestClient(http_server_new.application)
+    monkeypatch.setattr(websocket_server, "_DIST_DIR", str(dist_dir))
+    client = TestClient(websocket_server.app)
 
     resp = client.get("/custom.js")
     assert resp.status_code == 200
@@ -71,8 +71,8 @@ Group related tests in a class prefixed with `Test`. Each test function must be 
 
 ```
 tests/
-  conftest.py                   # shared fixtures and WSGITestClient
-  http_server_new_spec.py       # static file serving contract
+  conftest.py                   # shared fixtures
+  websocket_server_spec.py       # static file serving contract
   <next_feature>_spec.py        # add new files as features are added
 ```
 
