@@ -15,6 +15,7 @@
 import type {
   TrunkUpdatePayload,
   ChannelUpdatePayload,
+  CallClipPayload,
   CallLogPayload,
 } from './op25';
 
@@ -84,6 +85,7 @@ export type DownstreamMessage =
   | { type: 'SYSTEM_STATE'; payload: SystemStatePayload; }
   | { type: 'SDR_STATUS'; payload: SdrStatusPayload; }
   | { type: 'CALL_ACTIVITY'; payload: CallActivityPayload; }
+  | { type: 'CALL_AUDIO'; payload: CallClipPayload; }
   | { type: 'ERROR'; payload: { detail: string; }; };
 
 // ---------------------------------------------------------------------------

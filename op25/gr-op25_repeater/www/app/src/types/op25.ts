@@ -133,6 +133,46 @@ export interface CallLogPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Captured call audio (websocket_server.py + ha_bridge.py).
+//
+// One clip per transmission, sliced out of the decoder's UDP audio.  Arrives
+// twice: `call_clip` as soon as the transmission ends, then `call_transcript`
+// once Home Assistant's speech-to-text has run (if configured).  The same
+// objects are served by GET /api/calls so a reloaded page is not empty.
+// ---------------------------------------------------------------------------
+
+export interface CallClip {
+  id: string;
+  /** Unix epoch seconds when the transmission started. */
+  started: number;
+  ended: number;
+  /** Clip length in seconds. */
+  duration: number;
+  /** Speech-to-text result — empty until transcription completes or if off. */
+  transcript: string;
+  /** Configured keywords found in `transcript`. */
+  keywords: string[];
+  /** Path to the clip as a finite WAV file. */
+  audio_url: string;
+  /** Present when speech-to-text was attempted and failed. */
+  stt_error?: string;
+
+  system?: string;
+  channel?: string;
+  tgid?: number;
+  talkgroup?: string;
+  source?: number;
+  source_tag?: string;
+  frequency?: number;
+  encrypted?: boolean;
+  emergency?: boolean;
+}
+
+export interface CallClipPayload extends CallClip {
+  json_type: 'call_clip' | 'call_transcript';
+}
+
+// ---------------------------------------------------------------------------
 // Signal-plot snapshot emitted by gr_gnuplot.py.  One arrives per channel
 // per plot mode while that plot is enabled.
 // ---------------------------------------------------------------------------

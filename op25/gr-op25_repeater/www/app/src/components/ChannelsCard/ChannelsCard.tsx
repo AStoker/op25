@@ -57,6 +57,7 @@ import TableContainer from '@mui/material/TableContainer';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import CardShell from '../CardShell/CardShell';
+import { useIsPhone } from '../../hooks/useIsPhone';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
 
 interface TalkGroupRow {
@@ -101,6 +102,7 @@ export default function ChannelsCard() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   // Filter state
   const [tagFilter, setTagFilter] = useState('');
+  const phone = useIsPhone();
   const {
     config,
     channels, channelIds,
@@ -189,44 +191,27 @@ export default function ChannelsCard() {
     return arr;
   }, [system, channels, tagFilter, sortKey, sortDirection]);
 
+  // Column set differs by viewport: on a phone the frequency and
+  // last-activity columns are dropped so TGID, tag and the hold control —
+  // the three that are actually actionable — keep readable widths.
+  const sortableHead = (key: SortKey, label: string, width: string) => (
+    <TableCell
+      variant="head"
+      onClick={() => { setSortKey(key); setSortDirection(sortKey === key && sortDirection === 'asc' ? 'desc' : 'asc'); }}
+      sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width }}
+    >
+      {label} {sortKey === key ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
+    </TableCell>
+  );
+
   const fixedHeaderContent = () => (
     <TableRow>
-      <TableCell
-        variant="head"
-        onClick={() => { setSortKey('tgid'); setSortDirection(sortKey === 'tgid' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
-        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '10%' }}
-      >
-        TGID {sortKey === 'tgid' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-      </TableCell>
-      <TableCell
-        variant="head"
-        onClick={() => { setSortKey('tag'); setSortDirection(sortKey === 'tag' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
-        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '30%' }}
-      >
-        Tag {sortKey === 'tag' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-      </TableCell>
-      <TableCell
-        variant="head"
-        onClick={() => { setSortKey('lastFreq'); setSortDirection(sortKey === 'lastFreq' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
-        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '14%' }}
-      >
-        Freq {sortKey === 'lastFreq' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-      </TableCell>
-      <TableCell
-        variant="head"
-        onClick={() => { setSortKey('lastActivity'); setSortDirection(sortKey === 'lastActivity' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
-        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '18%' }}
-      >
-        Last {sortKey === 'lastActivity' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-      </TableCell>
-      <TableCell
-        variant="head"
-        onClick={() => { setSortKey('configured'); setSortDirection(sortKey === 'configured' && sortDirection === 'asc' ? 'desc' : 'asc'); }}
-        sx={{ cursor: 'pointer', userSelect: 'none', backgroundColor: 'background.paper', width: '20%' }}
-      >
-        State {sortKey === 'configured' ? (sortDirection === 'asc' ? '▲' : '▼') : ''}
-      </TableCell>
-      <TableCell variant="head" align="right" sx={{ backgroundColor: 'background.paper', width: '8%' }}>Hold</TableCell>
+      {sortableHead('tgid', 'TGID', phone ? '20%' : '10%')}
+      {sortableHead('tag',  'Tag',  phone ? '44%' : '30%')}
+      {!phone && sortableHead('lastFreq',     'Freq', '14%')}
+      {!phone && sortableHead('lastActivity', 'Last', '18%')}
+      {sortableHead('configured', 'State', phone ? '22%' : '20%')}
+      <TableCell variant="head" align="right" sx={{ backgroundColor: 'background.paper', width: phone ? '14%' : '8%' }}>Hold</TableCell>
     </TableRow>
   );
 
@@ -235,9 +220,9 @@ export default function ChannelsCard() {
     return (
       <>
         <TableCell>{row.tgid}</TableCell>
-        <TableCell>{row.tag || '\u2014'}</TableCell>
-        <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>
-        <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>
+        <TableCell sx={{ overflowWrap: 'anywhere' }}>{row.tag || '\u2014'}</TableCell>
+        {!phone && <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>}
+        {!phone && <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>}
         <TableCell>
           <Stack direction="row" spacing={0.5}>
             {row.configured && 
@@ -357,7 +342,7 @@ export default function ChannelsCard() {
               value={tagFilter}
               onChange={(e) => setTagFilter(e.target.value)}
               placeholder="Type to filter..."
-              sx={{ width: 240 }}
+              sx={{ width: { xs: '100%', sm: 240 } }}
             />
           </Box>
           {rows.length === 0 ? (
@@ -365,7 +350,7 @@ export default function ChannelsCard() {
               No talk-groups seen yet.
             </Typography>
           ) : (
-            <Box sx={{ height: 360 }}>
+            <Box sx={{ height: { xs: 320, sm: 360 } }}>
               <TableVirtuoso
                 data={rows}
                 context={{ heldTgid, holdTalkGroup, releaseHold }}

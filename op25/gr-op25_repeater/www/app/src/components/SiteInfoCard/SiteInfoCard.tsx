@@ -58,7 +58,7 @@ export default function SiteInfoCard() {
   return (
     <CardShell title="Site Information">
       <Stack spacing={1.5}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)' }, gap: 1 }}>
           <InfoRow label="System"   value={`${system.system} (${system.type})`}
             tooltip="The system name and its P25 phase/type (e.g. Phase 1 FDMA or Phase 2 TDMA)." />
           <InfoRow label="Callsign" value={system.callsign || '—'}
@@ -83,14 +83,18 @@ export default function SiteInfoCard() {
         </Box>
 
         {system.top_line && (
-          <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ fontFamily: 'monospace', overflowX: 'auto', whiteSpace: 'pre' }}
+          >
             {system.top_line}
           </Typography>
         )}
 
         <Box>
           <Typography variant="subtitle2" gutterBottom>Frequencies</Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 0.75 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(220px, 100%), 1fr))', gap: 0.75 }}>
             {freqEntries.map(([hz, data]) => (
               <Box
                 key={hz}

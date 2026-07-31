@@ -165,7 +165,9 @@ export default function SignalPlotsCard() {
         ) : (
           <Box sx={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+            // min() keeps the track from exceeding the viewport on a narrow
+            // phone, where a hard 260px floor would force a sideways scroll.
+            gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))',
             gap: 1,
           }}>
             {visible.map((p) => (

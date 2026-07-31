@@ -40,7 +40,8 @@ Config selector:
 - Single port. Static files, control WebSocket, and the audio stream
   (`/api/stream`, WAV over HTTP) all live on it.
 - Protocol is `{ "type": ..., "payload": ... }`. Downstream: `SYSTEM_STATE`,
-  `SDR_STATUS`, `CALL_ACTIVITY`. Upstream: `CALL_CONTROL`, `SYSTEM_CONTROL`.
+  `SDR_STATUS`, `CALL_ACTIVITY`, `CALL_AUDIO`. Upstream: `CALL_CONTROL`,
+  `SYSTEM_CONTROL`.
 - Audio path: decoder UDP → `UdpAudioReceiver` → `AudioStreamManager` →
   browser. Ports are discovered from each channel's `destination`
   (`udp://host:port`, plus `port+1` for the TDMA slot B), defaulting to
@@ -129,6 +130,66 @@ it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
 `terminal.audio_ports` is an explicit override that wins outright.
 `apps/richland-mac.json` is a working example of this dual-audio setup.
 
+## Call capture, speech-to-text, Home Assistant
+
+`apps/ha_bridge.py` (stdlib only — nothing new to install on a Pi) slices the
+UDP audio into one clip per transmission and optionally pushes each one
+through Home Assistant's speech-to-text API, matches keywords, and POSTs the
+result to an HA webhook. Full reference: `README-home-assistant.md`.
+
+- **Segmentation is the whole trick.** The decoder emits UDP audio only while
+  a call is up, so a gap in packets is the voice-activity detector. Feeding a
+  continuous stream to Whisper instead means transcribing mostly silence,
+  which is where the hallucinated "Thank you for watching" output comes from.
+- `CallRecorder.push()` is called from the UDP receiver thread and
+  `CallRecorder.poll()` from the same `select()` loop (it wakes at least once
+  a second, which is enough to close a call after its hang time).
+- Clips are gated on `min_call_secs` and `min_peak`. The peak gate is what
+  drops encrypted traffic, which decodes to near-silence — that is correct
+  behaviour, not a bug to fix.
+- Metadata comes from the newest `channel_update` via
+  `_note_channel_state()` / `_current_call_metadata()`. All channels share one
+  audio capture, so with several channels active at once attribution is
+  best-effort (first channel with a tgid wins). Single-channel is exact.
+- `_merge_metadata()` never overwrites a field that is already set: a call can
+  start before its tgid is known, but a *later* update may already describe
+  the next call.
+- HA's `/api/stt/<engine>` accepts only 16 kHz/16-bit/mono and passes the body
+  to the provider as raw PCM chunks, so clips are upsampled and sent
+  headerless (`stt_audio: "wav"` switches to a container if a provider needs
+  one).
+- Endpoints: `/api/calls`, `/api/calls/{id}/audio.wav?rate=`, `/api/ha/status`
+  (start troubleshooting here), and `/api/stream?rate=&format=`. The stream
+  defaults are unchanged — 8 kHz WAV — so the React player is unaffected.
+- Clips live in a bounded in-memory ring (`ClipStore`, 60 clips / 24 MB).
+  Nothing is written to disk.
+- Tests: `tests/call_capture_spec.py` (81 tests), including HTTP round-trips
+  against a stub HA. The stub uses `_FastHTTPServer` because
+  `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s
+  per run on this machine.
+
+## Responsive UI
+
+The React app is expected to work on a phone as well as a desktop.
+
+- Below `md` the layout switches to tabs (Live / Audio / System / Signal) in
+  `App.tsx`; at `md` and above it keeps the two-column dashboard. A phone
+  cannot usefully show ten cards at once.
+- `useIsPhone()` (`hooks/useIsPhone.ts`) is how the data tables drop
+  lower-value columns below `sm` rather than letting the important ones
+  squeeze into slivers. The Virtuoso tables use `tableLayout: fixed`, so the
+  percentage widths in `fixedHeaderContent` must be kept in step with the
+  cells actually rendered by `rowContent`.
+- Theme follows `prefers-color-scheme` until the user toggles it, then
+  persists in `localStorage`. `<meta name="theme-color">` is updated at
+  runtime — dark mode uses `background.default`, not `primary.main`, because
+  MUI does not render a dark AppBar in the primary colour.
+- CSS grids that would otherwise force a sideways scroll use
+  `minmax(min(Npx, 100%), 1fr)`.
+- Verify with the CDP script pattern (see "Testing the running stack" below)
+  and check `document.documentElement.scrollWidth > clientWidth` at 390 /
+  820 / 1440 px — horizontal overflow is the failure that matters.
+
 ## Signal plots
 
 The new UI renders plots client-side from raw data rather than displaying
@@ -203,10 +264,17 @@ $(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`).
-`tests/websocket_server_spec.py` covers the new server's static file serving,
-SPA fallback, path traversal, method handling and CORS — 21 tests, in-process
-via FastAPI's `TestClient`, no network or dongle needed. Requires `httpx`.
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 102 tests,
+in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
+`httpx`.
+
+- `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
+  traversal, method handling, CORS (21).
+- `tests/call_capture_spec.py` — PCM helpers, call segmentation, clip store,
+  keyword matching, HA config, HA HTTP round-trips, REST endpoints (81).
+
+Note that `TestClient.stream()` hangs on `/api/stream` — it is an unbounded
+generator. Drive `audio_manager.generate()` directly under `asyncio` instead.
 
 ## Local config files (gitignored)
 

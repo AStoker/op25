@@ -32,9 +32,17 @@ interface HeaderProps {
 const DRAWER_WIDTH = 240;
 const APP_TITLE = 'OP25';
 
+const CONNECTION_LABEL: Record<string, string> = {
+  open:       'connected',
+  connecting: 'connecting',
+  closed:     'offline',
+  error:      'error',
+};
+
 export default function Header({ navItems }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { mode, toggleTheme } = useThemeService();
+  const { status } = useWebSocketService();
 
   const handleDrawerToggle = () => {
     setMobileOpen((prev) => !prev);
@@ -141,6 +149,32 @@ export default function Header({ navItems }: HeaderProps) {
               </Button>
             ))}
           </Box>
+
+          {/* Connection state — a dot on phones, a labelled chip elsewhere,
+              so the most important status is never the thing that wraps. */}
+          <Chip
+            size="small"
+            variant="outlined"
+            label={CONNECTION_LABEL[status]}
+            sx={{
+              display: { xs: 'none', sm: 'inline-flex' },
+              mr: 1,
+              color: 'inherit',
+              borderColor: 'currentColor',
+            }}
+          />
+          <Box
+            aria-label={`connection ${CONNECTION_LABEL[status]}`}
+            sx={{
+              display: { xs: 'block', sm: 'none' },
+              width: 10,
+              height: 10,
+              borderRadius: '50%',
+              mr: 1,
+              bgcolor: status === 'open' ? 'success.light'
+                : status === 'connecting' ? 'warning.light' : 'error.light',
+            }}
+          />
 
           {/* Theme toggle */}
           <IconButton

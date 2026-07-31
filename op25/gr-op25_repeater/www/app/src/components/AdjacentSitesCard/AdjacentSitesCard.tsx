@@ -23,7 +23,7 @@ export default function AdjacentSitesCard() {
           No adjacent sites reported.
         </Typography>
       ) : (
-        <Box sx={{ maxHeight: 280, overflow: 'auto' }}>
+        <Box sx={{ maxHeight: { xs: 220, sm: 280 }, overflow: 'auto' }}>
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>

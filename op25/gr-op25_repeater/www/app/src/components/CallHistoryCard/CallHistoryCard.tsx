@@ -10,6 +10,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
+import { useIsPhone } from '../../hooks/useIsPhone';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
 
 interface Row {
@@ -49,6 +50,7 @@ const VirtuosoTableComponents: TableComponents<Row> = {
 export default function CallHistoryCard() {
   const system    = useSelectedSystem();
   const { callLog } = useOp25Service();
+  const phone     = useIsPhone();
 
   // Primary source: the rolling call_log (when present).
   // Fallback: derive entries from per-frequency tgid/srcaddr history.
@@ -90,23 +92,34 @@ export default function CallHistoryCard() {
     return out;
   }, [callLog, system]);
 
+  // On a phone the frequency and the bare TGID are the least useful columns \u2014
+  // the tag already names the talkgroup \u2014 so they make way for the two that
+  // answer "who just talked, and when".
   const fixedHeaderContent = () => (
     <TableRow>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '16%' }}>Time</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '14%' }}>Freq</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '10%' }}>TG</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '28%' }}>Tag</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '32%' }}>Source</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '24%' : '16%' }}>Time</TableCell>
+      {!phone && (
+        <>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '14%' }}>Freq</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '10%' }}>TG</TableCell>
+        </>
+      )}
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '40%' : '28%' }}>Tag</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '36%' : '32%' }}>Source</TableCell>
     </TableRow>
   );
 
   const rowContent = (_index: number, r: Row) => (
     <>
       <TableCell>{r.time || '\u2014'}</TableCell>
-      <TableCell>{fmtFreq(r.freq)}</TableCell>
-      <TableCell>{r.tgid || '\u2014'}</TableCell>
-      <TableCell>{r.tag || '\u2014'}</TableCell>
-      <TableCell>
+      {!phone && (
+        <>
+          <TableCell>{fmtFreq(r.freq)}</TableCell>
+          <TableCell>{r.tgid || '\u2014'}</TableCell>
+        </>
+      )}
+      <TableCell sx={{ overflowWrap: 'anywhere' }}>{r.tag || (r.tgid ? `TG ${r.tgid}` : '\u2014')}</TableCell>
+      <TableCell sx={{ overflowWrap: 'anywhere' }}>
         {r.src ? (r.srcTag ? `${r.srcTag} (${r.src})` : r.src) : '\u2014'}
       </TableCell>
     </>
@@ -119,7 +132,7 @@ export default function CallHistoryCard() {
           No calls yet.
         </Typography>
       ) : (
-        <Box sx={{ height: 320 }}>
+        <Box sx={{ height: { xs: 280, sm: 320 } }}>
           <TableVirtuoso
             data={rows}
             components={VirtuosoTableComponents}

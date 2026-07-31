@@ -10,6 +10,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
+import { useIsPhone } from '../../hooks/useIsPhone';
 import { useSelectedSystem } from '../../services/op25Service';
 
 function fmtTime(epoch: number): string {
@@ -44,6 +45,7 @@ const VirtuosoTableComponents: TableComponents<SubscriberRow> = {
 
 export default function SubscribersCard() {
   const system = useSelectedSystem();
+  const phone  = useIsPhone();
 
   const rows = useMemo<SubscriberRow[]>(() => {
     if (!system?.wuid_data) return [];
@@ -57,20 +59,26 @@ export default function SubscribersCard() {
       .sort((a, b) => b.time - a.time);
   }, [system]);
 
+  // The RFSS/site column is dropped on phones: with a single monitored site
+  // it is the same value on every row.
   const fixedHeaderContent = () => (
     <TableRow>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '25%' }}>Source</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '45%' }}>Affiliated TG</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '15%' }}>Site</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '15%' }}>Last</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '30%' : '25%' }}>Source</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '46%' : '45%' }}>Affiliated TG</TableCell>
+      {!phone && (
+        <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '15%' }}>Site</TableCell>
+      )}
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '24%' : '15%' }}>Last</TableCell>
     </TableRow>
   );
 
   const rowContent = (_index: number, r: SubscriberRow) => (
     <>
-      <TableCell>{r.tag || r.srcaddr}</TableCell>
-      <TableCell>{r.aff_ga_tag ? `${r.aff_ga_tag} (${r.aff_ga})` : (r.aff_ga || '\u2014')}</TableCell>
-      <TableCell>{`${r.rfss}.${r.site}`}</TableCell>
+      <TableCell sx={{ overflowWrap: 'anywhere' }}>{r.tag || r.srcaddr}</TableCell>
+      <TableCell sx={{ overflowWrap: 'anywhere' }}>
+        {r.aff_ga_tag ? `${r.aff_ga_tag} (${r.aff_ga})` : (r.aff_ga || '\u2014')}
+      </TableCell>
+      {!phone && <TableCell>{`${r.rfss}.${r.site}`}</TableCell>}
       <TableCell>{fmtTime(r.time)}</TableCell>
     </>
   );
@@ -82,7 +90,7 @@ export default function SubscribersCard() {
           No subscriber units seen yet.
         </Typography>
       ) : (
-        <Box sx={{ height: 280 }}>
+        <Box sx={{ height: { xs: 240, sm: 280 } }}>
           <TableVirtuoso
             data={rows}
             components={VirtuosoTableComponents}

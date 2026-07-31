@@ -124,12 +124,13 @@ export default function PlayerCard() {
     <CardShell title="Player">
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
         {/* System info — always shown */}
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Box>
-            <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}
+                        sx={{ overflowWrap: 'anywhere' }}>
               {sysLabel}
             </Typography>
-            <Typography variant="body2" fontWeight="medium">
+            <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere' }}>
               {chanLabel}
             </Typography>
           </Box>
@@ -162,8 +163,11 @@ export default function PlayerCard() {
           </Box>
         )}
 
-        {/* Playback controls */}
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+        {/* Playback controls — sized for a thumb, not a mouse pointer */}
+        <Box sx={{
+          display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap',
+          '& .MuiIconButton-root': { minWidth: 44, minHeight: 44 },
+        }}>
           <Tooltip title={connected ? 'Play' : 'Not connected'}>
             <span>
               <IconButton

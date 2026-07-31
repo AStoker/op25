@@ -19,6 +19,7 @@ Downstream (server → client)
     SYSTEM_STATE   – Overall system health/status snapshot
     SDR_STATUS     – Software-defined radio receiver metrics
     CALL_ACTIVITY  – Currently active / most-recent call details
+    CALL_AUDIO     – A captured call clip, and later its transcript
 
 Upstream (client → server)
     CALL_CONTROL   – Hold, skip, lockout, or whitelist a talk-group
@@ -42,10 +43,20 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 import uvicorn
+
+from ha_bridge import (
+    CallClip,
+    CallRecorder,
+    ClipStore,
+    HomeAssistantBridge,
+    HomeAssistantConfig,
+    resample_pcm16,
+    wav_bytes,
+)
 
 try:
     from gnuradio import gr as _gr
@@ -107,18 +118,19 @@ _CHUNK_SAMPLES = _SAMPLE_RATE * _CHUNK_MS // 1_000   # 160 samples
 _CHUNK_BYTES   = _CHUNK_SAMPLES * _SAMPLE_WIDTH       # 320 bytes
 
 
-def _wav_stream_header() -> bytes:
+def _wav_stream_header(sample_rate: int = _SAMPLE_RATE) -> bytes:
     """WAV header for an infinite/unknown-length stream.
 
     Using 0xFFFFFFFF for both RIFF and data chunk sizes signals an unbounded
-    stream — Chrome, Firefox, and Chromium on Pi handle this correctly.
+    stream — Chrome, Firefox, and Chromium on Pi handle this correctly, as
+    does ffmpeg (which is what Home Assistant's stream integrations use).
     """
-    byte_rate   = _SAMPLE_RATE * _CHANNELS * _SAMPLE_WIDTH
+    byte_rate   = sample_rate * _CHANNELS * _SAMPLE_WIDTH
     block_align = _CHANNELS * _SAMPLE_WIDTH
     _UNKNOWN    = 0xFFFF_FFFF
     hdr  = struct.pack('<4sI4s',    b'RIFF', _UNKNOWN, b'WAVE')
     hdr += struct.pack('<4sIHHIIHH', b'fmt ', 16, 1, _CHANNELS,
-                       _SAMPLE_RATE, byte_rate, block_align, _SAMPLE_WIDTH * 8)
+                       sample_rate, byte_rate, block_align, _SAMPLE_WIDTH * 8)
     hdr += struct.pack('<4sI',      b'data', _UNKNOWN)
     return hdr
 
@@ -213,9 +225,20 @@ class AudioStreamManager:
         with self._lock:
             return len(self._buffer)
 
-    async def generate(self) -> AsyncGenerator[bytes, None]:
-        """Async generator: WAV header then a steady stream of PCM chunks."""
-        yield _wav_stream_header()
+    async def generate(
+        self,
+        out_rate: int = _SAMPLE_RATE,
+        container: str = 'wav',
+    ) -> AsyncGenerator[bytes, None]:
+        """Async generator: optional WAV header, then a steady stream of PCM.
+
+        *out_rate* resamples on the way out — Home Assistant's speech
+        pipeline and Whisper both want 16 kHz, and doing the conversion
+        here saves every consumer from having to.  *container* may be
+        ``'wav'`` (default) or ``'raw'`` for headerless PCM.
+        """
+        if container != 'raw':
+            yield _wav_stream_header(out_rate)
 
         interval = _CHUNK_MS / 1_000.0
         t        = 0.0
@@ -246,7 +269,7 @@ class AudioStreamManager:
                 t += interval
 
             self.bytes_yielded += len(chunk)
-            yield chunk
+            yield resample_pcm16(chunk, _SAMPLE_RATE, out_rate) if out_rate != _SAMPLE_RATE else chunk
 
             next_send += interval
             delay = next_send - loop.time()
@@ -259,6 +282,140 @@ class AudioStreamManager:
 
 
 audio_manager = AudioStreamManager()
+
+
+# ---------------------------------------------------------------------------
+# Call capture and Home Assistant bridge
+# ---------------------------------------------------------------------------
+#
+# The same PCM that feeds the browser stream is also sliced into per-call
+# clips (see ha_bridge.CallRecorder).  Those clips are what a speech-to-text
+# engine actually wants: short, finite, and speech-only.  They back both the
+# /api/calls REST endpoints and — when configured — the push of transcripts
+# and keyword alerts into Home Assistant.
+
+clip_store: ClipStore = ClipStore()
+_call_recorder: CallRecorder | None = None
+_ha_bridge: HomeAssistantBridge | None = None
+
+# Latest channel_update snapshot from the decoder, used to tag captured clips
+# with talkgroup / source / frequency.  Written by the ws_terminal thread and
+# read by the UDP audio thread, hence the lock.
+_last_channels: dict[str, Any] = {}
+_last_channels_lock = threading.Lock()
+
+
+def _note_channel_state(entry: dict[str, Any]) -> None:
+    """Remember the newest channel_update so clips can be tagged with it."""
+    ids = entry.get('channels')
+    if not isinstance(ids, list):
+        return
+    snapshot = {cid: entry[cid] for cid in ids
+                if isinstance(entry.get(cid), dict)}
+    with _last_channels_lock:
+        _last_channels.clear()
+        _last_channels.update(snapshot)
+
+
+def _current_call_metadata() -> dict[str, Any]:
+    """Metadata describing the call currently on the air.
+
+    All configured channels share one audio capture, so when several are
+    active at once the tag is best-effort: the first channel reporting a
+    talkgroup wins.  Single-channel setups — the common case — are exact.
+    """
+    with _last_channels_lock:
+        channels = list(_last_channels.values())
+
+    for ch in channels:
+        if not ch.get('tgid'):
+            continue
+        return {
+            'system':     ch.get('system') or '',
+            'channel':    ch.get('name') or '',
+            'tgid':       int(ch.get('tgid') or 0),
+            'talkgroup':  ch.get('tag') or '',
+            'source':     int(ch.get('srcaddr') or 0),
+            'source_tag': ch.get('srctag') or '',
+            'frequency':  int(ch.get('freq') or 0),
+            'encrypted':  bool(ch.get('encrypted')),
+            'emergency':  bool(ch.get('emergency')),
+        }
+    return {}
+
+
+def _on_clip_complete(clip: CallClip) -> None:
+    """A call finished recording: tell the UI, then queue it for Home Assistant."""
+    _broadcast_from_thread(MSG_CALL_AUDIO, dict(clip.to_dict(), json_type='call_clip'))
+    if _ha_bridge is not None:
+        _ha_bridge.submit(clip)
+
+
+def _on_transcript(clip: CallClip) -> None:
+    """Speech-to-text finished for a clip: push the text to the UI."""
+    _broadcast_from_thread(MSG_CALL_AUDIO, dict(clip.to_dict(), json_type='call_transcript'))
+
+
+def _call_capture_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Recorder tuning from ``terminal.home_assistant``, with defaults."""
+    ha = (config or {}).get('terminal', {}).get('home_assistant', {}) or {}
+    return {
+        'hang_time_secs': float(ha.get('hang_time_secs', 1.5) or 1.5),
+        'min_call_secs':  float(ha.get('min_call_secs', 0.8) or 0.8),
+        'max_call_secs':  float(ha.get('max_call_secs', 120.0) or 120.0),
+        'min_peak':       int(ha.get('min_peak', 250) or 250),
+    }
+
+
+def start_call_capture(config: dict[str, Any] | None,
+                       endpoint: str | None = None) -> None:
+    """Start the call recorder, plus the Home Assistant bridge when configured.
+
+    Recording is on by default — it costs a bounded slice of memory and is
+    what makes /api/calls useful — but can be turned off entirely with
+    ``"terminal": { "call_recording": false }``.
+
+    *endpoint* is the ``host:port`` this server is bound to.  It supplies a
+    fallback for ``home_assistant.public_url`` so webhook payloads carry an
+    absolute audio URL that Home Assistant can actually fetch.
+    """
+    global _call_recorder, _ha_bridge
+
+    terminal = (config or {}).get('terminal', {}) or {}
+    if terminal.get('call_recording', True) is False:
+        sys.stderr.write('call capture: disabled by terminal.call_recording\n')
+        return
+
+    ha_cfg = HomeAssistantConfig(terminal.get('home_assistant'))
+    if not ha_cfg.public_url and endpoint:
+        # 0.0.0.0 is a bind address, not a reachable one — leave the URL
+        # relative in that case rather than sending Home Assistant somewhere
+        # it cannot connect.  Set public_url explicitly to fix it.
+        host, _, port = endpoint.partition(':')
+        if host not in ('', '0.0.0.0', '::'):
+            ha_cfg.public_url = 'http://%s:%s' % (host, port or '8080')
+    if ha_cfg.enabled and _ha_bridge is None:
+        _ha_bridge = HomeAssistantBridge(ha_cfg, on_transcript=_on_transcript)
+        _ha_bridge.start()
+
+    if _call_recorder is None:
+        _call_recorder = CallRecorder(
+            clip_store,
+            sample_rate=_SAMPLE_RATE,
+            metadata_fn=_current_call_metadata,
+            on_complete=_on_clip_complete,
+            **_call_capture_settings(config),
+        )
+
+
+def stop_call_capture() -> None:
+    global _call_recorder, _ha_bridge
+    if _call_recorder is not None:
+        _call_recorder.flush()
+        _call_recorder = None
+    if _ha_bridge is not None:
+        _ha_bridge.stop()
+        _ha_bridge = None
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +600,16 @@ class UdpAudioReceiver(threading.Thread):
                 elif len(data) >= _AUDIO_FRAME_BYTES and (len(data) % 2 == 0):
                     self.packets_pcm += 1
                     audio_manager.push_audio(data)
+                    if _call_recorder is not None:
+                        _call_recorder.push(data)
                 else:
                     # Unknown packet shape — log once-ish via the throttle.
                     self.packets_other += 1
+
+            # select() returns at least once a second, which is frequent
+            # enough to close out a call after its hang time expires.
+            if _call_recorder is not None:
+                _call_recorder.poll()
 
             self._maybe_log()
 
@@ -490,12 +654,13 @@ _audio_receiver: UdpAudioReceiver | None = None
 MSG_SYSTEM_STATE  = "SYSTEM_STATE"
 MSG_SDR_STATUS    = "SDR_STATUS"
 MSG_CALL_ACTIVITY = "CALL_ACTIVITY"
+MSG_CALL_AUDIO    = "CALL_AUDIO"
 
 # Upstream
 MSG_CALL_CONTROL   = "CALL_CONTROL"
 MSG_SYSTEM_CONTROL = "SYSTEM_CONTROL"
 
-DOWNSTREAM_TYPES = {MSG_SYSTEM_STATE, MSG_SDR_STATUS, MSG_CALL_ACTIVITY}
+DOWNSTREAM_TYPES = {MSG_SYSTEM_STATE, MSG_SDR_STATUS, MSG_CALL_ACTIVITY, MSG_CALL_AUDIO}
 UPSTREAM_TYPES   = {MSG_CALL_CONTROL, MSG_SYSTEM_CONTROL}
 
 # ---------------------------------------------------------------------------
@@ -666,24 +831,125 @@ async def get_config() -> Response:
 # Audio stream endpoint
 # ---------------------------------------------------------------------------
 
-@app.get("/api/stream")
-async def audio_stream() -> StreamingResponse:
-    """Continuous WAV audio stream for the browser <audio> element.
+_ALLOWED_STREAM_RATES = (8_000, 16_000, 22_050, 24_000, 44_100, 48_000)
 
-    Streams 8 kHz / 16-bit / mono PCM wrapped in a WAV header with an
-    unknown-length marker.  When the OP25 decoder is not yet connected the
-    generator emits a 600 Hz sine-wave test tone so the browser keeps the
-    HTTP connection alive and does not drop buffered audio on reconnect.
+
+@app.get("/api/stream")
+async def audio_stream(
+    rate: int = Query(_SAMPLE_RATE, description="Output sample rate in Hz"),
+    format: str = Query("wav", pattern="^(wav|raw)$",
+                        description="'wav' for a WAV-wrapped stream, 'raw' for headerless PCM"),
+) -> StreamingResponse:
+    """Continuous audio stream — the browser player and external consumers.
+
+    Streams 16-bit / mono PCM.  Defaults (8 kHz, WAV-wrapped) are exactly
+    what the decoder produces and what the React player expects; nothing
+    changes unless a query parameter is supplied.
+
+    ``rate=16000`` resamples on the way out, which is what Home Assistant's
+    voice pipeline and Whisper require.  ``format=raw`` drops the WAV header
+    for consumers that would rather be handed bare PCM.
+
+    When the OP25 decoder is not yet connected the generator emits silence
+    (or a 600 Hz test tone in mock mode) so the HTTP connection stays alive
+    and buffered audio is not dropped on reconnect.
     """
+    if rate not in _ALLOWED_STREAM_RATES:
+        return Response(
+            content=json.dumps({
+                "error": "unsupported rate",
+                "supported": list(_ALLOWED_STREAM_RATES),
+            }),
+            status_code=400,
+            media_type="application/json",
+        )
     return StreamingResponse(
-        audio_manager.generate(),
-        media_type="audio/wav",
+        audio_manager.generate(out_rate=rate, container=format),
+        media_type="audio/wav" if format == "wav" else "audio/L16",
         headers={
             "Cache-Control":          "no-store",
             "Accept-Ranges":          "none",
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Captured call clips  (speech-to-text / Home Assistant integration)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/calls")
+async def list_calls(limit: int = Query(50, ge=1, le=500)) -> Response:
+    """Recent captured calls, newest first, with transcripts when available."""
+    calls = [c.to_dict() for c in clip_store.recent(limit)]
+    body  = {"calls": calls, "count": len(calls)}
+    body.update(clip_store.stats())
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/calls/{call_id}/audio.wav")
+async def call_audio(
+    call_id: str,
+    rate: int = Query(_SAMPLE_RATE, description="Output sample rate in Hz"),
+) -> Response:
+    """A single captured call as a finite WAV file.
+
+    Finite (real RIFF/data sizes) rather than the unbounded header used by
+    /api/stream, so it can be downloaded, seeked, handed to an STT engine,
+    or played by a Home Assistant media player.
+    """
+    clip = clip_store.get(call_id)
+    if clip is None:
+        return Response(content='{"error": "unknown call id"}', status_code=404,
+                        media_type="application/json")
+    if rate not in _ALLOWED_STREAM_RATES:
+        return Response(content='{"error": "unsupported rate"}', status_code=400,
+                        media_type="application/json")
+
+    pcm = resample_pcm16(clip.pcm, clip.sample_rate, rate)
+    return Response(
+        content=wav_bytes(pcm, rate),
+        media_type="audio/wav",
+        headers={
+            "Cache-Control":        "no-store",
+            "Content-Disposition":  'inline; filename="op25-%s.wav"' % call_id,
+        },
+    )
+
+
+@app.get("/api/ha/status")
+async def ha_status() -> Response:
+    """Diagnostics for the call-capture and Home Assistant pipeline.
+
+    The first thing to check when transcripts are not appearing: it shows
+    whether calls are being captured at all, and separately whether the
+    speech-to-text and webhook round-trips are succeeding.
+    """
+    body: dict[str, Any] = {
+        "call_recording": _call_recorder is not None,
+        "store":          clip_store.stats(),
+    }
+    if _call_recorder is not None:
+        body["recorder"] = {
+            "calls_captured": _call_recorder.calls_captured,
+            "calls_dropped":  _call_recorder.calls_dropped,
+            "hang_time_secs": _call_recorder.hang_time,
+            "min_call_secs":  _call_recorder.min_call_secs,
+        }
+    if _ha_bridge is None:
+        body["home_assistant"] = {"enabled": False}
+    else:
+        body["home_assistant"] = dict(
+            _ha_bridge.stats(),
+            enabled=True,
+            url=_ha_bridge.cfg.url,
+            stt_engine=_ha_bridge.cfg.stt_engine if _ha_bridge.cfg.stt_configured else None,
+            webhook_id=_ha_bridge.cfg.webhook_id if _ha_bridge.cfg.webhook_configured else None,
+            keywords=[term for term, _ in _ha_bridge.cfg.keywords],
+        )
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
 
 
 # ------------------------------------------------------------------
@@ -787,6 +1053,11 @@ class ws_terminal(threading.Thread):
         # Start the UDP audio receiver that feeds /api/stream.  Ports are
         # discovered from the channels' "destination" fields so the user
         # doesn't have to configure audio separately for the browser.
+        # Slice that same audio into per-call clips for /api/calls and, when
+        # configured, for Home Assistant speech-to-text.  Must be started
+        # before the receiver so no call is missed.
+        start_call_capture(_config, endpoint='%s:%d' % (self._host, self._port))
+
         global _audio_receiver
         if _audio_receiver is None:
             _audio_receiver = UdpAudioReceiver(_discover_audio_ports(_config))
@@ -811,6 +1082,7 @@ class ws_terminal(threading.Thread):
         if _audio_receiver is not None:
             _audio_receiver.stop()
             _audio_receiver = None
+        stop_call_capture()
 
     # ------------------------------------------------------------------
     # Thread body
@@ -868,6 +1140,10 @@ class ws_terminal(threading.Thread):
             if not entry:
                 continue  # e.g. ui_plot_update() returns {} for non-http terminals
             json_type = entry.get('json_type', '')
+            if json_type == 'channel_update':
+                # Keep the newest talkgroup/source per channel so captured
+                # call clips can be tagged with what was on the air.
+                _note_channel_state(entry)
             ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
             _broadcast_from_thread(ws_type, entry)
 

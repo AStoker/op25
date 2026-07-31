@@ -9,6 +9,8 @@ import React, {
 } from 'react';
 import { useWebSocketService } from './websocketService';
 import type {
+  CallClip,
+  CallClipPayload,
   CallLogEntry,
   ChannelStatus,
   OP25Config,
@@ -36,6 +38,9 @@ export interface OP25ServiceContextType {
 
   /** Rolling list of recent calls (most-recent last). */
   callLog: CallLogEntry[];
+
+  /** Captured call audio + transcripts, most-recent first. */
+  callClips: CallClip[];
 
   /** Latest plot snapshot per `${chan}:${mode}`. */
   plots: Record<string, PlotPayload>;
@@ -71,6 +76,7 @@ const OP25ServiceContext = createContext<OP25ServiceContextType>({
   channels:           {},
   channelIds:         [],
   callLog:            [],
+  callClips:          [],
   plots:              {},
   activePlotModes:    new Set(),
   togglePlotMode:     noop,
@@ -94,6 +100,10 @@ export function useOp25Service(): OP25ServiceContextType {
 // ---------------------------------------------------------------------------
 
 const CALL_LOG_MAX = 200;
+
+/** How many captured audio clips to keep client-side. The server's own ring is
+ *  the real bound; this just keeps the transcript list from growing forever. */
+const CALL_CLIP_MAX = 100;
 
 /** Minimum ms between successive plot setState calls for the same key.
  *  gr_gnuplot may emit several frames per second; this keeps React happy. */
@@ -120,6 +130,7 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   const [channels, setChannels] = useState<Record<string, ChannelStatus>>({});
   const [channelIds, setChannelIds] = useState<string[]>([]);
   const [callLog,  setCallLog]  = useState<CallLogEntry[]>([]);
+  const [callClips, setCallClips] = useState<CallClip[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [decoderRunning, setDecoderRunning] = useState(false);
   const [plots, setPlots] = useState<Record<string, PlotPayload>>({});
@@ -138,6 +149,21 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
       setDecoderRunning(false);
     }
   }, [wsStatus, send]);
+
+  // Seed the clip list from the server's ring buffer. Unlike call_log — which
+  // is a draining delta feed — captured clips survive on the server, so a
+  // reloaded page can show the calls it missed while it was gone.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/calls?limit=100')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { calls?: CallClip[] } | null) => {
+        if (cancelled || !body?.calls) return;
+        setCallClips((prev) => (prev.length > 0 ? prev : body.calls!));
+      })
+      .catch(() => { /* endpoint absent on an older server — no clips, no card */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Auto-pick the first channel as soon as we see one.
   useEffect(() => {
@@ -194,6 +220,20 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
             setPlots((prev) => ({ ...prev, [key]: plot }));
           }
         }
+      } else if (msg.type === 'CALL_AUDIO') {
+        // A clip arrives twice: once when the transmission ends, and again
+        // with `transcript` filled in once speech-to-text has run. Match on
+        // id so the second one updates the row rather than duplicating it.
+        const { json_type: _jt, ...clip } = msg.payload as CallClipPayload;
+        setCallClips((prev) => {
+          const idx = prev.findIndex((c) => c.id === clip.id);
+          if (idx >= 0) {
+            const next = prev.slice();
+            next[idx] = { ...next[idx], ...clip };
+            return next;
+          }
+          return [clip, ...prev].slice(0, CALL_CLIP_MAX);
+        });
       } else if (msg.type === 'CALL_ACTIVITY') {
         const p = msg.payload as Record<string, unknown> & { json_type?: string };
         if (p.json_type === 'call_log' && Array.isArray(p.log)) {
@@ -282,6 +322,7 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     channels,
     channelIds,
     callLog,
+    callClips,
     plots,
     activePlotModes,
     togglePlotMode,
@@ -293,7 +334,7 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     skipCall,
     lockoutTalkGroup,
     whitelistTalkGroup,
-  }), [config, systems, channels, channelIds, callLog, plots, activePlotModes,
+  }), [config, systems, channels, channelIds, callLog, callClips, plots, activePlotModes,
        togglePlotMode, decoderRunning, selectedChannelId,
        selectChannel, holdTalkGroup, releaseHold, skipCall,
        lockoutTalkGroup, whitelistTalkGroup]);

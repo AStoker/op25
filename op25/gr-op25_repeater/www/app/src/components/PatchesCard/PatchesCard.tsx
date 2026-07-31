@@ -26,7 +26,7 @@ export default function PatchesCard() {
           No active patches.
         </Typography>
       ) : (
-        <Box sx={{ maxHeight: 240, overflow: 'auto' }}>
+        <Box sx={{ maxHeight: { xs: 200, sm: 240 }, overflow: 'auto' }}>
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>

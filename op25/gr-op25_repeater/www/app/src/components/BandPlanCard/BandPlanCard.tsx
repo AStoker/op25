@@ -24,7 +24,7 @@ export default function BandPlanCard() {
 
   return (
     <CardShell title="Band Plan">
-      <Box sx={{ maxHeight: 240, overflow: 'auto' }}>
+      <Box sx={{ maxHeight: { xs: 200, sm: 240 }, overflow: 'auto' }}>
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
