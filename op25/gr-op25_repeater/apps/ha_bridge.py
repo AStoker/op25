@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import array
 import json
+import math
 import os
 import queue
 import re
@@ -109,15 +110,184 @@ def wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
     return hdr + pcm
 
 
-def peak_amplitude(pcm: bytes) -> int:
-    """Largest absolute sample value in *pcm* (0 for empty/odd input)."""
+def _samples(pcm: bytes) -> array.array:
+    """*pcm* as a native-order signed-16 array."""
     a = array.array('h')
     a.frombytes(pcm[:len(pcm) - (len(pcm) % SAMPLE_WIDTH)])
-    if not a:
-        return 0
     if sys.byteorder != 'little':
         a.byteswap()
-    return max(max(a), -min(a))
+    return a
+
+
+def peak_amplitude(pcm: bytes) -> int:
+    """Largest absolute sample value in *pcm* (0 for empty/odd input)."""
+    a = _samples(pcm)
+    return max(max(a), -min(a)) if a else 0
+
+
+def speech_rms(pcm: bytes, sample_rate: int = 8_000, frame_ms: int = 20) -> float:
+    """RMS over the louder half of the clip's frames.
+
+    Plain whole-clip RMS is dragged down by the pauses between phrases, so a
+    clip with a lot of dead air would be amplified far more than one without.
+    Averaging only the louder half tracks how loud the *speech* is.
+    """
+    a = _samples(pcm)
+    if not a:
+        return 0.0
+    n = max(1, sample_rate * frame_ms // 1_000)
+    frames = [
+        math.sqrt(sum(float(v) * v for v in a[i:i + n]) / min(n, len(a) - i))
+        for i in range(0, len(a) - n + 1, n)
+    ]
+    if not frames:
+        return math.sqrt(sum(float(v) * v for v in a) / len(a))
+    frames.sort()
+    loud = frames[len(frames) // 2:]
+    return sum(loud) / len(loud)
+
+
+def normalize_pcm16(
+    pcm: bytes,
+    sample_rate: int = 8_000,
+    target_rms: float = 3_000.0,
+    max_gain_db: float = 24.0,
+    peak_ceiling: int = 29_000,
+) -> tuple[bytes, float]:
+    """Bring *pcm* to a consistent loudness.  Returns ``(pcm, gain_db)``.
+
+    Measured across live clips, the decoder's output spans roughly 28 dB of
+    RMS between talkgroups — some transmissions arrive pinned at full scale
+    while others sit 20 dB down.  Speech models are not scale-invariant in
+    practice, so evening this out before transcription is worth more than any
+    amount of resampling.
+
+    Gain targets *speech* RMS but is then clamped so the peak cannot exceed
+    ``peak_ceiling``; that ordering means a clip with one loud transient is
+    attenuated rather than clipped.  ``max_gain_db`` stops a nearly-silent
+    clip being amplified into pure noise.
+    """
+    a = _samples(pcm)
+    if not a:
+        return pcm, 0.0
+
+    rms = speech_rms(pcm, sample_rate)
+    if rms <= 0.0:
+        return pcm, 0.0
+
+    gain = target_rms / rms
+    gain = min(gain, 10 ** (max_gain_db / 20.0))
+    peak = max(max(a), -min(a))
+    if peak > 0:
+        gain = min(gain, peak_ceiling / float(peak))
+    if abs(gain - 1.0) < 0.02:
+        return pcm, 0.0
+
+    out = array.array('h', bytes(len(a) * SAMPLE_WIDTH))
+    for i, v in enumerate(a):
+        s = int(v * gain)
+        out[i] = -32_768 if s < -32_768 else (32_767 if s > 32_767 else s)
+    if sys.byteorder != 'little':
+        out.byteswap()
+    return out.tobytes(), 20.0 * math.log10(gain)
+
+
+def voiced_ratio(pcm: bytes, sample_rate: int = 8_000) -> float:
+    """Fraction of frames showing clear pitch periodicity, 0.0–1.0.
+
+    A rough speech-likeness score.  Real voice is strongly periodic in the
+    50–400 Hz pitch range; a vocoder fed corrupted parameters produces buzz
+    or noise that is not.  The signal is decimated 4:1 first so the
+    autocorrelation stays cheap enough to run on a Pi in pure Python.
+
+    This is a heuristic, not a decode-quality measurement — OP25 does not
+    surface a bit error rate to Python.  Treat it as advisory.
+    """
+    a = _samples(pcm)
+    if len(a) < sample_rate // 10:
+        return 0.0
+
+    dec_rate = sample_rate // 4
+    dec = a[::4]
+    frame = max(8, dec_rate // 25)                      # 40 ms
+    lo_lag = max(2, dec_rate // 400)                    # 400 Hz
+    hi_lag = min(frame - 1, dec_rate // 50)             # 50 Hz
+    if hi_lag <= lo_lag:
+        return 0.0
+
+    voiced = total = 0
+    for i in range(0, len(dec) - frame + 1, frame):
+        f = dec[i:i + frame]
+        energy = sum(float(v) * v for v in f)
+        if energy <= 0:
+            continue
+        total += 1
+        best = 0.0
+        for lag in range(lo_lag, hi_lag):
+            c = sum(float(f[j]) * f[j + lag] for j in range(frame - lag))
+            norm = c / energy
+            if norm > best:
+                best = norm
+        if best > 0.35:
+            voiced += 1
+    return voiced / total if total else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Transcript sanity
+# ---------------------------------------------------------------------------
+
+# Whisper's failure mode on unintelligible input is not silence — it emits
+# fluent, confident text learned from its training corpus.  These are the
+# stock phrases it falls back to, and a keyword alert fired from one of them
+# is worse than no alert at all.
+_HALLUCINATION_PHRASES = (
+    'thank you for watching', 'thanks for watching', 'please subscribe',
+    'subscribe to my channel', 'like and subscribe', 'see you next time',
+    'thank you very much', "i'll see you next time", 'bye bye',
+    'transcription by', 'subtitles by', 'amara.org', 'www.',
+)
+
+# Bracketed sound tags: [Music], (upbeat music), ♪ … ♪
+_SOUND_TAG_RE = re.compile(r'^\s*[\[\(♪][^\]\)♪]*[\]\)♪]\s*$')
+_WORD_RE = re.compile(r"[\w']+")
+
+
+def is_probable_hallucination(text: str, extra_phrases: tuple[str, ...] = ()) -> bool:
+    """True when *text* looks like a speech model's output for noise.
+
+    Three signatures: the stock filler phrases above, a bare sound tag, and
+    pathological repetition (Whisper loops on a phrase when the audio carries
+    no new information).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    lowered = stripped.lower()
+    for phrase in _HALLUCINATION_PHRASES + tuple(p.lower() for p in extra_phrases):
+        if phrase in lowered:
+            return True
+
+    if _SOUND_TAG_RE.match(stripped):
+        return True
+
+    words = _WORD_RE.findall(lowered)
+    if len(words) >= 6:
+        # One token making up most of the output, or a short phrase looped.
+        counts: dict[str, int] = {}
+        for w in words:
+            counts[w] = counts.get(w, 0) + 1
+        if max(counts.values()) / len(words) > 0.6:
+            return True
+        for size in (2, 3, 4):
+            if len(words) >= size * 3:
+                first = tuple(words[:size])
+                reps = sum(1 for i in range(0, len(words) - size + 1, size)
+                           if tuple(words[i:i + size]) == first)
+                if reps * size / len(words) > 0.8:
+                    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +298,7 @@ class CallClip:
     """One captured transmission: audio plus whatever metadata was live."""
 
     __slots__ = ('id', 'started', 'ended', 'pcm', 'sample_rate', 'metadata',
-                 'transcript', 'keywords', 'stt_error')
+                 'transcript', 'keywords', 'stt_error', 'discarded_transcript')
 
     def __init__(self, clip_id: str, started: float, ended: float,
                  pcm: bytes, sample_rate: int, metadata: dict[str, Any]) -> None:
@@ -141,6 +311,9 @@ class CallClip:
         self.transcript: str        = ''
         self.keywords:   list[str]  = []
         self.stt_error:  str        = ''
+        # Text the model produced that was rejected as a hallucination. Kept
+        # visible for tuning, but never matched against keywords.
+        self.discarded_transcript: str = ''
 
     @property
     def duration(self) -> float:
@@ -159,6 +332,8 @@ class CallClip:
         }
         if self.stt_error:
             d['stt_error'] = self.stt_error
+        if self.discarded_transcript:
+            d['discarded_transcript'] = self.discarded_transcript
         d.update(self.metadata)
         return d
 
@@ -225,6 +400,10 @@ class CallRecorder:
         min_call_secs: float = 0.8,
         max_call_secs: float = 120.0,
         min_peak: int = 250,
+        normalize: bool = True,
+        target_rms: float = 3_000.0,
+        max_gain_db: float = 24.0,
+        min_voiced_ratio: float = 0.0,
         metadata_fn: Callable[[], dict[str, Any]] | None = None,
         on_complete: Callable[[CallClip], None] | None = None,
     ) -> None:
@@ -234,6 +413,10 @@ class CallRecorder:
         self.min_call_secs  = min_call_secs
         self.max_call_secs  = max_call_secs
         self.min_peak       = min_peak
+        self.normalize      = normalize
+        self.target_rms     = target_rms
+        self.max_gain_db    = max_gain_db
+        self.min_voiced_ratio = min_voiced_ratio
         self.metadata_fn    = metadata_fn
         self.on_complete    = on_complete
 
@@ -330,10 +513,34 @@ class CallRecorder:
         if duration < self.min_call_secs:
             self.calls_dropped += 1
             return None
-        if peak_amplitude(pcm) < self.min_peak:
+
+        peak = peak_amplitude(pcm)
+        if peak < self.min_peak:
             # All-but-silent: encrypted traffic and squelch tails land here.
             self.calls_dropped += 1
             return None
+
+        # Advisory speech-likeness score. Off by default (0.0) because it is a
+        # heuristic, not a decode-quality reading — see voiced_ratio().
+        voiced = voiced_ratio(pcm, self.sample_rate) if self.min_voiced_ratio > 0.0 else None
+        if voiced is not None and voiced < self.min_voiced_ratio:
+            self.calls_dropped += 1
+            return None
+
+        rms = speech_rms(pcm, self.sample_rate)
+        gain_db = 0.0
+        if self.normalize:
+            pcm, gain_db = normalize_pcm16(
+                pcm, self.sample_rate,
+                target_rms=self.target_rms, max_gain_db=self.max_gain_db)
+
+        # Levels describe the clip as received, before any normalisation, so
+        # they stay meaningful as an RF health indicator.
+        meta['peak'] = peak
+        meta['rms'] = round(rms, 1)
+        meta['gain_db'] = round(gain_db, 1)
+        if voiced is not None:
+            meta['voiced_ratio'] = round(voiced, 3)
 
         self.calls_captured += 1
         return CallClip(uuid.uuid4().hex[:12], started, ended, pcm,
@@ -372,6 +579,9 @@ class HomeAssistantConfig:
         self.timeout     = float(raw.get('timeout_secs', 30.0) or 30.0)
 
         self.keywords_only = bool(raw.get('keywords_only', False))
+        self.filter_hallucinations = bool(raw.get('filter_hallucinations', True))
+        self.hallucination_phrases = tuple(
+            str(p) for p in (raw.get('hallucination_phrases') or []) if str(p).strip())
         self.talkgroups    = [int(t) for t in (raw.get('talkgroups') or [])
                               if str(t).strip().lstrip('-').isdigit()]
 
@@ -457,6 +667,7 @@ class HomeAssistantBridge(threading.Thread):
         self.dropped     = 0
         self.transcribed = 0
         self.stt_errors  = 0
+        self.hallucinations = 0
         self.webhooks    = 0
         self.webhook_errors = 0
         self.alerts      = 0
@@ -509,12 +720,22 @@ class HomeAssistantBridge(threading.Thread):
     def _process(self, clip: CallClip) -> None:
         if self.cfg.stt_configured:
             text, err = self._transcribe(clip)
-            clip.transcript = text
-            clip.stt_error  = err
-            if text:
-                self.transcribed += 1
+            clip.stt_error = err
             if err:
                 self.stt_errors += 1
+
+            # A speech model handed unintelligible audio does not return
+            # nothing — it returns confident boilerplate. Drop that before it
+            # can match a keyword and page somebody at 3am.
+            if (text and self.cfg.filter_hallucinations
+                    and is_probable_hallucination(text, self.cfg.hallucination_phrases)):
+                clip.discarded_transcript = text
+                self.hallucinations += 1
+                text = ''
+
+            clip.transcript = text
+            if text:
+                self.transcribed += 1
 
         clip.keywords = match_keywords(clip.transcript, self.cfg.keywords)
         if clip.keywords:
@@ -593,6 +814,7 @@ class HomeAssistantBridge(threading.Thread):
             'dropped':        self.dropped,
             'transcribed':    self.transcribed,
             'stt_errors':     self.stt_errors,
+            'hallucinations': self.hallucinations,
             'webhooks':       self.webhooks,
             'webhook_errors': self.webhook_errors,
             'alerts':         self.alerts,

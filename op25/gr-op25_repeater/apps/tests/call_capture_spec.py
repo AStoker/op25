@@ -66,6 +66,7 @@ def recorder(store: ha_bridge.ClipStore, captured: list) -> ha_bridge.CallRecord
         store,
         hang_time_secs=0.05,
         min_call_secs=0.3,
+        normalize=False,          # keep amplitudes predictable for assertions
         metadata_fn=lambda: {'tgid': 1234, 'talkgroup': 'FD Dispatch'},
         on_complete=captured.append,
     )
@@ -229,6 +230,173 @@ class TestCallRecorder:
         time.sleep(0.08)
         recorder.poll()
         assert store.get(captured[0].id) is captured[0]
+
+
+# ---------------------------------------------------------------------------
+# Loudness normalisation
+# ---------------------------------------------------------------------------
+
+
+class TestNormalisation:
+    """Live clips span ~28 dB of RMS between talkgroups; even that out."""
+
+    def test_quiet_clip_is_brought_up(self) -> None:
+        quiet = tone(8_000, amp=400)
+        out, gain_db = ha_bridge.normalize_pcm16(quiet, 8_000, target_rms=3_000.0)
+        assert gain_db > 6.0
+        assert ha_bridge.speech_rms(out) > ha_bridge.speech_rms(quiet) * 2
+
+    def test_loud_clip_is_brought_down(self) -> None:
+        loud = tone(8_000, amp=30_000)
+        out, gain_db = ha_bridge.normalize_pcm16(loud, 8_000, target_rms=3_000.0)
+        assert gain_db < 0.0
+        assert ha_bridge.peak_amplitude(out) < ha_bridge.peak_amplitude(loud)
+
+    def test_normalised_clips_converge_on_a_similar_level(self) -> None:
+        levels = [
+            ha_bridge.speech_rms(ha_bridge.normalize_pcm16(tone(8_000, amp=a), 8_000)[0])
+            for a in (400, 3_000, 12_000, 30_000)
+        ]
+        assert max(levels) / min(levels) < 1.5     # was ~75x before
+
+    def test_never_exceeds_the_peak_ceiling(self) -> None:
+        out, _g = ha_bridge.normalize_pcm16(tone(8_000, amp=1_000), 8_000,
+                                            target_rms=30_000.0, peak_ceiling=29_000)
+        assert ha_bridge.peak_amplitude(out) <= 29_000
+
+    def test_gain_is_capped_so_silence_is_not_amplified_into_noise(self) -> None:
+        _out, gain_db = ha_bridge.normalize_pcm16(tone(8_000, amp=5), 8_000,
+                                                  target_rms=3_000.0, max_gain_db=24.0)
+        assert gain_db <= 24.01
+
+    def test_already_correct_level_is_left_alone(self) -> None:
+        pcm = tone(8_000, amp=4_200)
+        out, gain_db = ha_bridge.normalize_pcm16(pcm, 8_000, target_rms=3_000.0)
+        assert gain_db == 0.0
+        assert out is pcm
+
+    def test_empty_input_is_safe(self) -> None:
+        assert ha_bridge.normalize_pcm16(b'', 8_000) == (b'', 0.0)
+
+    def test_speech_rms_ignores_pauses(self) -> None:
+        """Whole-clip RMS would be dragged down by the gaps between phrases."""
+        speech = tone(4_000, amp=8_000)
+        with_pause = speech + b'\x00' * 8_000 + speech
+        assert ha_bridge.speech_rms(with_pause) == pytest.approx(
+            ha_bridge.speech_rms(speech), rel=0.15)
+
+    def test_recorder_normalises_and_records_the_gain(
+        self, store: ha_bridge.ClipStore, captured: list,
+    ) -> None:
+        rec = ha_bridge.CallRecorder(store, hang_time_secs=0.05, min_call_secs=0.3,
+                                     on_complete=captured.append)
+        for _ in range(50):
+            rec.push(tone(160, amp=500))
+        time.sleep(0.08)
+        rec.poll()
+        clip = captured[0]
+        assert clip.metadata['gain_db'] > 0
+        assert clip.metadata['peak'] == pytest.approx(500, rel=0.05)   # as received
+        assert ha_bridge.peak_amplitude(clip.pcm) > 500                # as stored
+
+    def test_normalisation_can_be_switched_off(
+        self, store: ha_bridge.ClipStore, captured: list,
+    ) -> None:
+        rec = ha_bridge.CallRecorder(store, hang_time_secs=0.05, min_call_secs=0.3,
+                                     normalize=False, on_complete=captured.append)
+        for _ in range(50):
+            rec.push(tone(160, amp=500))
+        time.sleep(0.08)
+        rec.poll()
+        assert captured[0].metadata['gain_db'] == 0.0
+        assert ha_bridge.peak_amplitude(captured[0].pcm) == pytest.approx(500, rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Speech-likeness heuristic
+# ---------------------------------------------------------------------------
+
+
+class TestVoicedRatio:
+    def test_periodic_tone_scores_high(self) -> None:
+        assert ha_bridge.voiced_ratio(tone(16_000, freq=200)) > 0.8
+
+    def test_silence_scores_zero(self) -> None:
+        assert ha_bridge.voiced_ratio(b'\x00' * 16_000) == 0.0
+
+    def test_too_short_input_is_safe(self) -> None:
+        assert ha_bridge.voiced_ratio(tone(100)) == 0.0
+
+    def test_gate_is_off_by_default(
+        self, store: ha_bridge.ClipStore, captured: list,
+    ) -> None:
+        """It is a heuristic, so it must not silently discard traffic."""
+        rec = ha_bridge.CallRecorder(store, hang_time_secs=0.05, min_call_secs=0.3,
+                                     on_complete=captured.append)
+        assert rec.min_voiced_ratio == 0.0
+        for _ in range(50):
+            rec.push(tone(160))
+        time.sleep(0.08)
+        rec.poll()
+        assert len(captured) == 1
+        assert 'voiced_ratio' not in captured[0].metadata
+
+    def test_gate_discards_aperiodic_audio_when_enabled(
+        self, store: ha_bridge.ClipStore, captured: list,
+    ) -> None:
+        rec = ha_bridge.CallRecorder(store, hang_time_secs=0.05, min_call_secs=0.3,
+                                     min_voiced_ratio=0.5, on_complete=captured.append)
+        # Deterministic pseudo-noise: aperiodic, so it should not read as voice.
+        seed = 12345
+        noise = bytearray()
+        for _ in range(16_000):
+            seed = (1103515245 * seed + 12345) & 0x7FFFFFFF
+            noise += struct.pack('<h', (seed % 16_000) - 8_000)
+        for i in range(0, len(noise), 320):
+            rec.push(bytes(noise[i:i + 320]))
+        time.sleep(0.08)
+        rec.poll()
+        assert captured == []
+        assert rec.calls_dropped == 1
+
+
+# ---------------------------------------------------------------------------
+# Hallucination filtering
+# ---------------------------------------------------------------------------
+
+
+class TestHallucinationDetection:
+    @pytest.mark.parametrize('text', [
+        'Thank you for watching!',
+        'Please subscribe to my channel',
+        'Subtitles by the Amara.org community',
+        '[Music]',
+        '(upbeat music)',
+        '♪ ♪',
+        'go ahead go ahead go ahead go ahead go ahead go ahead',
+        'the the the the the the the the',
+    ])
+    def test_recognises_known_failure_output(self, text: str) -> None:
+        assert ha_bridge.is_probable_hallucination(text) is True
+
+    @pytest.mark.parametrize('text', [
+        'engine twelve on scene working structure fire',
+        'dispatch show me out at four hundred block main street',
+        'copy that',
+        '',
+        'medic three transporting one patient priority two',
+    ])
+    def test_leaves_real_traffic_alone(self, text: str) -> None:
+        assert ha_bridge.is_probable_hallucination(text) is False
+
+    def test_extra_phrases_are_configurable(self) -> None:
+        assert ha_bridge.is_probable_hallucination('This video is sponsored by') is False
+        assert ha_bridge.is_probable_hallucination(
+            'This video is sponsored by', ('sponsored by',)) is True
+
+    def test_short_repeated_phrase_is_not_over_flagged(self) -> None:
+        """Real radio traffic does repeat itself; only pathological loops count."""
+        assert ha_bridge.is_probable_hallucination('copy copy') is False
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +729,28 @@ class TestWebhookPost:
         bridge, _clip = self._process(url, keywords_only=True)
         assert bridge.webhooks == 1
 
+    def test_hallucinated_transcript_never_reaches_the_webhook(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_body = {'result': 'success', 'text': 'Thank you for watching!'}
+        bridge, clip = self._process(url)
+        assert clip.transcript == ''
+        assert clip.keywords == []
+        assert clip.discarded_transcript == 'Thank you for watching!'
+        assert bridge.hallucinations == 1
+        assert json.loads(_StubHA.requests[-1][2])['transcript'] == ''
+
+    def test_hallucination_filter_can_be_switched_off(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_body = {'result': 'success', 'text': 'Thank you for watching!'}
+        _bridge, clip = self._process(url, filter_hallucinations=False)
+        assert clip.transcript == 'Thank you for watching!'
+
+    def test_hallucination_is_not_counted_as_a_transcription(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_body = {'result': 'success', 'text': '[Music]'}
+        bridge, _clip = self._process(url)
+        assert bridge.transcribed == 0
+
     def test_transcript_callback_fires_for_the_ui(self, stub_ha: Any) -> None:
         _srv, url = stub_ha
         seen: list = []
@@ -730,7 +920,7 @@ class TestServerWiring:
 
         websocket_server.stop_call_capture()
         websocket_server.start_call_capture({'terminal': {'call_recording': False}})
-        assert websocket_server._call_recorder is None
+        assert websocket_server._call_capture is None
 
     def test_capture_starts_without_home_assistant_configured(self) -> None:
         """/api/calls is useful on its own; HA is opt-in on top of it."""
@@ -739,10 +929,45 @@ class TestServerWiring:
         websocket_server.stop_call_capture()
         try:
             websocket_server.start_call_capture({'terminal': {}})
-            assert websocket_server._call_recorder is not None
+            assert websocket_server._call_capture is not None
             assert websocket_server._ha_bridge is None
         finally:
             websocket_server.stop_call_capture()
+
+    def test_each_udp_port_gets_its_own_recorder(self) -> None:
+        """DMR stereo puts timeslot B on port+1 — two independent conversations.
+
+        Merging them into one recorder would interleave two people into a
+        single clip.  (P25 only ever uses one port, so this is a no-op there.)
+        """
+        import websocket_server
+
+        clips: list = []
+        store = ha_bridge.ClipStore()
+        capture = websocket_server.CallCapture(lambda _p: ha_bridge.CallRecorder(
+            store, hang_time_secs=0.05, min_call_secs=0.3, on_complete=clips.append))
+
+        for _ in range(50):                       # both slots talking at once
+            capture.push(23456, tone(160, freq=300))
+            capture.push(23457, tone(160, freq=900))
+        time.sleep(0.08)
+        capture.poll()
+
+        assert len(clips) == 2
+        assert {round(c.duration, 1) for c in clips} == {1.0}
+        assert capture.stats()['ports'] == [23456, 23457]
+
+    def test_capture_stats_are_aggregated_across_ports(self) -> None:
+        import websocket_server
+
+        store = ha_bridge.ClipStore()
+        capture = websocket_server.CallCapture(lambda _p: ha_bridge.CallRecorder(
+            store, hang_time_secs=0.05, min_call_secs=0.3))
+        for port in (23456, 23457):
+            for _ in range(50):
+                capture.push(port, tone(160))
+        capture.flush()
+        assert capture.stats()['calls_captured'] == 2
 
     def test_public_url_defaults_to_the_bound_endpoint(self) -> None:
         import websocket_server

@@ -317,6 +317,12 @@ All keys live under `terminal.home_assistant`.
 | `min_call_secs` | 0.8 | Shorter transmissions are discarded |
 | `max_call_secs` | 120 | A longer transmission is split at this point |
 | `min_peak` | 250 | Clips quieter than this are discarded (catches encrypted traffic) |
+| `normalize` | true | Even out the loudness of captured clips (see §7) |
+| `normalize_target_rms` | 3000 | Target speech RMS, 0–32767 |
+| `normalize_max_gain_db` | 24 | Ceiling on boost, so near-silence is not amplified into noise |
+| `min_voiced_ratio` | 0 (off) | Discard clips scoring below this on the speech-likeness heuristic |
+| `filter_hallucinations` | true | Drop stock speech-model filler before keyword matching |
+| `hallucination_phrases` | `[]` | Extra phrases to treat as hallucinations |
 | `stt_sample_rate` | 16000 | Rate clips are resampled to before transcription |
 | `stt_audio` | `raw` | `raw` or `wav` — see troubleshooting |
 | `timeout_secs` | 30 | HTTP timeout for both STT and webhook calls |
@@ -364,7 +370,106 @@ rest:
 
 ---
 
-## 7. Troubleshooting
+## 7. Getting the best transcription out of P25
+
+### What cannot be fixed
+
+P25 Phase 1 uses the IMBE vocoder at 4400 bps; Phase 2 uses AMBE+2 at 2450 bps.
+These are *parametric* codecs — they do not transmit a waveform. They transmit
+pitch, per-band voicing decisions and a spectral envelope, and the decoder
+**resynthesizes** speech from those parameters. Measured across live clips from
+this decoder, the energy distribution in voiced frames is:
+
+```
+   0- 300 Hz    9.1%
+ 300-1000 Hz   66.3%
+1000-2000 Hz   16.8%
+2000-3000 Hz    7.0%
+3000-3400 Hz    0.8%
+3400-4000 Hz    0.1%
+```
+
+Two consequences follow, and no amount of post-processing changes either:
+
+- **The 8 kHz sample rate is not the bottleneck.** There is nothing above
+  3.4 kHz to recover, so upsampling adds no information. OP25 resamples to
+  16 kHz only because Home Assistant's STT API accepts nothing else.
+- **Consonant cues are largely gone.** Two-thirds of the energy sits in the
+  pitch and first-formant region. The high-frequency detail that separates
+  *fifteen* from *sixteen*, or *B* from *D*, lives above 2 kHz — where under
+  8% of the energy remains. Expect numbers and letters to be the least
+  reliable part of any transcript, and phonetic alphabet ("Adam", "Boy") to
+  fare better than bare letters.
+
+Phase 2 is audibly worse than Phase 1 for the same reason: roughly half the
+bit rate for the same job.
+
+### What OP25 does about it
+
+**Loudness normalisation** (`normalize`, on by default). Decoder output varies
+enormously between talkgroups and radios — measured at 24 dB of RMS spread
+across ten consecutive live calls, some pinned near full scale and others
+20 dB down. Each clip is levelled before it is stored or transcribed:
+
+```
+RMS spread as received : 24.4 dB  (112 .. 1874)
+RMS spread normalised  :  6.1 dB  (1159 .. 2339)
+```
+
+Gain targets speech RMS (ignoring the pauses between phrases, which would
+otherwise drag the measurement down and over-amplify sparse clips), then is
+clamped so peaks *reach* but never cross a ceiling — so levelling never
+introduces clipping. `normalize_max_gain_db` stops a nearly-silent clip being
+amplified into pure noise. The `peak`, `rms` and `gain_db` fields on each clip
+report the levels **as received**, so they stay usable as an RF health
+indicator.
+
+**Hallucination filtering** (`filter_hallucinations`, on by default). Whisper
+does not return silence for unintelligible input — it returns fluent, confident
+boilerplate from its training data ("Thank you for watching", "[Music]", a
+phrase looped a dozen times). A keyword alert fired from invented text is worse
+than no alert, so this text is dropped before keyword matching and surfaced
+separately as `discarded_transcript` — visible in the web UI and the API, so
+you can tell if the filter is being too aggressive.
+
+**Speech-likeness gate** (`min_voiced_ratio`, off by default). Scores each clip
+on pitch periodicity. This is a heuristic, not a decode-quality measurement —
+OP25 does not surface a bit error rate to Python, and the `error` field on a
+channel is the demodulator's *frequency* error in Hz (used for AFC), not a BER.
+Left off by default so it cannot silently discard traffic; enable it around
+0.3–0.4 if noise is reaching the transcriber, and watch `calls_dropped`.
+
+### What you can do about it
+
+Ranked by how much difference it makes:
+
+1. **Fix the RF first.** Bit errors corrupt vocoder *parameters*, so a marginal
+   signal produces warbling and dropped syllables that look like codec limits
+   but are not. Correct gain (enough for sensitivity, not so much that the
+   front end intermodulates), correct `ppm`, and a better antenna are free.
+   The frequency-error figure and `calls_dropped` are your indicators.
+2. **Run a bigger model, on a bigger machine.** Nothing in OP25 cares where
+   Home Assistant's STT engine lives. `medium` or `large-v3` on a desktop or
+   GPU box is a different league from `tiny`/`base`, and this is usually the
+   single largest available improvement.
+3. **Prime the model with your vocabulary.** The Whisper add-on's
+   `initial_prompt` accepts a sample of expected language — unit designators,
+   ten-codes, street and agency names. Biasing the decoder toward your
+   jargon measurably reduces nonsense on marginal audio.
+4. **Monitor dispatch, not field units.** Console audio comes from a wired
+   microphone in a quiet room; a portable held at arm's length beside a running
+   pump panel does not. The difference is larger than any tuning here.
+
+Things that sound helpful but are not: resampling above 16 kHz (there is no
+information up there to reconstruct), and general-purpose denoisers such as
+RNNoise — they target additive noise, whereas this is resynthesis artefact.
+Bandwidth-extension and speech-restoration models can make audio sound better
+to a human while inventing spectral detail, which is the last thing you want in
+front of a transcriber.
+
+---
+
+## 8. Troubleshooting
 
 Start at `/api/ha/status`. It separates the three things that can fail:
 
@@ -372,10 +477,11 @@ Start at `/api/ha/status`. It separates the three things that can fail:
 {
   "call_recording": true,
   "store": { "clips": 12, "bytes": 1930240 },
-  "recorder": { "calls_captured": 12, "calls_dropped": 3, "hang_time_secs": 1.5 },
+  "recorder": { "ports": [23456], "calls_captured": 12, "calls_dropped": 3 },
   "home_assistant": {
     "enabled": true, "submitted": 12, "transcribed": 11, "stt_errors": 1,
-    "webhooks": 11, "webhook_errors": 0, "alerts": 2, "dropped": 0
+    "hallucinations": 1, "webhooks": 11, "webhook_errors": 0,
+    "alerts": 2, "dropped": 0
   }
 }
 ```
@@ -411,10 +517,11 @@ curl -H "Authorization: Bearer $OP25_HA_TOKEN" \
      http://homeassistant.local:8123/api/stt/stt.faster_whisper
 ```
 
-**Transcripts are empty strings, no errors.** The engine ran and heard nothing
-intelligible. P25 vocoded audio at 8 kHz is hard for speech models; a larger
-Whisper model helps most, followed by monitoring talkgroups with clear
-dispatch audio rather than field units.
+**Transcripts are empty strings, no errors.** Either the engine heard nothing
+intelligible, or the output was filtered as a hallucination — check
+`hallucinations` in the status block and the `discarded_transcript` field on
+the affected calls. If real traffic is being discarded, add to or disable
+`filter_hallucinations`. Otherwise see §7 for what actually improves results.
 
 **`dropped` is climbing.** Transcription is slower than the call rate and the
 queue is shedding the oldest clips. Use a smaller Whisper model, or narrow
@@ -427,7 +534,7 @@ queue is shedding the oldest clips. Use a smaller Whisper model, or narrow
 
 ---
 
-## 8. Privacy and legality
+## 9. Privacy and legality
 
 Transcribing radio traffic and acting on it automatically is not the same as
 listening to a scanner. Before deploying this:

@@ -294,8 +294,58 @@ audio_manager = AudioStreamManager()
 # /api/calls REST endpoints and — when configured — the push of transcripts
 # and keyword alerts into Home Assistant.
 
+class CallCapture:
+    """One :class:`CallRecorder` per UDP audio port.
+
+    P25 sends a channel's audio to a single port — ``p25_frame_assembler``
+    holds one ``p25p2_tdma`` and calls plain ``send_audio()`` — so in the
+    common case this is a set of one.  DMR in stereo mode is the exception:
+    ``rx_sync::output()`` routes timeslot B to ``port + 1``, and those two
+    slots carry *independent conversations*.  Feeding both into a single
+    recorder would interleave two people into one clip, so each port gets
+    its own segmentation state.
+    """
+
+    def __init__(self, factory: Any) -> None:
+        self._factory = factory
+        self._recorders: dict[int, CallRecorder] = {}
+        self._lock = threading.Lock()
+
+    def _recorder(self, port: int) -> CallRecorder:
+        with self._lock:
+            rec = self._recorders.get(port)
+            if rec is None:
+                rec = self._factory(port)
+                self._recorders[port] = rec
+            return rec
+
+    def push(self, port: int, pcm: bytes) -> None:
+        self._recorder(port).push(pcm)
+
+    def poll(self) -> None:
+        with self._lock:
+            recorders = list(self._recorders.values())
+        for rec in recorders:
+            rec.poll()
+
+    def flush(self) -> None:
+        with self._lock:
+            recorders = list(self._recorders.values())
+        for rec in recorders:
+            rec.flush()
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            recorders = dict(self._recorders)
+        return {
+            'ports':          sorted(recorders),
+            'calls_captured': sum(r.calls_captured for r in recorders.values()),
+            'calls_dropped':  sum(r.calls_dropped for r in recorders.values()),
+        }
+
+
 clip_store: ClipStore = ClipStore()
-_call_recorder: CallRecorder | None = None
+_call_capture: CallCapture | None = None
 _ha_bridge: HomeAssistantBridge | None = None
 
 # Latest channel_update snapshot from the decoder, used to tag captured clips
@@ -360,10 +410,14 @@ def _call_capture_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     """Recorder tuning from ``terminal.home_assistant``, with defaults."""
     ha = (config or {}).get('terminal', {}).get('home_assistant', {}) or {}
     return {
-        'hang_time_secs': float(ha.get('hang_time_secs', 1.5) or 1.5),
-        'min_call_secs':  float(ha.get('min_call_secs', 0.8) or 0.8),
-        'max_call_secs':  float(ha.get('max_call_secs', 120.0) or 120.0),
-        'min_peak':       int(ha.get('min_peak', 250) or 250),
+        'hang_time_secs':   float(ha.get('hang_time_secs', 1.5) or 1.5),
+        'min_call_secs':    float(ha.get('min_call_secs', 0.8) or 0.8),
+        'max_call_secs':    float(ha.get('max_call_secs', 120.0) or 120.0),
+        'min_peak':         int(ha.get('min_peak', 250) or 250),
+        'normalize':        ha.get('normalize', True) is not False,
+        'target_rms':       float(ha.get('normalize_target_rms', 3_000.0) or 3_000.0),
+        'max_gain_db':      float(ha.get('normalize_max_gain_db', 24.0) or 24.0),
+        'min_voiced_ratio': float(ha.get('min_voiced_ratio', 0.0) or 0.0),
     }
 
 
@@ -379,7 +433,7 @@ def start_call_capture(config: dict[str, Any] | None,
     fallback for ``home_assistant.public_url`` so webhook payloads carry an
     absolute audio URL that Home Assistant can actually fetch.
     """
-    global _call_recorder, _ha_bridge
+    global _call_capture, _ha_bridge
 
     terminal = (config or {}).get('terminal', {}) or {}
     if terminal.get('call_recording', True) is False:
@@ -398,21 +452,22 @@ def start_call_capture(config: dict[str, Any] | None,
         _ha_bridge = HomeAssistantBridge(ha_cfg, on_transcript=_on_transcript)
         _ha_bridge.start()
 
-    if _call_recorder is None:
-        _call_recorder = CallRecorder(
+    if _call_capture is None:
+        settings = _call_capture_settings(config)
+        _call_capture = CallCapture(lambda _port: CallRecorder(
             clip_store,
             sample_rate=_SAMPLE_RATE,
             metadata_fn=_current_call_metadata,
             on_complete=_on_clip_complete,
-            **_call_capture_settings(config),
-        )
+            **settings,
+        ))
 
 
 def stop_call_capture() -> None:
-    global _call_recorder, _ha_bridge
-    if _call_recorder is not None:
-        _call_recorder.flush()
-        _call_recorder = None
+    global _call_capture, _ha_bridge
+    if _call_capture is not None:
+        _call_capture.flush()
+        _call_capture = None
     if _ha_bridge is not None:
         _ha_bridge.stop()
         _ha_bridge = None
@@ -537,6 +592,9 @@ class UdpAudioReceiver(threading.Thread):
         super().__init__(name='ws-audio-udp', daemon=True)
         self._endpoints     = endpoints
         self._socks: list[socket.socket] = []
+        # Which port each socket is bound to. Needed because each port gets
+        # its own call recorder — see CallCapture.
+        self._port_by_fd: dict[int, int] = {}
         self.keep_running   = True
 
         # Diagnostics
@@ -555,6 +613,7 @@ class UdpAudioReceiver(threading.Thread):
                 s.bind((host, port))
                 s.setblocking(False)
                 self._socks.append(s)
+                self._port_by_fd[s.fileno()] = port
                 sys.stderr.write('ws audio: listening on udp %s:%d\n' % (host, port))
             except OSError as exc:
                 sys.stderr.write(
@@ -570,6 +629,7 @@ class UdpAudioReceiver(threading.Thread):
             except OSError:
                 pass
         self._socks.clear()
+        self._port_by_fd.clear()
 
     def stop(self) -> None:
         self.keep_running = False
@@ -600,16 +660,16 @@ class UdpAudioReceiver(threading.Thread):
                 elif len(data) >= _AUDIO_FRAME_BYTES and (len(data) % 2 == 0):
                     self.packets_pcm += 1
                     audio_manager.push_audio(data)
-                    if _call_recorder is not None:
-                        _call_recorder.push(data)
+                    if _call_capture is not None:
+                        _call_capture.push(self._port_by_fd.get(s.fileno(), 0), data)
                 else:
                     # Unknown packet shape — log once-ish via the throttle.
                     self.packets_other += 1
 
             # select() returns at least once a second, which is frequent
             # enough to close out a call after its hang time expires.
-            if _call_recorder is not None:
-                _call_recorder.poll()
+            if _call_capture is not None:
+                _call_capture.poll()
 
             self._maybe_log()
 
@@ -927,16 +987,11 @@ async def ha_status() -> Response:
     speech-to-text and webhook round-trips are succeeding.
     """
     body: dict[str, Any] = {
-        "call_recording": _call_recorder is not None,
+        "call_recording": _call_capture is not None,
         "store":          clip_store.stats(),
     }
-    if _call_recorder is not None:
-        body["recorder"] = {
-            "calls_captured": _call_recorder.calls_captured,
-            "calls_dropped":  _call_recorder.calls_dropped,
-            "hang_time_secs": _call_recorder.hang_time,
-            "min_call_secs":  _call_recorder.min_call_secs,
-        }
+    if _call_capture is not None:
+        body["recorder"] = _call_capture.stats()
     if _ha_bridge is None:
         body["home_assistant"] = {"enabled": False}
     else:

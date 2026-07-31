@@ -115,8 +115,14 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
             )}
           </Typography>
         ) : (
-          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
-            {clip.stt_error ? `speech-to-text failed: ${clip.stt_error}` : 'no transcript'}
+          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+            {clip.stt_error
+              ? `speech-to-text failed: ${clip.stt_error}`
+              : clip.discarded_transcript
+                // Surfaced rather than hidden: if the filter is eating real
+                // traffic, this is how you would notice.
+                ? `discarded as a likely hallucination: “${clip.discarded_transcript}”`
+                : 'no transcript'}
           </Typography>
         )}
       </Box>

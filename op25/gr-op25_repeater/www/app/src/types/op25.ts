@@ -156,6 +156,18 @@ export interface CallClip {
   audio_url: string;
   /** Present when speech-to-text was attempted and failed. */
   stt_error?: string;
+  /** Text the model returned that was rejected as a probable hallucination.
+   *  Shown for tuning; never matched against keywords. */
+  discarded_transcript?: string;
+
+  /** Peak sample value as received, before normalisation (0–32767). */
+  peak?: number;
+  /** Speech RMS as received, before normalisation. */
+  rms?: number;
+  /** Gain applied to reach a consistent playback level. */
+  gain_db?: number;
+  /** Speech-likeness heuristic, 0–1. Only present when the gate is enabled. */
+  voiced_ratio?: number;
 
   system?: string;
   channel?: string;

@@ -147,6 +147,28 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
 - Clips are gated on `min_call_secs` and `min_peak`. The peak gate is what
   drops encrypted traffic, which decodes to near-silence — that is correct
   behaviour, not a bug to fix.
+- **One `CallRecorder` per UDP port** (`CallCapture`). P25 only ever uses one
+  port — `p25_frame_assembler_impl.h` holds a single `p25p2_tdma` and calls
+  plain `send_audio()`. Slot B (`port + 1`) is DMR-only, via
+  `rx_sync::output()` when `d_stereo` is set, and those two slots are
+  *independent conversations*: one recorder for both would interleave two
+  people into one clip.
+- **Clips are loudness-normalised at finalize** (measured 24.4 dB → 6.1 dB RMS
+  spread on live traffic). Gain targets speech RMS — `speech_rms()` averages
+  only the louder half of frames, so pauses don't inflate the boost — then is
+  clamped so peaks reach but never cross the ceiling, which means levelling
+  cannot introduce clipping. `peak`/`rms` in clip metadata are **as received**,
+  pre-normalisation, so they stay valid as an RF indicator.
+- **`ChannelStatus.error` is `demod.get_freq_error()` in Hz** (multi_rx.py:551)
+  — an AFC tuning figure, *not* a bit error rate. OP25 does not surface BER to
+  Python (`rs_errs`/`gly_errs` exist in the C++ but only reach stderr at debug
+  level). Don't build decode-quality gating on `error`.
+- `voiced_ratio()` is the speech-likeness heuristic used instead; it is
+  advisory and its gate (`min_voiced_ratio`) defaults to **off** so it cannot
+  silently eat traffic.
+- **Whisper hallucination filtering** is on by default. Unintelligible input
+  yields confident boilerplate, not silence; rejected text is preserved in
+  `discarded_transcript` (never keyword-matched) so over-filtering is visible.
 - Metadata comes from the newest `channel_update` via
   `_note_channel_state()` / `_current_call_metadata()`. All channels share one
   audio capture, so with several channels active at once attribution is
@@ -163,10 +185,19 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   defaults are unchanged — 8 kHz WAV — so the React player is unaffected.
 - Clips live in a bounded in-memory ring (`ClipStore`, 60 clips / 24 MB).
   Nothing is written to disk.
-- Tests: `tests/call_capture_spec.py` (81 tests), including HTTP round-trips
+- Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
   against a stub HA. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s
   per run on this machine.
+
+**The vocoder is the quality floor, not the sample rate.** Measured on live
+clips: 0.1 % of energy above 3.4 kHz, 66 % in 300–1000 Hz. IMBE/AMBE+2 are
+parametric — they resynthesize from pitch/voicing/envelope, so consonant cues
+above 2 kHz are largely absent and upsampling recovers nothing. Don't propose
+resampling, denoisers, or bandwidth extension as transcription fixes; the
+levers that work are RF quality, a bigger Whisper model on a bigger host, and
+`initial_prompt` vocabulary biasing. `README-home-assistant.md` §7 has the
+numbers.
 
 ## Responsive UI
 
@@ -264,14 +295,15 @@ $(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 102 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 137 tests,
 in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
 `httpx`.
 
 - `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
   traversal, method handling, CORS (21).
-- `tests/call_capture_spec.py` — PCM helpers, call segmentation, clip store,
-  keyword matching, HA config, HA HTTP round-trips, REST endpoints (81).
+- `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
+  speech heuristics, hallucination filtering, clip store, keyword matching, HA
+  config, HA HTTP round-trips, REST endpoints, per-port capture (116).
 
 Note that `TestClient.stream()` hangs on `/api/stream` — it is an unbounded
 generator. Drive `audio_manager.generate()` directly under `asyncio` instead.
