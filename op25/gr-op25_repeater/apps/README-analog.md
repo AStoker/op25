@@ -28,6 +28,7 @@ Parameters of relevance to the NBFM module are:
     nbfm_squelch_mode: "power"            - "power", "noise" or "voice" (see below)
     nbfm_noise_squelch_db: 8              - quieting (dB) required to open ("noise"/"voice" modes)
     nbfm_noise_squelch_hang: 250          - hang time in ms before closing ("noise"/"voice" modes)
+    nbfm_noise_squelch_ref: 0             - explicit no-carrier reference; 0 auto-calibrates
 ```
 
 ## Squelch modes
@@ -49,9 +50,19 @@ The default of 8 dB opens at roughly 6-7 dB CNR (weak but readable voice);
 raise it toward 12-15 dB to open only on solid signals, or lower it toward 5 dB
 to chase noisy ones.  Opening takes ~80 ms; closing is delayed by
 `nbfm_noise_squelch_hang` so brief fades and mobile flutter do not chop audio.
-A rise-only reference tracker recalibrates the no-carrier level automatically
-within ~200 ms of the first squelched noise, and gain transitions are ramped
-over 8 ms to avoid clicks.
+Gain transitions are ramped over 8 ms to avoid clicks, and returning from the
+hang state needs slightly more quieting than leaving it did, so a signal
+sitting exactly on the closing threshold cannot oscillate.
+
+The no-carrier reference is calibrated at run time by a tracker that can only
+raise it, so noise is never mistaken for signal.  The built-in starting value
+matches the demodulator's +/-7 kHz FDMA taps; `multi_rx` leaves the wider
++/-9.6 kHz TDMA taps selected unless trunking narrows them, and that noise
+floor is about 1.9 dB hotter, so quieting reads up to 1.9 dB low until the
+squelch observes actual channel noise (a receiver started on a live carrier
+learns from its first dropout).  Set `nbfm_noise_squelch_ref` to pin a
+measured value and skip calibration; `field-test/analyze-quieting.py` reports
+the correct number for a given receiver from a noise-only capture.
 
 `"voice"` is `"noise"` plus DB1NV's dual-band speech detector: opening
 additionally requires the 200-600 Hz band to dominate the 1000-1500 Hz band,

@@ -62,6 +62,7 @@ class op25_nbfm_c(gr.hier_block2):
         squelch_mode = str(from_dict(config, 'nbfm_squelch_mode', "power")).lower()
         noise_squelch_db = float(from_dict(config, 'nbfm_noise_squelch_db', 8.0))
         noise_squelch_hang = int(from_dict(config, 'nbfm_noise_squelch_hang', 250))
+        noise_squelch_ref = float(from_dict(config, 'nbfm_noise_squelch_ref', 0.0))
         subchannel_enabled = bool(from_dict(config, 'nbfm_enable_subchannel', False))
         raw_in = str(from_dict(config, 'nbfm_raw_input', ""))
         raw_out = str(from_dict(config, 'nbfm_raw_output', ""))
@@ -91,6 +92,7 @@ class op25_nbfm_c(gr.hier_block2):
                 open_db=noise_squelch_db,
                 hang_ms=noise_squelch_hang,
                 voice_detect=(squelch_mode == "voice"),
+                reference=noise_squelch_ref,
                 debug=debug,
                 msgq_id=msgq_id)
 
@@ -125,7 +127,7 @@ class op25_nbfm_c(gr.hier_block2):
             self.connect(self, self.null_sink)                                  # dispose of regular input
             self.raw_file = blocks.file_source(gr.sizeof_float, raw_in, False)
             self.throttle = blocks.throttle(gr.sizeof_float, input_rate)
-            self.throttle.set_max_noutput_items(input_rate/50);
+            self.throttle.set_max_noutput_items(input_rate // 50)
             self.fm_demod = self.throttle                                       # and replace fm_demod with throttled file source
             self.connect(self.raw_file, self.throttle)
             sys.stderr.write("%s [%d] Reading nbfm demod from file: %s\n" % (log_ts.get(), msgq_id, raw_in))

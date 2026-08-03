@@ -235,6 +235,82 @@ def main():
     check("noise mode: same tone signal opens (sanity)", sq_t2.is_open())
 
     # ------------------------------------------------------------------
+    # regression: a signal parked exactly at the closing threshold must
+    # not oscillate OPEN<->HANG, and must still be able to close.
+    # Observed on air (WMUR-EDGE1, 2026-08-03): dozens of
+    # open->hang->open transitions per second at quieting=5.0dB with the
+    # hang timer reset by each one, so the squelch never closed.
+    def park_at(sq, db, jitter_db, seconds, rng):
+        """Hold the measured quieting near db (+/- jitter) and count churn."""
+        transitions = []
+        sq.log_cb = transitions.append
+        sq.debug = 10                               # log every transition
+        for _ in range(int(seconds * FS / sq.frame_len)):
+            offset = rng.uniform(-jitter_db, jitter_db)
+            sq.noise_power = sq.reference / (10.0 ** ((db + offset) / 10.0))
+            sq._frame_decision()
+        return sum(1 for m in transitions
+                   if 'open->hang' in m or 'hang->open' in m)
+
+    def opened_squelch(rng):
+        d = discriminate(channel(int(2 * FS), 15, rng, audio=voice(int(2 * FS), rng)))
+        sq = squelch_core.NoiseSquelch(input_rate=FS, deviation=DEVIATION, debug=0)
+        sq.process(d)                               # open on a solid signal
+        assert sq.is_open()
+        return sq
+
+    sq = opened_squelch(rng)
+    flaps = park_at(sq, sq.close_db, 0.4, 10.0, rng)   # jitter across the line
+    check("threshold jitter: no OPEN<->HANG thrash", flaps <= 2,
+          "(%d flap transitions in 10 s)" % flaps)
+    check("threshold jitter: squelch still closes", not sq.is_open())
+
+    # holding steady *at* the hold threshold should keep the gate open --
+    # that is correct behavior, not the bug above
+    sq = opened_squelch(rng)
+    park_at(sq, sq.close_db + 0.05, 0.0, 3.0, rng)
+    check("at hold threshold: gate stays open", sq.is_open())
+
+    # ------------------------------------------------------------------
+    # regression: a receiver that starts up on a carrier learns its
+    # no-carrier reference from brief signal dropouts, even when the hang
+    # timer keeps the gate open across them.  Tracking only while CLOSED
+    # (the original code) could never calibrate here, leaving quieting
+    # under-reported by the filter mismatch -- 1.9 dB on the TDMA taps,
+    # which is what pushed the on-air signal down onto the threshold.
+    # No carrier ever drops => no information => nothing to learn, so the
+    # dropout is what makes calibration possible at all.
+    n_a, n_gap, n_b = int(3 * FS), int(0.2 * FS), int(3 * FS)   # gap < hang
+    d = np.concatenate([
+        discriminate(channel(n_a, 15, rng, 'tdma9600', audio=voice(n_a, rng))),
+        discriminate(channel(n_gap, None, rng, 'tdma9600')),
+        discriminate(channel(n_b, 15, rng, 'tdma9600', audio=voice(n_b, rng)))])
+    _, sq2 = run_squelch(d)
+    true_ref = refs['tdma9600']
+    err_init = abs(10 * np.log10(true_ref / squelch_core.REF_POWER_INIT))
+    err_now = abs(10 * np.log10(true_ref / sq2.reference))
+    check("start-up on carrier: dropout calibrates the reference",
+          sq2.reference > squelch_core.REF_POWER_INIT * 1.15 and err_now < err_init,
+          "(ref %.3f, %.1f dB from true, was %.1f dB off)" %
+          (sq2.reference, err_now, err_init))
+    check("start-up on carrier: gate held through the 200 ms dropout",
+          sq2.is_open())
+
+    # ------------------------------------------------------------------
+    # log volume: an operator at -v 2 sees one line per audible change
+    msgs = []
+    d = np.concatenate([
+        discriminate(channel(int(1 * FS), None, rng)),
+        discriminate(channel(int(2 * FS), 15, rng, audio=voice(int(2 * FS), rng))),
+        discriminate(channel(int(1 * FS), None, rng))])
+    sq3 = squelch_core.NoiseSquelch(input_rate=FS, deviation=DEVIATION,
+                                    debug=2, log_cb=msgs.append)
+    sq3.process(d)
+    check("logging at -v 2: one line per audible change", len(msgs) == 2,
+          "(%d lines: %s)" % (len(msgs), "; ".join(m.split('quieting')[0].strip()
+                                                   for m in msgs)))
+
+    # ------------------------------------------------------------------
     # streaming: envelope independent of chunking
     n = int(3 * FS)
     v = voice(int(1 * FS), rng)

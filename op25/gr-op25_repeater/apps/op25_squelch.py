@@ -36,7 +36,7 @@ class noise_squelch_ff(gr.sync_block):
 
     def __init__(self, input_rate, deviation,
                  open_db=8.0, hyst_db=3.0, hang_ms=250.0,
-                 voice_detect=False, voice_ratio_db=-3.0,
+                 voice_detect=False, voice_ratio_db=-3.0, reference=0.0,
                  debug=0, msgq_id=0):
         gr.sync_block.__init__(self,
                                name="noise_squelch_ff",
@@ -52,6 +52,7 @@ class noise_squelch_ff(gr.sync_block):
             hang_ms=hang_ms,
             voice_detect=voice_detect,
             voice_ratio_db=voice_ratio_db,
+            reference=reference,
             debug=debug,
             log_cb=self._log)
 

@@ -69,6 +69,11 @@ POWER_TAU_MS    = 20.0      # smoothing time constant for power estimates
 RAMP_MS         = 8.0       # audio gain ramp, click suppression
 REF_TAU_MS      = 200.0     # reference tracker attack time constant
 
+# Extra quieting required to return from HANG to OPEN, on top of the
+# closing threshold.  Without it a signal sitting exactly at the closing
+# threshold thrashes between the two states forever (see _frame_decision).
+REHOLD_MARGIN_DB = 1.5
+
 
 def design_bandpass(ntaps, f_lo, f_hi, fs):
     """Hamming windowed-sinc bandpass, unity gain at band center.
@@ -134,15 +139,25 @@ class NoiseSquelch(object):
     def __init__(self, input_rate, deviation,
                  open_db=8.0, hyst_db=3.0, hang_ms=250.0,
                  voice_detect=False, voice_ratio_db=-3.0, voice_hold_ms=1500.0,
-                 attack_ms=30.0, debug=0, log_cb=None):
+                 attack_ms=30.0, reference=0.0, debug=0, log_cb=None):
         self.input_rate = float(input_rate)
         # same gain expression as op25_nbfm's quadrature_demod_cf; used to
         # normalize measured power to a unit-gain (radians/sample) scale
         self.disc_gain = self.input_rate / (4.0 * np.pi * float(deviation))
         self.open_db = float(open_db)
         self.close_db = float(open_db) - float(hyst_db)
+        self.rehold_db = self.close_db + REHOLD_MARGIN_DB
         self.voice_detect = bool(voice_detect)
         self.voice_ratio_db = float(voice_ratio_db)
+        # An explicit no-carrier reference skips run-time calibration.
+        # REF_POWER_INIT matches the demodulator's +/-7 kHz FDMA taps; the
+        # +/-9.6 kHz TDMA taps (which multi_rx leaves selected unless
+        # trunking narrows them) sit 1.9 dB hotter, so quieting reads that
+        # much low until a signal dropout lets the tracker calibrate.
+        # Measure the right value for a given receiver with
+        # analyze-quieting.py over a noise-only capture.
+        self.ref_fixed = float(reference) > 0.0
+        self.ref_init = float(reference) if self.ref_fixed else REF_POWER_INIT
         self.debug = debug
         self.log_cb = log_cb        # optional callable(str) for logging
 
@@ -168,8 +183,8 @@ class NoiseSquelch(object):
     def reset(self):
         self.state = ST_CLOSED
         self.state_frames = 0
-        self.noise_power = REF_POWER_INIT   # start pessimistic: no quieting
-        self.reference = REF_POWER_INIT
+        self.noise_power = self.ref_init     # start pessimistic: no quieting
+        self.reference = self.ref_init
         self.envelope = 0.0
         self.gate_target = 0.0
         self.voice_p_lo = 1e-9
@@ -196,12 +211,17 @@ class NoiseSquelch(object):
 
     def _track_reference(self, p):
         # The no-carrier level is the physical maximum of discriminator
-        # noise (any signal only quiets it), so the reference tracker
-        # only ever rises.  It rises on the smoothed estimate, which
-        # already suppresses impulse noise.  REF_POWER_INIT deliberately
-        # underestimates so a receiver that starts on an active carrier
-        # errs toward staying closed until real noise calibrates it.
-        if p > self.reference:
+        # noise (any signal only quiets it), so measured power above the
+        # current reference proves the reference is too low -- whatever
+        # the gate is doing.  Tracking therefore rises in every state:
+        # gating this to the closed state alone deadlocks a receiver that
+        # starts up on an active carrier, because it can never observe
+        # the noise floor it needs in order to close.  Rising on the
+        # smoothed estimate (with a 200 ms attack) keeps impulse noise
+        # from dragging the reference up.  REF_POWER_INIT deliberately
+        # underestimates, so quieting reads low until calibration and
+        # start-up errs toward keeping the squelch closed.
+        if not self.ref_fixed and p > self.reference:
             self.reference += (p - self.reference) * self.ref_alpha
 
     def _voice_present(self):
@@ -214,6 +234,7 @@ class NoiseSquelch(object):
         q = self.quieting_db()
         carrier_open = q >= self.open_db
         carrier_hold = q >= self.close_db
+        carrier_rehold = q >= self.rehold_db
 
         if self.voice_detect:
             if self._voice_present():
@@ -227,8 +248,8 @@ class NoiseSquelch(object):
 
         prev = self.state
         self.state_frames += 1
+        self._track_reference(self.noise_power)
         if self.state == ST_CLOSED:
-            self._track_reference(self.noise_power)
             if carrier_open:
                 self.state = ST_OPENING
         elif self.state == ST_OPENING:
@@ -240,19 +261,32 @@ class NoiseSquelch(object):
             if not carrier_hold:
                 self.state = ST_HANG
         elif self.state == ST_HANG:
-            if carrier_hold:
+            # Returning to OPEN needs more quieting than leaving it did.
+            # A signal decaying to exactly close_db would otherwise
+            # oscillate OPEN<->HANG on adjacent frames, and because each
+            # transition restarts the hang timer the squelch could never
+            # close at all -- observed on air as an endless burst of
+            # open->hang->open transitions at the threshold.
+            if carrier_rehold:
                 self.state = ST_OPEN
             elif self.state_frames >= self.hang_frames:
                 self.state = ST_CLOSED
 
         if self.state != prev:
             self.state_frames = 0
-            self.gate_target = 1.0 if self.state in (ST_OPEN, ST_HANG) else 0.0
-            if self.debug >= 2:
-                names = {ST_CLOSED: 'closed', ST_OPENING: 'opening',
-                         ST_OPEN: 'open', ST_HANG: 'hang'}
+            was_audible = prev in (ST_OPEN, ST_HANG)
+            now_audible = self.state in (ST_OPEN, ST_HANG)
+            self.gate_target = 1.0 if now_audible else 0.0
+            names = {ST_CLOSED: 'closed', ST_OPENING: 'opening',
+                     ST_OPEN: 'open', ST_HANG: 'hang'}
+            if self.debug >= 10:
                 self._log("noise squelch %s->%s quieting=%.1fdB" %
                           (names[prev], names[self.state], q))
+            elif self.debug >= 2 and was_audible != now_audible:
+                # only report changes an operator can hear; OPEN<->HANG is
+                # internal bookkeeping and would otherwise flood the log
+                self._log("noise squelch %s quieting=%.1fdB" %
+                          ("opened" if now_audible else "closed", q))
 
     def process(self, x):
         """Gate a chunk of discriminator samples; returns same-length array."""
