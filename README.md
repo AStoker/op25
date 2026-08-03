@@ -1,4 +1,4 @@
-# This is the W1JPI fork of op25. It is a copy of the boatbod fork as of 3/12/2025 and I intend to implement NBFM squelch algorithms based on the work of PA3FWM https://www.pa3fwm.nl/technotes/tn16e.html
+# This is the W1JPI fork of op25. It adds NBFM squelch algorithms based on the work of PA3FWM (https://www.pa3fwm.nl/technotes/tn16e.html) on top of the boatbod fork: a noise squelch calibrated in dB of quieting (no per-device threshold hunting) and an optional speech detector, selected via `nbfm_squelch_mode`. See `op25/gr-op25_repeater/apps/README-analog.md` for details.
 
 Capabilities are broadly categorized into two lists - those supported by the legacy `rx.py` version of the app and those by the newer `multi_rx.py` version.  I recommend using `multi_rx.py` where at all possible as this is the focus of future development.
 
