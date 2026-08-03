@@ -9,37 +9,11 @@
 ########################################################################
 # Setup library
 ########################################################################
-include(GrPlatform) #define LIB_SUFFIX
+include(GNUInstallDirs)
 
 list(APPEND op25_sources
     fsk4_demod_ff_impl.cc
-    fsk4_slicer_fb_impl.cc
-    decoder_bf_impl.cc
-    decoder_ff_impl.cc
-    abstract_data_unit.cc
-    data_unit.cc
-    hdu.cc
-    ldu1.cc
-    ldu2.cc
-    pdu.cc
-    tdu.cc
-    tsbk.cc
-    data_unit_handler.cc
-    logfile_du_handler.cc
-    p25cai_du_handler.cc
-    snapshot_du_handler.cc
-    imbe_decoder.cc
-    imbe_decoder_factory.cc
-    dummy_imbe_decoder.cc
-    offline_imbe_decoder.cc
-    voice_data_unit.cc
-    voice_du_handler.cc
-    pcap_source_b_impl.cc
-    software_imbe_decoder.cc
-    vc55_imbe_decoder.cc
     value_string.cc
-    pickle.cc
-    pcap_source_b_impl.cc
 )
 
 set(op25_sources "${op25_sources}" PARENT_SCOPE)
@@ -50,12 +24,10 @@ endif(NOT op25_sources)
 
 add_library(gnuradio-op25 SHARED ${op25_sources})
 
-target_link_libraries(gnuradio-op25 gnuradio::gnuradio-runtime itpp pcap)
+target_link_libraries(gnuradio-op25 gnuradio::gnuradio-runtime)
 target_include_directories(gnuradio-op25
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
     PUBLIC $<INSTALL_INTERFACE:include>
-    PRIVATE "${ITPP_INCLUDE_DIR}"
-    PRIVATE "${PCAP_INCLUDE_DIR}"
   )
 set_target_properties(gnuradio-op25 PROPERTIES DEFINE_SYMBOL "gnuradio_op25_EXPORTS")
 

@@ -2,7 +2,7 @@
 #
 # Copyright 2008-2011 Steve Glass
 # Copyright 2011, 2012, 2013, 2014, 2015, 2016, 2017 Max H. Parke KA1RBI
-# Copyright 2017-2024 Graham J. Norbury
+# Copyright 2017-2026 Graham J. Norbury
 # 
 # This file is part of OP25
 # 
@@ -197,12 +197,13 @@ class curses_terminal(threading.Thread):
         if curses.is_term_resized(self.maxy, self.maxx) is True:
             self.resize_curses()
 
+        _ORD_D = ord('D')
         _ORD_C = ord('c')
         _ORD_S = ord('s')
         _ORD_L = ord('l')
         _ORD_H = ord('h')
         _ORD_R = ord('R')
-        COMMANDS = {_ORD_S: 'skip', _ORD_L: 'lockout', _ORD_H: 'hold', _ORD_R: 'reload', _ORD_C: 'capture'}
+        COMMANDS = {_ORD_S: 'skip', _ORD_L: 'lockout', _ORD_H: 'hold', _ORD_R: 'reload', _ORD_C: 'capture', _ORD_D: 'dump_buffer'}
         c = self.stdscr.getch()
         if c == ord('u') or self.do_auto_update():
             self.send_command('update', 0, int(self.current_msgqid))
@@ -315,10 +316,6 @@ class curses_terminal(threading.Thread):
             self.send_command('toggle_plot', (c - ord('0')), int(self.current_msgqid))
         elif c == ord('d'):
             self.send_command('dump_tgids', 0, int(self.current_msgqid))
-        elif c == ord('D'):
-            self.send_command('dump_tracking', 0, int(self.current_msgqid))
-        elif c == ord('T'):
-            self.send_command('set_tracking', -1, int(self.current_msgqid))
         elif c == ord('x'):
             assert 1 == 0
         elif c == curses.KEY_UP:
@@ -520,6 +517,7 @@ class curses_terminal(threading.Thread):
 
     def process_q_events(self):
         # return true signifies end of main event loop
+        rc = False
         while True:
             if curses.is_term_resized(self.maxy, self.maxx) is True:
                 self.resize_curses()
@@ -527,8 +525,10 @@ class curses_terminal(threading.Thread):
                 break
             msg = self.input_q.delete_head_nowait()
             if msg.type() == -4:
-                return self.process_json(msg.to_string())
-        return False
+                for m in json.loads(msg.to_string()):
+                    if m is not None and len(m) > 0:
+                        rc |= self.process_json(json.dumps(m))
+        return rc
 
     def send_command(self, command, arg1 = 0, arg2 = 0):
         if self.sock:

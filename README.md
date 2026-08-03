@@ -36,18 +36,26 @@ Capabilities are broadly categorized into two lists - those supported by the leg
 - RID text tagging
 - Dynamically controllable real-time plots: FFT, Constellation, Symbol, Datascope, Mixer, Tuning
 - Dynamically controllable log level
-- Curses or HTTP based terminal
+- Awesome new HTTP based terminal by Outerdog(RR)/Triptolemus510(github)
 - JSON based configuration
 - DSD .wav and .iq file replay
 - Dynamic demodulator symbol capture and replay (commanded through terminal)
 - Voice Encryption detection and skipping (configurable behavior)
 - Automatic fine tune tracking using Frequency Locked Loop (FLL)
 
-## Roadmap (under development)
+## Encryption capabilities
+Real-time decryption of encrypted P25 voice traffic is supported for several commonly used protocols
+as long as you know and enter the encryption key for this to work. OP25 does not reverse
+the encryption on traffic with unknown keys.
+- ADP/RC4
+- DES-OFB
+- AES-256
 
-- New HTTP GUI
-- Logging to GUI
-- Dynamic configuration
+## Roadmap (under development)
+- Demodulator improvements to speed up channel lock-time
+- Additional encryption algorithms
+- Well written code contributions of new features or other improvements are welcome.
+  Please submit pull requests using the "dev" branch to make integration simpler.
 
 ## History
 

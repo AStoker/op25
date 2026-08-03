@@ -27,7 +27,7 @@ import time
 import json
 import codecs
 import ast
-import threading
+from collections import deque
 from helper_funcs import *
 from log_ts import log_ts
 from gnuradio import gr
@@ -44,6 +44,9 @@ TGID_EXPIRY_TIME = 1.0   # Number of seconds to allow tgid to remain active with
 FREQ_EXPIRY_TIME = 1.2   # Number of seconds to allow freq to remain active with no updates received
 EXPIRY_TIMER = 0.2       # Number of seconds between checks for tgid/freq expiry
 PATCH_EXPIRY_TIME = 20.0 # Number of seconds until patch expiry
+WUID_EXPIRY_TIME = 14400 # Number of seconds until WUID registration expiry (4hrs, per TIA-102.AABD)
+CLEANUP_TIMER = 0.5      # Number of seconds between cleanup intervals
+CALL_LOG_MAX_LEN = 10    # Maximum number of call_log entries to retain
 
 #################
 # Helper functions
@@ -116,13 +119,17 @@ class rx_ctl(object):
         self.receivers = {}
         self.systems = {}
         self.chans = chans
+        self.cleanup_timer = time.time()
+        self.call_log = deque(maxlen=CALL_LOG_MAX_LEN)
+        self.call_log_mutex = TimeoutLock(timeout=1.0)
 
         for chan in self.chans:
             sysname = chan['sysname']
             if sysname not in self.systems:
                 self.systems[sysname] = { 'system': None, 'receivers': [] }
                 self.systems[sysname]['system'] = p25_system(debug  = self.debug,
-                                                             config = chan)
+                                                             config = chan,
+                                                             rx_ctl = self)
 
     # add_receiver is called once per radio channel defined in cfg.json
     def add_receiver(self, msgq_id, config, meta_q = None, freq = 0):
@@ -148,10 +155,16 @@ class rx_ctl(object):
         else:                            # undefined or mis-configured trunking sysname
             sys.stderr.write("Receiver '%s' configured with unknown trunking_sysname '%s'\n" % (rx_name, rx_sysname))
 
-        self.receivers[msgq_id] = {'msgq_id': msgq_id,
-                                   'config' : config,
-                                   'sysname': rx_sysname,
-                                   'rx_rcvr': rx_rcvr}
+        conv_state = None
+        if rx_rcvr is None:
+            conv_state = {'tgid': None, 'srcaddr': 0, 'encrypted': 0,
+                          'tag': 'Conventional', 'srctag': '', 'freq': freq, 'call_start': None}
+
+        self.receivers[msgq_id] = {'msgq_id':    msgq_id,
+                                   'config' :    config,
+                                   'sysname':    rx_sysname,
+                                   'rx_rcvr':    rx_rcvr,
+                                   'conv_state': conv_state}
 
     # post_init is called once after all receivers have been created
     def post_init(self):
@@ -189,6 +202,57 @@ class rx_ctl(object):
 
                 # Check for control channel reassignment
                 self.check_cc_assignments()
+
+        elif m_rxid in self.receivers and self.receivers[m_rxid]['conv_state'] is not None:
+            cs = self.receivers[m_rxid]['conv_state']
+            if self.debug >= 5:
+                sys.stderr.write("%s [%d] conv process_qmsg: type(%d)\n" % (log_ts.get(), m_rxid, m_type))
+            if m_type == -1:                                        # channel idle/timeout
+                cs['tgid']       = None
+                cs['srcaddr']    = 0
+                cs['encrypted']  = 0
+                cs['tag']        = 'Conventional'
+                cs['srctag']     = ''
+                cs['call_start'] = None
+                updated += 1
+            elif m_type == -3:                                      # P25 call data (srcaddr, grpaddr, encryption)
+                js = json.loads(msg.to_string())
+                grpaddr   = from_dict(js, 'grpaddr',   0)
+                srcaddr   = from_dict(js, 'srcaddr',   0)
+                encrypted = from_dict(js, 'encrypted', 0)
+                if self.debug >= 5:
+                    sys.stderr.write("%s [%d] conv call data: grpaddr(%d) srcaddr(%d) encrypted(%d)\n" % (log_ts.get(), m_rxid, grpaddr, srcaddr, encrypted))
+                if grpaddr != 0:
+                    if cs['call_start'] is None or grpaddr != cs['tgid']:   # new call started
+                        self.log_call(0, m_rxid, cs['freq'], 0, 0, grpaddr, '', srcaddr, '')
+                        cs['call_start'] = curr_time
+                        cs['tgid']       = grpaddr
+                    cs['srcaddr']   = srcaddr
+                    cs['encrypted'] = max(0, encrypted)
+                    updated += 1
+            elif m_type == 19:                                      # FDMA LCW — carries real TGID/srcaddr for conventional calls
+                s = msg.to_string()
+                lcw = s[2:]                                         # strip 2-byte NAC prefix
+                pb_sf_lco = get_ordinals(lcw[0:1])
+                if not (pb_sf_lco & 0x80):                          # skip encrypted LCW format
+                    if pb_sf_lco == 0x00:                           # Group Voice Channel User
+                        ga = get_ordinals(lcw[4:6])
+                        sa = get_ordinals(lcw[6:9])
+                        if self.debug >= 5:
+                            sys.stderr.write("%s [%d] conv lcw(0x00): ga(%d) sa(%d)\n" % (log_ts.get(), m_rxid, ga, sa))
+                        if ga != 0:
+                            if cs['call_start'] is None or ga != cs['tgid']:
+                                self.log_call(0, m_rxid, cs['freq'], 0, 0, ga, '', sa, '')
+                                cs['call_start'] = curr_time
+                                cs['tgid']       = ga
+                            cs['srcaddr'] = sa
+                            updated += 1
+
+        if curr_time > (self.cleanup_timer + CLEANUP_TIMER):
+            for rcvr in self.receivers:
+                if self.receivers[rcvr]['rx_rcvr'] is not None:
+                    self.receivers[rcvr]['rx_rcvr'].check_expired_hold(time.time())
+            self.cleanup_timer = curr_time
 
     # Check for control channel assignments to idle receivers
     def check_cc_assignments(self):
@@ -231,6 +295,7 @@ class rx_ctl(object):
         for system in self.systems:
             self.systems[system]['system'].dump_tgids()
             self.systems[system]['system'].dump_patches()
+            self.systems[system]['system'].dump_wuids()
             self.systems[system]['system'].dump_rids()
             self.systems[system]['system'].sourceid_history.dump()
 
@@ -238,11 +303,32 @@ class rx_ctl(object):
         d = {'json_type': 'channel_update'}
         rcvr_ids = []
         for rcvr in self.receivers:
+            rcvr_name = from_dict(self.receivers[rcvr]['config'], 'name', "")
             if self.receivers[rcvr]['rx_rcvr'] is not None:
-                self.receivers[rcvr]['rx_rcvr'].check_expired_hold(time.time())
-                rcvr_name = from_dict(self.receivers[rcvr]['config'], 'name', "")
                 d[str(rcvr)] = json.loads(self.receivers[rcvr]['rx_rcvr'].get_status())
                 d[str(rcvr)]['name'] = rcvr_name
+                rcvr_ids.append(str(rcvr))
+            elif self.receivers[rcvr]['conv_state'] is not None:
+                cs = self.receivers[rcvr]['conv_state']
+                sysname = from_dict(self.receivers[rcvr]['config'], 'trunking_sysname', '') or rcvr_name
+                d[str(rcvr)] = {
+                    'freq':         cs['freq'],
+                    'tdma':         0,
+                    'tgid':         cs['tgid'],
+                    'system':       sysname,
+                    'tag':          cs['tag'],
+                    'srcaddr':      cs['srcaddr'],
+                    'svcopts':      0,
+                    'srctag':       cs['srctag'],
+                    'encrypted':    cs['encrypted'],
+                    'emergency':    0,
+                    'hold_tgid':    0,
+                    'mode':         None,
+                    'stream':       from_dict(self.receivers[rcvr]['config'], 'meta_stream_name', ''),
+                    'msgqid':       rcvr,
+                    'name':         rcvr_name,
+                    'conventional': True,
+                }
                 rcvr_ids.append(str(rcvr))
         d['channels'] = rcvr_ids
         return json.dumps(d)
@@ -256,20 +342,46 @@ class rx_ctl(object):
             if self.receivers[rcvr]['rx_rcvr'] is not None:
                 self.receivers[rcvr]['rx_rcvr'].set_debug(dbglvl)
 
+    def get_call_log(self):
+        d = {'json_type': 'call_log'}
+        with self.call_log_mutex:
+            d['log'] = list(self.call_log)
+            self.call_log.clear()
+        return json.dumps(d)
+
+    def log_call(self, sysid, rcvr, freq, slot, prio, tgid, tgtag, rid, rtag):
+        with self.call_log_mutex:
+            self.call_log.append({ "time":    time.time(),
+                                   "sysid":   sysid,
+                                   "rcvr":    rcvr,
+                                   "rcvrtag": from_dict(self.receivers[rcvr]['config'], 'name', ""),
+                                   "freq":    freq,
+                                   "slot":    slot,
+                                   "prio":    prio,
+                                   "tgid":    tgid,
+                                   "tgtag":   tgtag,
+                                   "rid":     rid,
+                                   "rtag":    rtag })
+
 #################
 # P25 system class
 class p25_system(object):
-    def __init__(self, debug, config):
+    def __init__(self, debug, config, rx_ctl = None):
         self.config = config
         self.debug = debug
+        self.rx_ctl = rx_ctl
         self.freq_table = {}
         self.voice_frequencies = {}
         self.talkgroups = {}
-        self.talkgroups_mutex = threading.Lock()
+        self.talkgroups_mutex = TimeoutLock(timeout=1.0)
         self.sourceids = {}
         self.sourceid_history = rid_history(self.sourceids, 10)
+        self.registered_suids = {}
+        self.registered_wuids = {}
+        self.expire_registrations_check = time.time()
+        self.suids_mutex = TimeoutLock(timeout=1.0)
         self.patches = {}
-        self.patches_mutex = threading.Lock()
+        self.patches_mutex = TimeoutLock(timeout=1.0)
         self.blacklist = {}
         self.whitelist = None
         self.crypt_behavior = 1
@@ -288,6 +400,11 @@ class p25_system(object):
         self.rfss_stid = 0
         self.rfss_chan = 0
         self.rfss_txchan = 0
+        self.rfss_network_active = None  # RFSS_STS_BCST 'A' bit: 1 = active RFSS link, 0 = failsoft
+        self.rfss_lra = None             # Location Registration Area (RFSS/NET_STS octet 2)
+        self.sys_service_class = None    # SYS_SRV_BCST 'services available' (24-bit field)
+        self.utc_offset_min = None       # TIME_DATE_ANN local time offset (signed minutes)
+        self.encryption_algid = None     # P_PARM_BCST algid: set => encrypted control channel
         self.ns_syid = int(ast.literal_eval(from_dict(config, "sysid", "0")))
         self.ns_wacn = int(ast.literal_eval(from_dict(config, "wacn", "0")))
         self.ns_chan = 0
@@ -319,6 +436,11 @@ class p25_system(object):
             sys.stderr.write("%s [%s] reading system whitelist file: %s\n" % (log_ts.get(), self.sysname, self.config['whitelist']))
             self.whitelist = get_int_dict(self.config['whitelist'], self.sysname)
 
+        if 'band_plan' in self.config:
+            band_plan = self.config['band_plan']
+            for k in band_plan:     # JSON hack; re-write band_plan keys as integers into the freq_table
+                self.freq_table[int(k)] = band_plan[k]
+
         self.tdma_cc = bool(from_dict(self.config, 'tdma_cc', False)) 
         if self.tdma_cc:
             self.cc_rate = 6000
@@ -328,12 +450,6 @@ class p25_system(object):
             self.ns_valid = True
 
         self.crypt_behavior = int(from_dict(self.config, 'crypt_behavior', 1))
-        #sys.stderr.write("%s crypt behavior: %d\n" % (log_ts.get(), self.crypt_behavior))
-        # export crypt_behavior to c
-        #self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': self.crypt_behavior})
-        # if 'crypt_keys' in self.config and self.config['crypt_keys'] != "":
-        #    sys.stderr.write("%s [%s] reading system crypt_keys file: %s\n" % (log_ts.get(), self.sysname, self.config['crypt_keys']))
-        #    self.crypt_keys = get_key_dict(self.config['crypt_keys'], self.sysname)
 
         cc_list = from_dict(self.config, 'control_channel_list', "")
         if cc_list == "":
@@ -346,6 +462,9 @@ class p25_system(object):
 
     def set_debug(self, dbglvl):
         self.debug = dbglvl
+
+    def log_call(self, rcvr, freq, slot, prio, tgid, rid):
+        self.rx_ctl.log_call(self.ns_syid, rcvr, freq, slot, prio, tgid, self.talkgroups[tgid]['tag'], rid, self.get_rid_tag(rid))
 
     def get_talkgroups(self):
         return self.talkgroups
@@ -590,6 +709,18 @@ class p25_system(object):
             gav   = (mbt_data >> 120) & 0x3
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] mbt(0x28) grp_aff_rsp: mfrid: 0x%x wacn: 0x%x syid: 0x%x lg: %d gav: %d aga: %d ga: %d ta: %d\n\n' %(log_ts.get(), m_rxid, mfrid, wacn, syid, lg, gav, aga, ga, ta))
+            if gav == 0:
+                self.affiliate_sgid(wacn, syid, gid, ga, aga, ta, self.last_tsbk)
+        elif opcode == 0x2c:  # u_reg_rsp
+            mfrid = (header >> 56) & 0xff
+            wacn  = ((header << 4) & 0xffff0) + ((mbt_data >> 92) & 0xf) 
+            syid  = (mbt_data >> 80) & 0xfff
+            sid   = (mbt_data >> 56) & 0xffffff
+            rv    = (mbt_data >> 48) & 0x3
+            if self.debug >= 10:
+                sys.stderr.write('%s [%d] mbt(0x2c) u_reg_rsp: mfid: 0x%x rv: %d wacn: 0x%x syid: 0x%x sid: %d sa: %d\n' % (log_ts.get(), m_rxid, mfrid, rv, wacn, syid, sid, src))
+            if rv == 0:
+                self.register_suid(wacn, syid, sid, src, self.last_tsbk)
         elif opcode == 0x3c:  # adjacent status
             syid = (header >> 48) & 0xfff
             rfid = (header >> 24) & 0xff
@@ -634,6 +765,11 @@ class p25_system(object):
                 add_unique_freq(self.cc_list, f1)
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] mbt(0x3a) rfss_sts_bcst: sys: %x rfid: %x stid: %x ch1: %s ch2: %s\n' %(log_ts.get(), m_rxid, syid, rfid, stid, self.channel_id_to_string(ch1), self.channel_id_to_string(ch2)))
+        elif opcode == 0x3e:  # protection parameter broadcast -> encrypted control channel
+            algid = (header >> 16) & 0xff   # header octet 9; header arg is raw_header << 16
+            self.encryption_algid = algid
+            if self.debug >= 10:
+                sys.stderr.write('%s [%d] mbt(0x3e) p_parm_bcst: algid: %x\n' %(log_ts.get(), m_rxid, algid))
         else:
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] mbt(0x%02x) unhandled: %x\n' %(log_ts.get(), m_rxid, opcode, mbt_data))
@@ -748,7 +884,7 @@ class p25_system(object):
                 if bsi != "": # Save bsi only if non-null
                     self.callsign = bsi
                     if self.debug >= 10:
-                        sys.stderr.write('%s [%d] tsbk(0x0b) mot_bsi_grant: bsi: %s ch: %x freq: %f\n' % (log_ts.get(), m_rxid, bsi, ch, float(self.channel_id_to_frequency(ch))/1e6))
+                        sys.stderr.write('%s [%d] tsbk(0x0b) mot_bsi_grant: bsi: %s ch: %x(%s)\n' % (log_ts.get(), m_rxid, bsi, ch, self.channel_id_to_string(ch)))
         elif opcode == 0x16:   # sndcp data ch
             ch1  = (tsbk >> 48) & 0xffff
             ch2  = (tsbk >> 32) & 0xffff
@@ -763,6 +899,8 @@ class p25_system(object):
             ta     = (tsbk >> 16) & 0xffffff
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tsbk(0x28) grp_aff_rsp: mfid: 0x%x gav: %d aga: %d ga: %d ta: %d\n' % (log_ts.get(), m_rxid, mfrid, gav, aga, ga, ta))
+            if gav == 0:
+                self.affiliate_sgid(self.ns_wacn, self.ns_syid, ga, ga, aga, ta, self.last_tsbk)
         elif opcode == 0x29:   # secondary cc explicit form
             mfrid = (tsbk >> 80) & 0xff
             rfid  = (tsbk >> 72) & 0xff
@@ -777,6 +915,17 @@ class p25_system(object):
                 add_unique_freq(self.cc_list, f1)
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tsbk(0x29) sccb_exp: rfid: %x stid: %d ch1: %x(%s) ch2: %x(%s)\n' %(log_ts.get(), m_rxid, rfid, stid, ch1, self.channel_id_to_string(ch1), ch2, self.channel_id_to_string(ch2)))
+        elif opcode == 0x2b:   # loc_reg_rsp
+            mfrid  = (tsbk >> 80) & 0xff
+            rv     = (tsbk >> 72) & 0x3
+            ga     = (tsbk >> 56) & 0xffff
+            rfid   = (tsbk >> 48) & 0xff
+            stid   = (tsbk >> 40) & 0xff
+            ta     = (tsbk >> 16) & 0xffffff
+            if self.debug >= 10:
+                sys.stderr.write('%s [%d] tsbk(0x2b) loc_reg_rsp: mfid: 0x%x rv: %d ga: %d rfid: 0x%x stid: 0x%x ta: %d\n' % (log_ts.get(), m_rxid, mfrid, rv, ga, rfid, stid, ta))
+            if rv == 0:
+                self.affiliate_sgid(self.ns_wacn, self.ns_syid, ga, ga, 0, ta, self.last_tsbk)
         elif opcode == 0x2c:   # u_reg_rsp
             mfrid  = (tsbk >> 80) & 0xff
             rv     = (tsbk >> 76) & 0x3
@@ -785,6 +934,8 @@ class p25_system(object):
             sa     = (tsbk >> 16) & 0xffffff
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tsbk(0x2c) u_reg_rsp: mfid: 0x%x rv: %d syid: 0x%x sid: %d sa: %d\n' % (log_ts.get(), m_rxid, mfrid, rv, syid, sid, sa))
+            if rv == 0:
+                self.register_suid(self.ns_wacn, syid, sid, sa, self.last_tsbk)
         elif opcode == 0x2f:   # u_de_reg_ack
             mfrid  = (tsbk >> 80) & 0xff
             wacn   = (tsbk >> 52) & 0xfffff
@@ -792,6 +943,7 @@ class p25_system(object):
             sid    = (tsbk >> 16) & 0xffffff
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tsbk(0x2f) u_de_reg_ack: mfid: 0x%x wacn: 0x%x syid: 0x%x sid: %d\n' % (log_ts.get(), m_rxid, mfrid, wacn, syid, sid))
+            self.deregister_suid(wacn, syid, sid)
         elif opcode == 0x30:
             mfrid  = (tsbk >> 80) & 0xff
             if mfrid == 0xA4:  # GRG_EXENC_CMD
@@ -833,8 +985,9 @@ class p25_system(object):
             self.freq_table[iden]['offset'] = toff * spac * 125
             self.freq_table[iden]['step'] = spac * 125
             self.freq_table[iden]['frequency'] = freq * 5
+            self.freq_table[iden]['bw'] = bwvu   # 0x04 = 6.25 kHz, 0x05 = 12.5 kHz (TIA-102.AABC-B 6.2.29)
             if self.debug >= 10:
-                sys.stderr.write('%s [%d] tsbk(0x34) iden_up_vu: id: %d toff: %f spac: %f freq: %f [%s]\n' % (log_ts.get(), m_rxid, iden, toff * spac * 0.125 * 1e-3, spac * 0.125, freq * 0.000005, txt[toff_sign]))
+                sys.stderr.write('%s [%d] tsbk(0x34) iden_up_vu: id: %d toff: %f spac: %f freq: %f bw: %x [%s]\n' % (log_ts.get(), m_rxid, iden, toff * spac * 0.125 * 1e-3, spac * 0.125, freq * 0.000005, bwvu, txt[toff_sign]))
         elif opcode == 0x33:   # iden_up_tdma
             mfrid  = (tsbk >> 80) & 0xff
             if mfrid == 0:
@@ -870,13 +1023,16 @@ class p25_system(object):
             self.freq_table[iden]['offset'] = toff * 250000
             self.freq_table[iden]['step'] = spac * 125
             self.freq_table[iden]['frequency'] = freq * 5
+            self.freq_table[iden]['bw'] = bw   # channel bandwidth (TIA-102.AABC-B 6.2.9, 125 Hz units)
             if self.debug >= 10:
-                sys.stderr.write('%s [%d] tsbk(0x3d) iden_up id: %d toff: %f spac: %f freq: %f\n' % (log_ts.get(), m_rxid, iden, toff * 0.25, spac * 0.125, freq * 0.000005))
+                sys.stderr.write('%s [%d] tsbk(0x3d) iden_up id: %d toff: %f spac: %f freq: %f bw: %x\n' % (log_ts.get(), m_rxid, iden, toff * 0.25, spac * 0.125, freq * 0.000005, bw))
         elif opcode == 0x3a:   # rfss status
             syid = (tsbk >> 56) & 0xfff
             rfid = (tsbk >> 48) & 0xff
             stid = (tsbk >> 40) & 0xff
             chan = (tsbk >> 24) & 0xffff
+            net  = (tsbk >> 68) & 0x1   # 'A' bit (octet 3): 1 = active RFSS network connection
+            lra  = (tsbk >> 72) & 0xff  # Location Registration Area (octet 2)
             f1 = self.channel_id_to_frequency(chan)
             if f1:
                 self.rfss_syid = syid
@@ -884,9 +1040,11 @@ class p25_system(object):
                 self.rfss_stid = stid
                 self.rfss_chan = f1
                 self.rfss_txchan = f1 + self.freq_table[chan >> 12]['offset']
+                self.rfss_network_active = net
+                self.rfss_lra = lra
                 add_unique_freq(self.cc_list, f1)
             if self.debug >= 10:
-                sys.stderr.write('%s [%d] tsbk(0x3a) rfss_sts_bcst: syid: %x rfid: %x stid: %d ch1: %x(%s)\n' %(log_ts.get(), m_rxid, syid, rfid, stid, chan, self.channel_id_to_string(chan)))
+                sys.stderr.write('%s [%d] tsbk(0x3a) rfss_sts_bcst: syid: %x rfid: %x stid: %d A: %d ch1: %x(%s)\n' %(log_ts.get(), m_rxid, syid, rfid, stid, net, chan, self.channel_id_to_string(chan)))
         elif opcode == 0x39:   # secondary cc
             mfrid = (tsbk >> 80) & 0xff
             rfid  = (tsbk >> 72) & 0xff
@@ -908,27 +1066,46 @@ class p25_system(object):
             wacn = (tsbk >> 52) & 0xfffff
             syid = (tsbk >> 40) & 0xfff
             ch1  = (tsbk >> 24) & 0xffff
+            lra  = (tsbk >> 72) & 0xff  # Location Registration Area (octet 2)
             f1 = self.channel_id_to_frequency(ch1)
             if f1:
                 self.ns_syid = syid
                 self.ns_wacn = wacn
                 self.ns_chan = f1
                 self.ns_valid = True
+                self.rfss_lra = lra
             if self.debug >= 10:
-                sys.stderr.write('%s [%d] tsbk(0x3b) net_sts_bcst: wacn: %x syid: %x ch1: %x(%s)\n' %(log_ts.get(), m_rxid, wacn, syid, ch1, self.channel_id_to_string(ch1)))
+                sys.stderr.write('%s [%d] tsbk(0x3b) net_sts_bcst: wacn: %x syid: %x lra: %x ch1: %x(%s)\n' %(log_ts.get(), m_rxid, wacn, syid, lra, ch1, self.channel_id_to_string(ch1)))
         elif opcode == 0x3c:   # adjacent status
             rfid = (tsbk >> 48) & 0xff
             stid = (tsbk >> 40) & 0xff
             ch1  = (tsbk >> 24) & 0xffff
+            cfva = (tsbk >> 68) & 0xf   # octet-3 signaling: C(onventional) F(ailure) V(alid) A(ctive net)
+            lra  = (tsbk >> 72) & 0xff  # Location Registration Area (octet 2)
             table = (ch1 >> 12) & 0xf
             f1 = self.channel_id_to_frequency(ch1)
             if f1 and table in self.freq_table:
                 self.adjacent[f1] = 'rfid: %d stid:%d uplink:%f tbl:%d' % (rfid, stid, (f1 + self.freq_table[table]['offset']) / 1000000.0, table)
-                self.adjacent_data[f1] = {'rfid': rfid, 'stid':stid, 'uplink': f1 + self.freq_table[table]['offset'], 'table': table}
+                self.adjacent_data[f1] = {'rfid': rfid, 'stid':stid, 'uplink': f1 + self.freq_table[table]['offset'], 'table': table, 'lra': lra,
+                                          'conventional': (cfva >> 3) & 1, 'failure': (cfva >> 2) & 1, 'valid': (cfva >> 1) & 1, 'active': cfva & 1}
             if self.debug >= 10:
-                sys.stderr.write('%s [%d] tsbk(0x3c) adj_sts_bcst: rfid: %x stid: %d ch1: %x(%s)\n' %(log_ts.get(), m_rxid, rfid, stid, ch1, self.channel_id_to_string(ch1)))
+                sys.stderr.write('%s [%d] tsbk(0x3c) adj_sts_bcst: rfid: %x stid: %d C: %d F: %d V: %d A: %d ch1: %x(%s)\n' %(log_ts.get(), m_rxid, rfid, stid, (cfva >> 3) & 1, (cfva >> 2) & 1, (cfva >> 1) & 1, cfva & 1, ch1, self.channel_id_to_string(ch1)))
                 if table in self.freq_table:
                     sys.stderr.write('%s [%d] tsbk(0x3c) adj_sts_bcst: base freq: %s step: %s\n' % (log_ts.get(), m_rxid, self.freq_table[table]['frequency'] , self.freq_table[table]['step'] ))
+        elif opcode == 0x38:   # system service broadcast
+            svc_avail = (tsbk >> 48) & 0xffffff  # services available (octets 3-5)
+            svc_supp  = (tsbk >> 24) & 0xffffff  # services supported (octets 6-8)
+            prio      = (tsbk >> 16) & 0xff       # request priority level (octet 9)
+            self.sys_service_class = svc_avail
+            if self.debug >= 10:
+                sys.stderr.write('%s [%d] tsbk(0x38) sys_srv_bcst: avail: %06x supp: %06x prio: %d\n' % (log_ts.get(), m_rxid, svc_avail, svc_supp, prio))
+        elif opcode == 0x35:   # time and date announcement
+            vl  = (tsbk >> 77) & 0x1    # VL: local time offset field valid (octet 2 bit 5)
+            raw = (tsbk >> 64) & 0xfff  # 12-bit local time offset, msb = subtract-from-UTC
+            if vl:
+                self.utc_offset_min = -(raw & 0x7ff) if (raw >> 11) & 1 else (raw & 0x7ff)
+            if self.debug >= 10:
+                sys.stderr.write('%s [%d] tsbk(0x35) time_date_ann: vl: %d utc_offset_min: %s\n' % (log_ts.get(), m_rxid, vl, self.utc_offset_min))
         else:
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tsbk(0x%02x) unhandled: 0x%024x\n' % (log_ts.get(), m_rxid, opcode, tsbk))
@@ -1109,7 +1286,26 @@ class p25_system(object):
             if self.debug >= 10:
                 sys.stderr.write('%s [%d] tdma(0x89) mfid90 grp_regrp_del: sg: %d wg_list: %s\n' % (log_ts.get(), m_rxid, sg, wg_list))
             self.del_patch(sg, wg_list)
-        elif op == 0xa0 and mfid == 0x90: # MFID90 Group Regroup Voice Channel User Extendd
+        elif op == 0x91 and mfid == 0x90: # MFID90 Talker Alias Header
+            ta_len =  get_ordinals(msg[5:6])
+            bn     =  get_ordinals(msg[7:8])
+            sn     = (get_ordinals(msg[8:9]) >> 4) & 0xf
+            if self.debug >= 1:
+                m_data = get_ordinals(msg)
+                sys.stderr.write('%s [%d] tdma(0x%02x) mfid90 talker_alias_header: sn: %x, bn: %d ta_len %d msg_data: 0x%x\n' % (log_ts.get(), m_rxid, op, sn, bn, ta_len, m_data))
+            if bn == 0:
+                alias_hdr = get_ordinals(msg[0:2] + msg[3:7] + bytes((0x00, 0x00)) + msg[8:17])  # convert header from TDMA to FDMA (LCW) format
+                self.rx_ctl.receivers[m_rxid]['rx_rcvr'].rx_mot_talker_alias_header(sn, bn, ta_len, alias_hdr)
+        elif op == 0x95 and mfid == 0x90: # MFID90 Talker Alias Block
+            bn     =  get_ordinals(msg[3:4])
+            sn     = (get_ordinals(msg[4:5]) >> 4) & 0xf
+            if self.debug >= 1:
+                m_data = get_ordinals(msg)
+                sys.stderr.write('%s [%d] tdma(0x%02x) mfid90 talker_alias_block: sn: %x, bn: %d msg_data: 0x%x\n' % (log_ts.get(), m_rxid, op, sn, bn, m_data))
+            if bn > 0:
+                alias_block = get_ordinals(msg[4:17]) & 0x0fffffffffffffffffffffffff
+                self.rx_ctl.receivers[m_rxid]['rx_rcvr'].rx_mot_talker_alias_block(sn, bn, 100, alias_block)
+        elif op == 0xa0 and mfid == 0x90: # MFID90 Group Regroup Voice Channel User Extended
             sg    = get_ordinals(msg[4:6])
             sa    = get_ordinals(msg[6:9])
             ssuid = get_ordinals(msg[9:16])
@@ -1287,7 +1483,8 @@ class p25_system(object):
                 if table in self.freq_table:
                     sys.stderr.write('%s [%d] tdma(0xfe) adj_sts_bcst: base freq: %s step: %s\n' % (log_ts.get(), m_rxid, self.freq_table[table]['frequency'] , self.freq_table[table]['step'] ))
         else:
-            if self.debug >= 10:
+            #if self.debug >= 10:
+            if self.debug >= 1:
                 m_data = get_ordinals(msg)
                 sys.stderr.write('%s [%d] tdma(0x%02x) unhandled: mfid: 0x%x msg_data: 0x%x\n' % (log_ts.get(), m_rxid, op, mfid, m_data))
         return updated
@@ -1433,6 +1630,7 @@ class p25_system(object):
                     sys.stderr.write('%s [%s] update_talkgroups: sg(%d) patched tgid(%d)\n' % (log_ts.get(), self.sysname, tgid, ptgid))
 
     def update_talkgroup(self, frequency, tgid, tdma_slot, srcaddr, svcopts):
+        ui_log_update = False
         with self.talkgroups_mutex:
             if self.debug >= 5:
                 if svcopts is None:
@@ -1444,7 +1642,12 @@ class p25_system(object):
                 add_default_tgid(self.talkgroups, tgid)
                 if self.debug >= 5:
                     sys.stderr.write('%s [%s] new tgid=%s %s prio %d\n' % (log_ts.get(), self.sysname, tgid, self.talkgroups[tgid]['tag'], self.talkgroups[tgid]['prio']))
-            self.talkgroups[tgid]['time'] = time.time()
+
+            if self.talkgroups[tgid]['receiver'] is not None and srcaddr is not None and srcaddr > 0 and srcaddr < 0xffffff and self.talkgroups[tgid]['srcaddr'] != srcaddr:
+                ui_log_update = True
+
+            ts = time.time()
+            self.talkgroups[tgid]['time'] = ts
             self.talkgroups[tgid]['counter'] += 1
             self.talkgroups[tgid]['frequency'] = frequency
             self.talkgroups[tgid]['tdma_slot'] = tdma_slot
@@ -1456,11 +1659,27 @@ class p25_system(object):
                         self.talkgroups[tgid]['srcaddr'] = srcaddr      # don't overwrite with null srcaddr for active calls
                 else:
                     self.talkgroups[tgid]['srcaddr'] = srcaddr
+                self.update_wuid_ts(srcaddr, tgid, ts)
+
+        if ui_log_update:   # log update to UI outside of the mutex protection
+            self.rx_ctl.log_call(self.ns_syid,
+                                 self.talkgroups[tgid]['receiver'].msgq_id,
+                                 self.talkgroups[tgid]['frequency'],
+                                 self.talkgroups[tgid]['tdma_slot'],
+                                 self.talkgroups[tgid]['prio'],
+                                 tgid,
+                                 self.talkgroups[tgid]['tag'],
+                                 srcaddr,
+                                 self.get_rid_tag(srcaddr))
 
     def update_talkgroup_srcaddr(self, curr_time, tgid, srcaddr, svcopts=None):
-        if (tgid is None or tgid <= 0 or srcaddr is None or srcaddr <= 0 or
+        ui_log_update = False
+        if (tgid is None or tgid <= 0 or srcaddr is None or srcaddr <= 0 or srcaddr >= 0xffffff or
             tgid not in self.talkgroups or self.talkgroups[tgid]['receiver'] is None):
             return 0
+
+        if self.talkgroups[tgid]['srcaddr'] != srcaddr:
+            ui_log_update = True
 
         with self.talkgroups_mutex:
             if svcopts is not None:
@@ -1474,6 +1693,18 @@ class p25_system(object):
             else:
                 self.sourceids[srcaddr]['tgs'][tgid] += 1;
             self.sourceid_history.record(srcaddr, tgid, curr_time)
+
+        if ui_log_update:   # log update to UI outside of the mutex protection
+            self.rx_ctl.log_call(self.ns_syid,
+                                 self.talkgroups[tgid]['receiver'].msgq_id,
+                                 self.talkgroups[tgid]['frequency'],
+                                 self.talkgroups[tgid]['tdma_slot'],
+                                 self.talkgroups[tgid]['prio'],
+                                 tgid,
+                                 self.talkgroups[tgid]['tag'],
+                                 srcaddr,
+                                 self.get_rid_tag(srcaddr))
+
         return 1
 
     def expire_talkgroups(self, curr_time):
@@ -1491,9 +1722,10 @@ class p25_system(object):
 
         # step 2 - expire the individual talkgroups with the talkgroups_mutex unlocked
         for tgid in tg_expire_list:
-            if self.debug > 1:
-                sys.stderr.write("%s [%s] expiring tg(%d), freq(%f), slot(%s)\n" % (log_ts.get(), self.sysname, tgid, (self.talkgroups[tgid]['frequency']/1e6), get_slot(self.talkgroups[tgid]['tdma_slot'])))
-            self.talkgroups[tgid]['receiver'].expire_talkgroup(reason="expiry")
+            if self.talkgroups[tgid]['receiver'] is not None:   # re-validate receiver still assigned to this tgid and was not released by a different thread
+                if self.debug > 1:
+                    sys.stderr.write("%s [%s] expiring tg(%d), freq(%f), slot(%s)\n" % (log_ts.get(), self.sysname, tgid, (self.talkgroups[tgid]['frequency']/1e6), get_slot(self.talkgroups[tgid]['tdma_slot'])))
+                self.talkgroups[tgid]['receiver'].expire_talkgroup(reason="expiry")
 
     def add_patch(self, sg, ga_list):
         with self.patches_mutex:
@@ -1547,6 +1779,96 @@ class p25_system(object):
         else:
             return self.sourceids[srcaddr]['tag']
 
+    def register_suid(self, wacn_id, sys_id, source_id, src_addr, ts):
+        if (source_id == 0 or sys_id == 0 or wacn_id == 0 or src_addr == 0):
+            return None
+        suid = ("%05x%03x%06x" % (wacn_id, sys_id, source_id))
+        wuid = ("%06x" % src_addr)
+        if suid in self.registered_suids and self.registered_suids[suid]['wuid'] != wuid:
+            self.deregister_suid(wacn_id, sys_id, source_id)
+        tag = self.get_rid_tag(src_addr)
+        with self.suids_mutex:
+            if suid not in self.registered_suids:
+                self.registered_suids[suid] = {"rfid": self.rfss_rfid, "stid": self.rfss_stid, "wuid" : wuid, "tag" : tag, "aff_sgid" : 0, "ts": ts}
+                self.registered_wuids[wuid] = {"rfid": self.rfss_rfid, "stid": self.rfss_stid, "suid" : suid, "tag" : tag, "aff_aga"  : 0, "aff_ga"  : 0, "ts": ts}
+                if self.debug >= 10:
+                    sys.stderr.write("%s [%s] register_suid: suid(%s), wuid(%d)\n" % (log_ts.get(), self.sysname, suid, int(wuid, 16)))
+            else:
+                self.registered_suids[suid]['ts'] = ts
+                self.registered_wuids[wuid]['ts'] = ts
+        return suid
+
+    def deregister_suid(self, wacn_id, sys_id, source_id):
+        if (source_id == 0 or sys_id == 0 or wacn_id == 0):
+            return
+        suid = ("%05x%03x%06x" % (wacn_id, sys_id, source_id))
+        if suid in self.registered_suids:
+            with self.suids_mutex:
+                wuid = self.registered_suids[suid]['wuid']
+                self.registered_suids.pop(suid, None)
+                self.registered_wuids.pop(wuid, None)
+            if self.debug >= 10:
+                sys.stderr.write("%s [%s] deregister_suid: suid(%s), wuid(%d)\n" % (log_ts.get(), self.sysname, suid, int(wuid, 16)))
+
+    def affiliate_sgid(self, wacn_id, sys_id, group_id, group_addr, ann_group_addr, src_addr, ts):
+        if (sys_id == 0 or wacn_id == 0 or src_addr == 0):
+            return None
+
+        wuid = ("%06x" % src_addr)
+        if (wuid not in self.registered_wuids and 
+            self.register_suid(wacn_id, sys_id, src_addr, src_addr, ts) is None):   # this only legitimately works for same-system where source_id == src_addr
+            return None
+
+        suid = self.registered_wuids[wuid]['suid']
+        sgid = ("%05x%03x%04x" % (wacn_id, sys_id, group_id))
+        with self.suids_mutex:
+            if self.registered_suids[suid]['aff_sgid'] != sgid:
+                self.registered_suids[suid]['aff_sgid'] = sgid
+                self.registered_wuids[wuid]["aff_aga"] = ann_group_addr
+                self.registered_wuids[wuid]["aff_ga"] = group_addr
+                if self.debug >= 10:
+                    sys.stderr.write("%s [%s] affiliate_sgid: suid(%s), sgid(%s), wuid(%d), aga(%d), ga(%d)\n" % (log_ts.get(), self.sysname, suid, sgid, int(wuid, 16), ann_group_addr, group_addr))
+            self.registered_suids[suid]['ts'] = ts
+            self.registered_wuids[wuid]["ts"] = ts
+        return sgid
+
+    def update_wuid_ts(self, src_addr, tgid, ts):
+        if (src_addr == 0 or src_addr == 0xffffff):
+            return
+
+        wuid = ("%06x" % src_addr) 
+        if (wuid not in self.registered_wuids and 
+            self.affiliate_sgid(self.ns_wacn, self.ns_syid, tgid, tgid, 0, src_addr, ts) is None):    # making assumption WUID is local not roaming
+            return
+
+        suid = self.registered_wuids[wuid]['suid']
+        with self.suids_mutex:
+            self.registered_suids[suid]['ts'] = ts
+            self.registered_wuids[wuid]["ts"] = ts
+        if self.debug >= 10:
+            sys.stderr.write("%s [%s] update_wuid_ts: suid(%s), wuid(%d)\n" % (log_ts.get(), self.sysname, suid, int(wuid, 16)))
+
+    def expire_registrations(self):
+        expired_suids = []
+        ts_now = time.time()
+        if ts_now < (self.expire_registrations_check + 300.0):                      # run this check once every 5 minutes
+            return
+
+        # Build the expiry list first (no mutex lock needed)
+        self.expire_registrations_check = ts_now
+        for suid in sorted(self.registered_suids.keys()):
+            if ts_now > (self.registered_suids[suid]['ts'] + WUID_EXPIRY_TIME):
+                expired_suids.append(suid)
+
+        # Delete the expired entries (with mutex lock)
+        with self.suids_mutex:
+            for suid in expired_suids:
+                wuid = self.registered_suids[suid]['wuid']
+                self.registered_suids.pop(suid, None)
+                self.registered_wuids.pop(wuid, None)
+                if self.debug >= 10:
+                    sys.stderr.write("%s [%s] expire_registrations: remove expired suid(%s), wuid(%d)\n" % (log_ts.get(), self.sysname, suid, int(wuid, 16)))
+
     def dump_tgids(self):
         sys.stderr.write("%s [%s] Known talkgroup ids: {\n" % (log_ts.get(), self.sysname))
         for tgid in sorted(self.talkgroups.keys()):
@@ -1563,6 +1885,14 @@ class p25_system(object):
         sys.stderr.write("%s [%s] Known radio ids: {\n" % (log_ts.get(), self.sysname))
         for rid in sorted(self.sourceids.keys()):
             sys.stderr.write('%d\t"%s"\t# tgids %s\n' % (rid, self.sourceids[rid]['tag'], self.sourceids[rid]['tgs']));
+        sys.stderr.write("}\n") 
+
+    def dump_wuids(self):
+        sys.stderr.write("%s [%s] Registered subscriber unit ids: {\n" % (log_ts.get(), self.sysname))
+        for wuid in sorted(self.registered_wuids.keys()):
+            ts = self.registered_wuids[wuid]['ts']
+            fmt_ts = "{:s}{:s}".format(time.strftime("%m/%d/%y %H:%M:%S",time.localtime(ts)),"{:.6f}".format(ts - int(ts)).lstrip("0"))
+            sys.stderr.write('%d\ttag(%14s)\tsuid(%s)\taffil_grp(%5d)\tann_grp(%5d)\tlast(%s)\n' % (int(wuid, 16), self.registered_wuids[wuid]['tag'], self.registered_wuids[wuid]['suid'], self.registered_wuids[wuid]['aff_ga'], self.registered_wuids[wuid]['aff_aga'], fmt_ts));
         sys.stderr.write("}\n") 
 
     def to_json(self):  # ugly but required for compatibility with P25 trunking and terminal modules
@@ -1588,10 +1918,14 @@ class p25_system(object):
         d['rxchan']         = self.rfss_chan
         d['txchan']         = self.rfss_txchan
         d['wacn']           = self.ns_wacn
+        d['network_active'] = self.rfss_network_active  # 0 == site running failsoft (RFSS_STS_BCST 'A' bit)
+        d['lra']            = self.rfss_lra
+        d['encryption_algid'] = self.encryption_algid  # not None => encrypted control channel (P_PARM_BCST)
         d['secondary']      = list(self.secondary.keys())
         d['frequencies']    = {}
         d['frequency_data'] = {}
         d['patch_data']     = {}
+        d['wuid_data']      = {}
         d['last_tsbk']      = self.last_tsbk
 
         t = time.time()
@@ -1638,16 +1972,6 @@ class p25_system(object):
             # Format here to show in theses console viewer
             time_ago_ncurses_str = time_ago_str + " ago" if time_ago_str != "Never" and time_ago_str != "  Now" else time_ago_str + "    "
 
-            #if chan_type == "control":
-            #    d['frequencies'][f] = '- %f       [--- Control ---]  %s' % ((f / 1e6), time_ago_ncurses_str)
-            #elif chan_type == "alternate" and len(tgids) == 0:
-            #    d['frequencies'][f] = '- %f  tgid [   Secondary   ]  %s  count %d' % ((f / 1e6), time_ago_ncurses_str, count)
-            #elif len(tgids) == 1 or (len(tgids) == 2 and tgids[0] == tgids[1]):
-            #    d['frequencies'][f] = '- %f  tgid [     %5s     ]  %s  count %d' % ((f / 1e6), tgids[0], time_ago_ncurses_str, count)
-            #elif len(tgids) == 2:
-            #    d['frequencies'][f] = '- %f  tgid [ %5s | %5s ]  %s  count %d' % ((f / 1e6), tgids[1], tgids[0], time_ago_ncurses_str, count)
-            #else:
-            #    d['frequencies'][f] = '- %f  tgid [               ]  %s  count %d' % ((f / 1e6), time_ago_ncurses_str, count)
             if chan_type == "control":
                 f_type = "pri-cc"
             elif chan_type == "alternate":
@@ -1661,8 +1985,29 @@ class p25_system(object):
             else:
                 d['frequencies'][f] = '- %f  %s [               ]  %s  count %d' % ((f / 1e6), f_type, time_ago_ncurses_str, count)
 
+            tags = []
+            srcaddrs = []
+            srctags = []
+            for tgid in tgids:
+                if tgid is None or tgid == "":
+                    continue
+                try:
+                    tgid_int = int(tgid)
+                    tag = self.talkgroups.get(tgid_int, {}).get('tag', None)
+                    srcaddr = self.talkgroups[tgid_int]['srcaddr']
+                    srctag = self.get_rid_tag(self.talkgroups[tgid_int]['srcaddr'])
+                except (ValueError, TypeError) as e:
+                    if self.debug >= 10:
+                        sys.stderr.write(f"Error converting TGID '{tgid}' to int: {e}\n")
+                    tag = None
+                    srcaddr = None
+                    srctag = None
+                tags.append(tag)
+                srcaddrs.append(srcaddr)
+                srctags.append(srctag)
+
             # The easy part: send pure JSON and let the display layer handle formatting
-            d['frequency_data'][f] = {'type': chan_type, 'tgids': tgids, 'last_activity': time_ago_str, 'counter': count}
+            d['frequency_data'][f] = {'type': chan_type, 'tgids': tgids, 'last_activity': time_ago_str, 'counter': count, 'tags': tags, 'srcaddrs': srcaddrs, 'srctags': srctags}
 
         # Patches
         self.expire_patches()
@@ -1671,10 +2016,30 @@ class p25_system(object):
             for ga in sorted(self.patches[sg]['ga']):
                 sg_dec = "%5d" % (sg)
                 ga_dec = "%5d" % (ga)
-                d['patch_data'][sg][ga] = {'sg': sg_dec, 'ga': ga_dec}
+                sg_tag = self.talkgroups.get(sg, {}).get('tag', None)
+                ga_tag = self.talkgroups.get(ga, {}).get('tag', None)
+                d['patch_data'][sg][ga] = {'sg': sg_dec, 'sgtag': sg_tag, 'ga': ga_dec, 'gatag': ga_tag}
+
+        # Subscriber Registrations
+        self.expire_registrations()
+        with self.suids_mutex:
+            for wuid in sorted(self.registered_wuids.keys()):
+                d['wuid_data'][wuid] = {'rfss'        : self.registered_wuids[wuid]['rfid'],
+                                        'site'        : self.registered_wuids[wuid]['stid'],
+                                        'suid'        : self.registered_wuids[wuid]['suid'],
+                                        'srcaddr'     : int(wuid, 16),
+                                        'tag'         : self.registered_wuids[wuid]['tag'],
+                                        'aff_ga'      : self.registered_wuids[wuid]['aff_ga'],
+                                        'aff_ga_tag'  : self.talkgroups.get(self.registered_wuids[wuid]['aff_ga'], {}).get('tag', None),
+                                        'aff_aga'     : self.registered_wuids[wuid]['aff_aga'],
+                                        'aff_aga_tag' : self.talkgroups.get(self.registered_wuids[wuid]['aff_aga'], {}).get('tag', None),
+                                        'time'        : self.registered_wuids[wuid]['ts']}
 
         # Adjacent sites
         d['adjacent_data'] = self.adjacent_data
+
+        # Band Plan (from iden_up)
+        d['band_plan'] = self.freq_table
 
         return json.dumps(d)
 
@@ -1710,6 +2075,123 @@ class rid_history(object):
         sys.stderr.write("}\n")
 
 #################
+# Motorola Talker Alias decoder class
+# Based on DSD-FME dsd_alias.c which was in turn based on Ilya Smirnov's SDRTrunk
+#
+class mot_talker_alias(object):
+    def __init__(self, debug, msgq_id):
+        self.moto_alias_lut = [
+          0xD2, 0xF6, 0xD4, 0x2B, 0x63, 0x49, 0x94, 0x5E, 0xA7, 0x5C, 0x70, 0x69, 0xF7, 0x08, 0xB1, 0x7D,
+          0x38, 0xCF, 0xCC, 0xD8, 0x51, 0x8F, 0xD5, 0x93, 0x6A, 0xF3, 0xEF, 0x7E, 0xFB, 0x64, 0xF4, 0x35,
+          0x27, 0x07, 0x31, 0x14, 0x87, 0x98, 0x76, 0x34, 0xCA, 0x92, 0x33, 0x1B, 0x4F, 0x8C, 0x09, 0x40,
+          0x32, 0x36, 0x77, 0x12, 0xD3, 0xC3, 0x01, 0xAB, 0x72, 0x81, 0x95, 0xC9, 0xC0, 0xE9, 0x65, 0x52,
+          0x24, 0x30, 0x1C, 0xDB, 0x88, 0xE8, 0x97, 0x9D, 0x58, 0x26, 0x04, 0x39, 0xAC, 0x2A, 0x9E, 0xAA,
+          0x25, 0xD7, 0xCE, 0xEB, 0x96, 0xF5, 0x0E, 0x8D, 0xDC, 0xA9, 0x2F, 0xDD, 0x1F, 0xEA, 0x91, 0xB7,
+          0xD6, 0x89, 0x8B, 0xD1, 0xB0, 0x99, 0x13, 0x7A, 0xE7, 0x9A, 0xB5, 0x86, 0xFF, 0x46, 0x85, 0xB2,
+          0x73, 0xDA, 0xBF, 0xD0, 0x71, 0xCB, 0x4D, 0x80, 0x15, 0x67, 0x16, 0x1A, 0x20, 0x8E, 0x45, 0x3E,
+          0xF2, 0x2E, 0x66, 0x90, 0x74, 0x8A, 0x6F, 0x78, 0xBB, 0x53, 0x03, 0x11, 0x68, 0xCD, 0x44, 0x17,
+          0x28, 0x5F, 0x1E, 0x84, 0x75, 0x79, 0x6E, 0x9B, 0x2C, 0xBE, 0x62, 0x2D, 0xF1, 0x7C, 0xB8, 0x83,
+          0xD9, 0x4E, 0x6D, 0x02, 0x61, 0x3D, 0xA8, 0x06, 0xB9, 0xF8, 0x9C, 0x37, 0x3A, 0x23, 0xC1, 0x50,
+          0xED, 0x9F, 0xAF, 0x3B, 0xBD, 0x82, 0xBA, 0xA0, 0xDF, 0xC2, 0x47, 0x22, 0xF0, 0xEE, 0xA1, 0xFE,
+          0xA2, 0x10, 0x5B, 0x48, 0x57, 0xA3, 0x05, 0x60, 0x7B, 0x0D, 0xF9, 0x6C, 0xB3, 0x56, 0x4C, 0xBC,
+          0x29, 0xA4, 0x0F, 0xEC, 0xB6, 0xA5, 0xA6, 0x3C, 0x7F, 0x6B, 0xB4, 0x21, 0xAD, 0xAE, 0xC4, 0xC8,
+          0xC5, 0x5D, 0xDE, 0xE0, 0x1D, 0x19, 0x4B, 0xC6, 0x0C, 0x3F, 0x5A, 0xC7, 0xE1, 0x59, 0x55, 0x54,
+          0x4A, 0x43, 0x42, 0xE2, 0xE3, 0xFA, 0x00, 0xE4, 0xE5, 0x18, 0x41, 0x0B, 0x0A, 0xE6, 0xFC, 0xFD
+        ]
+
+        self.debug = debug
+        self.msgq_id = msgq_id
+        self.raw_data = 0
+        self.block_data = 0
+        self.current_sn = 0
+        self.current_ta_len = 0
+        self.current_bit_count = 0
+        self.block_bit_count = 0
+        self.next_bn = 0
+        self.alias = ""
+        self.valid = False
+
+    def reset(self):
+        self.valid = False
+        self.current_sn = 0
+        self.current_ta_len = 0
+        self.current_bit_count = 0
+        self.block_bit_count = 0
+        self.next_bn = 0
+        self.raw_data = 0
+        self.block_data = 0
+
+    def rx_header(self, sn, bn, ta_len, payload):
+        self.valid = False
+        self.current_sn = sn
+        self.current_ta_len = ta_len
+        self.current_bit_count = 136
+        self.next_bn = 1
+        self.raw_data = payload   # 136 bits
+        
+    def rx_block(self, sn, bn, bit_count, payload):
+        if (bn != self.next_bn) or (sn != self.current_sn) or (bit_count == 0) or (payload == 0): # basic validation and sequencing
+            self.reset()
+            return False # Validation failure
+        self.raw_data = (self.raw_data << bit_count) | payload
+        self.current_bit_count += bit_count
+        if bn < self.current_ta_len:
+            self.next_bn += 1
+            return False # More blocks to come
+        shiftreg = self.raw_data
+        null_count = 0;
+        while ((shiftreg & 0xff) == 0):
+            shiftreg = shiftreg >> 8
+            null_count += 8
+        self.block_bit_count  = self.current_bit_count - null_count
+        self.block_data = self.raw_data >> null_count
+        rxd_crc = self.block_data & 0xffff
+        crc_block_data = self.block_data & ((2 ** (self.block_bit_count - 72)) - 1)
+        crc_block_data >>= 16 # drop the embedded crc from the data
+        crc_block_len = self.block_bit_count - 72 - 16
+        calc_crc = ComputeCrcCCITT16d(crc_block_data, crc_block_len)
+        if (calc_crc != rxd_crc):
+            return False # CRC Failure
+
+        self.decode_mot_alias(self.block_data, self.block_bit_count)
+        return True
+
+    def decode_mot_alias(self, block_data, bit_count):
+        encoded_block = []
+        decoded_block = []
+
+        block_data >>= 16   # drop the embedded crc
+        num_bytes = ((bit_count - 72) // 8) - 9 # number of bytes in alias portion of data
+
+        # first convert the bits to a list of bytes
+        i = num_bytes
+        while (i > 0):
+            encoded_block.insert(0, (block_data & 0xff))
+            decoded_block.insert(0, 0x0)
+            block_data >>= 8
+            i -= 1
+
+        accumulator = num_bytes
+        i = 0
+        while (i < num_bytes):
+            accum_mult = ((accumulator * 293) + 0x72e9) & 0xffff
+            lut        = self.moto_alias_lut[encoded_block[i]]
+            mult1      = (lut - (accum_mult >> 8)) & 0xff
+            mult2      = 1
+            shortstop  = (accum_mult | 0x1) & 0xff
+            increment  = (shortstop << 1) & 0xff
+            while (shortstop != 1):
+                shortstop = (shortstop + increment) & 0xff
+                mult2     = (mult2 + 2) & 0xff
+            decoded_block[i] = (mult1 * mult2) & 0xff
+            accumulator = (accumulator + encoded_block[i] + 1) & 0xffff
+            i += 1
+
+        encoded = bytearray(encoded_block).hex()
+        decoded = bytearray(decoded_block).hex()
+        sys.stderr.write("E: %s\nD: %s\n" % (encoded, decoded))
+
+#################
 # P25 receiver class
 class p25_receiver(object):
     def __init__(self, debug, msgq_id, frequency_set, fa_ctrl, system, config, meta_q = None, freq = 0):
@@ -1737,12 +2219,16 @@ class p25_receiver(object):
         self.tgid_hold_time = TGID_HOLD_TIME
         self.vc_retries = 0
         self.tune_ts = None
+        self.mot_talker_alias = None
         
         self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': self.crypt_behavior})
-        sys.stderr.write("%s crypt behavior: %d\n" % (log_ts.get(), self.crypt_behavior))
+        sys.stderr.write("%s [%d] crypt behavior: %d\n" % (log_ts.get(), self.msgq_id, self.crypt_behavior))
 
     def set_debug(self, dbglvl):
         self.debug = dbglvl
+
+    def log_call(self, freq, slot, prio, tgid, rid):
+        self.system.log_call(self.msgq_id, freq, slot, prio, tgid, rid)
 
     def post_init(self):
         if self.debug >= 1:
@@ -1972,13 +2458,16 @@ class p25_receiver(object):
                     sys.stderr.write('%s [%d] mac_ptt: mi: %018x algid: %02x keyid:%04x ga: %d sa: %d\n' % (log_ts.get(), m_rxid, mi, algid, keyid, ga, sa))
                 updated += self.system.update_talkgroup_srcaddr(curr_time, ga, sa)
                 if algid != 0x80: # log and save encryption information
-                    if self.debug >= 5 and (algid != self.talkgroups[ga]['algid'] or keyid != self.talkgroups[ga]['keyid']):
-                        sys.stderr.write('%s [%d] encrypt info: tg=%d, algid=0x%x, keyid=0x%x\n' % (log_ts.get(), self.msgq_id, ga, algid, keyid))
                     with self.system.talkgroups_mutex:
                         if ga in self.talkgroups:
+                            if self.debug >= 5 and (algid != self.talkgroups[ga]['algid'] or keyid != self.talkgroups[ga]['keyid']):
+                                sys.stderr.write('%s [%d] encrypt info: tg=%d, algid=0x%x, keyid=0x%x\n' % (log_ts.get(), self.msgq_id, ga, algid, keyid))
                             self.talkgroups[ga]['encrypted'] = 1
                             self.talkgroups[ga]['algid'] = algid
                             self.talkgroups[ga]['keyid'] = keyid
+                        else:
+                            if self.debug >= 5:
+                                sys.stderr.write('%s [%d] encrypt info: unknown tg=%d, algid=0x%x, keyid=0x%x\n' % (log_ts.get(), self.msgq_id, ga, algid, keyid))
                     if self.crypt_behavior > 1:
                         updated += 1
                         if self.debug > 1:
@@ -1995,6 +2484,16 @@ class p25_receiver(object):
                 updated += 1
 
         return updated
+
+    def rx_mot_talker_alias_header(self, sn, bn, ta_len, payload):
+        if self.mot_talker_alias is None:
+            self.mot_talker_alias = mot_talker_alias(self.debug, self.msgq_id)
+        self.mot_talker_alias.rx_header(sn, bn, ta_len, payload)
+
+    def rx_mot_talker_alias_block(self, sn, bn, bit_count, payload):
+        if self.mot_talker_alias is None:
+            return
+        self.mot_talker_alias.rx_block(sn, bn, bit_count, payload)
 
     def add_skiplist(self, tgid, end_time=None):
         if not tgid or (tgid <= 0) or (tgid > 65534):
@@ -2116,23 +2615,30 @@ class p25_receiver(object):
         if self.current_tgid is not None and self.current_tgid == tgid:                         # active call unchanged, nothing to do
             return
 
-        if tgid is None:                                                                        # no call
+        if tgid is None or freq is None:                                                        # no call
             return
 
         if self.current_tgid is None:
             if self.debug > 0:
                 sys.stderr.write("%s [%d] voice update:  tg(%d), rid(%d), freq(%f), slot(%s), prio(%d)\n" % (log_ts.get(), self.msgq_id, tgid, self.talkgroups[tgid]['srcaddr'], (freq/1e6), get_slot(slot), self.talkgroups[tgid]['prio']))
             self.tune_voice(freq, tgid, slot)
+            self.log_call(freq, slot, self.talkgroups[tgid]['prio'], tgid, self.talkgroups[tgid]['srcaddr'])
         else:
             if self.debug > 0:
                 sys.stderr.write("%s [%d] voice preempt: tg(%d), rid(%d), freq(%f), slot(%s), prio(%d)\n" % (log_ts.get(), self.msgq_id, tgid, self.talkgroups[tgid]['srcaddr'], (freq/1e6), get_slot(slot), self.talkgroups[tgid]['prio']))
             self.expire_talkgroup(update_meta=False, reason="preempt")
             self.tune_voice(freq, tgid, slot)
+            self.log_call(freq, slot, self.talkgroups[tgid]['prio'], tgid, self.talkgroups[tgid]['srcaddr'])
 
         meta_update(self.meta_q, tgid=tgid, tag=self.talkgroups[tgid]['tag'], rid=self.talkgroups[tgid]['srcaddr'], rtag=self.system.get_rid_tag(self.talkgroups[tgid]['srcaddr']), msgq_id=self.msgq_id, debug=self.debug)
 
     def check_expired_hold(self, curr_time):
+        if self.debug > 10:
+            sys.stderr.write("%s [%d] check_expired_hold: hold_tgid(%s), hold_until(%s)\n" % (log_ts.get(), self.msgq_id, self.hold_tgid, self.hold_until))
+        
         if self.hold_tgid is not None and (self.hold_until <= curr_time):
+            if self.debug > 10:
+                sys.stderr.write("%s [%d] expire hold: tg(%d)\n" % (log_ts.get(), self.msgq_id, self.hold_tgid))
             self.hold_tgid = None
             self.hold_mode = False
             meta_update(self.meta_q, msgq_id=self.msgq_id, debug=self.debug)

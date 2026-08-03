@@ -24,12 +24,15 @@
 #include <string.h>
 #include <string>
 #include <iostream>
+#include <fstream>
 #include <deque>
 #include <assert.h>
 #include <errno.h>
 #include <unistd.h>
 
 #include "rx_sync.h"
+
+#include <nlohmann/json.hpp>
 
 #include "bit_utils.h"
 
@@ -46,6 +49,7 @@
 #include "p25_frame.h"
 #include "op25_imbe_frame.h"
 #include "software_imbe_decoder.h"
+#include "op25_audio_wrapper.h"
 #include "op25_audio.h"
 #include "op25_msg_types.h"
 
@@ -70,7 +74,7 @@ void rx_sync::sync_reset(void) {
 
 	// Sync counters and registers reset
 	d_symbol_count = 0;
-    d_cbuf_idx = 0;
+    //d_cbuf_idx = 0; // never reset, just let it wrap
 	d_rx_count = 0;
 	d_threshold = 0;
 	d_shift_reg = 0;
@@ -156,6 +160,27 @@ void rx_sync::set_debug(int debug) {
 	dmr.set_debug(debug);
 }
 
+// Build the FEC stats JSON envelope. Counters are monotonic since
+// construction; consumers diff between samples to compute rates.
+std::string rx_sync::get_fec_stats_json() const {
+	nlohmann::json envelope = {
+		{"cmd", "fec_stats"},
+		{"schema", 1},
+		{"data", {
+			{"control", {
+				{"tsbk_attempted",  p25fdma.stat_tsbk_attempted()},
+				{"tsbk_crc_passed", p25fdma.stat_tsbk_passed()},
+				{"pdu_attempted",   p25fdma.stat_pdu_attempted()},
+				{"pdu_crc_passed",  p25fdma.stat_pdu_passed()},
+			}},
+			{"sync", {
+				{"losses", p25fdma.stat_timeouts()},
+			}},
+		}},
+	};
+	return envelope.dump();
+}
+
 static int ysf_decode_fich(const uint8_t src[100], uint8_t dest[32]) {   // input is 100 dibits, result is 32 bits
 // return -1 on decode error, else 0
 	static const int pc[] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
@@ -230,20 +255,21 @@ rx_sync::rx_sync(const char * options, log_ts& logger, int debug, int msgq_id, g
 	d_symbol_count(0),
 	d_sync_reg(0),
 	d_fs(0),
+    d_cbuf(),
 	d_cbuf_idx(0),
 	d_current_type(RX_TYPE_NONE),
 	d_rx_count(0),
 	d_expires(0),
 	d_slot_mask(3),
 	d_slot_key(0),
-	p25fdma(d_audio, logger, debug, true, false, true, queue, d_output_queue[0], true, msgq_id),
-	p25tdma(d_audio, logger, 0, debug, true, queue, d_output_queue[0], true, msgq_id),
+	d_audio(op25_audio_wrapper::instance().get_audio(options, logger, debug, msgq_id)),
+	p25fdma(op25_audio_wrapper::instance().get_audio(options, logger, debug, msgq_id), logger, debug, true, false, true, queue, d_output_queue[0], true, msgq_id),
+	p25tdma(op25_audio_wrapper::instance().get_audio(options, logger, debug, msgq_id), logger, 0, debug, true, queue, d_output_queue[0], true, msgq_id),
 	dmr(logger, debug, msgq_id, queue),
 	d_msgq_id(msgq_id),
 	d_msg_queue(queue),
 	d_stereo(true),
 	d_debug(debug),
-	d_audio(options, debug),
     logts(logger)
 {
 	if (msgq_id >= 0)
@@ -262,6 +288,11 @@ rx_sync::rx_sync(const char * options, log_ts& logger, int debug, int msgq_id, g
 
 rx_sync::~rx_sync()	// destructor
 {
+}
+
+void rx_sync::stop() // called prior to shutdown
+{
+    d_audio.stop();
 }
 
 void rx_sync::sync_timeout(rx_types proto)
@@ -462,8 +493,7 @@ void rx_sync::output(int16_t * samp_buf, const ssize_t slot_id) {
 		d_audio.send_audio(samp_buf, NSAMP_OUTPUT * sizeof(int16_t));
 }
 
-void rx_sync::rx_sym(const uint8_t sym)
-{
+void rx_sync::rx_sym(const uint8_t sym) {
 	uint8_t bitbuf[864*2];
 	enum rx_types sync_detected = RX_TYPE_NONE;
 	bool unmute;
@@ -604,5 +634,13 @@ void rx_sync::rx_sym(const uint8_t sym)
 		break;
 	}
 }
+
+void rx_sync::dump_buffer() {
+    std::string fname = "ch" + std::to_string(d_msgq_id) + "-dump.bin";
+    std::fstream file(fname.c_str(), std::ios::out | std::ios::binary);
+    file.write((const char *)(d_cbuf + d_cbuf_idx + 1), CBUF_SIZE);
+    fprintf(stderr, "%s rx_sync::dump_buffer: %s\n", logts.get(d_msgq_id), fname.c_str());
+}
+
     } // end namespace op25_repeater
 } // end namespace gr

@@ -1,6 +1,6 @@
 # Helper functions module
 #
-# Copyright 2020 Graham J. Norbury - gnorbury@bondcar.com
+# Copyright 2025 Graham J. Norbury - gnorbury@bondcar.com
 # 
 # This file is part of OP25
 # 
@@ -23,6 +23,9 @@
 import sys
 import json
 import ast
+from threading import Lock
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 from log_ts import log_ts
 
 #################
@@ -107,7 +110,7 @@ def from_dict(d, key, def_val):
     else:
         return def_val
 
-def crc16(dat,len):    # slow version
+def crc16(dat, len):    # slow version
     poly = (1<<12) + (1<<5) + (1<<0)
     crc = 0
     for i in range(len):
@@ -119,6 +122,23 @@ def crc16(dat,len):    # slow version
                 crc = (crc & 0xffff) ^ poly
     crc = crc ^ 0xffff
     return crc
+
+# This algorithm is derived from DSD-FME dmr_util.c
+# ComputeCrcCCITT16d(const uint8_t * buf, uint32_t len)
+# Not the most efficient but it seems to work
+def ComputeCrcCCITT16d(data, d_len):
+    i        = 0;
+    CRC      = 0x0000   # initialization value
+    Polynome = 0x1021   # Polynomial x^16 + x^12 + x^5 + 1
+
+    while i < d_len:
+        if (((CRC >> 15) & 1) ^ ((data >> (d_len - i - 1)) & 1)):
+            CRC = ((CRC << 1) ^ Polynome)
+        else:
+            CRC <<= 1
+        CRC &= 0xffff   # discard any overflow bits
+        i += 1
+    return (CRC ^ 0xffff)
 
 def decomment(csvfile):
     for row in csvfile:
@@ -163,3 +183,46 @@ def read_tsv_file(tsv_filename, key):
 
 def get_fractional_ppm(tuned_freq, adj_val):
     return (adj_val * 1e6 / tuned_freq)
+
+def get_ws_instance(destinations):
+    ws_instance = None
+    dest_list = destinations.replace(' ','').split(',')
+    for destination in dest_list:   # match first occurrence of ws:// or wss:// in destinations list
+        url = urlparse(destination)
+        if ((url.scheme == "ws") or (url.scheme == "wss")) and (url.netloc != ""):
+            ws_instance = urlunparse((url.scheme, url.netloc, "", "", "", ""))
+            break
+    return ws_instance
+
+# threading Lock with timeout
+class TimeoutLock():
+    timeout = None
+    lock    = None
+
+    # Semi-transparent __init__ method
+    def __init__(self, timeout=None, *args, **kwargs):
+        self.timeout = timeout
+        self.lock    = Lock(*args, **kwargs)
+
+    # Context management protocol __enter__ method
+    def __enter__(self, *args, **kwargs):
+        rc = self.lock.acquire(timeout=self.timeout)
+        if rc is False:
+            raise TimeoutError(f"Could not acquire lock within " 
+                               f"specified timeout of {self.timeout}s") 
+        return rc
+
+    def __exit__(self, *args, **kwargs):
+        return self.lock.release()
+
+    # Transparent method calls for rest of Lock's public methods:
+    def acquire(self, *args, **kwargs):
+        return self.lock.acquire(*args, **kwargs)
+
+    def release(self, *args, **kwargs):
+        return self.lock.release(*args, **kwargs)
+
+    def locked(self, *args, **kwargs):
+        return self.lock.locked(*args, **kwargs)
+
+

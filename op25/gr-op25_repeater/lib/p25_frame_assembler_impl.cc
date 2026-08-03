@@ -47,8 +47,10 @@ namespace gr {
             p2tdma.set_debug(debug);
         }
 
-        // Accept and dispatch JSON formatted commands from python
-        void p25_frame_assembler_impl::control(const std::string& args) {
+        // Accept and dispatch JSON formatted commands from python.
+        // Returns a JSON-encoded response string for commands that produce
+        // output, or an empty string for commands that don't.
+        std::string p25_frame_assembler_impl::control(const std::string& args) {
             json j = json::parse(args);
             std::string cmd = j["cmd"].get<std::string>();
             if (d_debug >= 10) {
@@ -88,6 +90,7 @@ namespace gr {
                     fprintf(stderr, "%s p25_frame_assembler_impl::control: unhandled cmd(%s)\n", logts.get(0), cmd.c_str());
                 }
             }
+            return {};
         }
 
         p25_frame_assembler::sptr
@@ -113,12 +116,12 @@ namespace gr {
             gr::io_signature::make ((do_output) ? 1 : 0, (do_output) ? 1 : 0, (do_audio_output && do_output) ? sizeof(int16_t) : ((do_output) ? sizeof(char) : 0 ))),
             d_debug(debug),
         	d_do_output(do_output),
-        	p1fdma(op25audio, logts, debug, do_imbe, do_output, do_msgq, queue, output_queue, do_audio_output),
+        	p1fdma(op25audio, logts, debug, do_imbe, do_output, do_msgq, queue, output_queue, do_audio_output, 0),
         	d_do_audio_output(do_audio_output),
-        	p2tdma(op25audio, logts, 0, debug, do_msgq, queue, output_queue, do_audio_output),
+        	p2tdma(op25audio, logts, 0, debug, do_msgq, queue, output_queue, do_audio_output, 0),
         	d_do_msgq(do_msgq),
         	output_queue(),
-        	op25audio(udp_host, port, debug)
+        	op25audio(udp_host, port, logts, debug, 0)
         {
             fprintf(stderr, "p25_frame_assembler_impl: do_imbe[%d], do_output[%d], do_audio_output[%d], do_phase2_tdma[%d], do_nocrypt[%d]\n", do_imbe, do_output, do_audio_output, do_phase2_tdma, do_nocrypt);
         }

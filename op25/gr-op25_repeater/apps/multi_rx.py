@@ -1,6 +1,6 @@
 #!/bin/sh
 # Copyright 2011, 2012, 2013, 2014, 2015, 2016, 2017 Max H. Parke KA1RBI
-# Copyright 2020, 2023 Graham J. Norbury - gnorbury@bondcar.com
+# Copyright 2020-2026 Graham J. Norbury - gnorbury@bondcar.com
 # 
 # This file is part of OP25
 # 
@@ -132,6 +132,9 @@ class device(object):
                 sys.stderr.write("be optimal.  You may want to use one of the following rates\n")
                 sys.stderr.write('%s\n' % speeds)
             sys.stderr.write('Device name: "%s", osmosdr args: "%s"\n' % (self.name, str(config['args'])))
+            #dev_list = osmosdr.device.find(osmosdr.device_t("nofake"))
+            #for dev_t in dev_list:
+            #    sys.stderr.write("gr-osmosdr device: %s\n" % dev_t.to_string())
             self.src = osmosdr.source(str(config['args']))
 
             if 'gain_mode' in config:
@@ -182,12 +185,6 @@ class channel(object):
         self.throttle = None
         self.nbfm = None
         self.nbfm_mode = 0
-        self.auto_tracking      = bool(from_dict(config, "cqpsk_tracking", False))
-        self.tracking_threshold = int(from_dict(config, "tracking_threshold", 120))
-        self.tracking_limit     = int(from_dict(config, "tracking_limit", 2400))
-        self.tracking_feedback  = float(from_dict(config, "tracking_feedback", 0.85))
-        self.tracking = 0
-        self.tracking_cache = {}
         self.crypt_keys_file    = str(from_dict(config, "crypt_keys", ""))
         self.crypt_keys = {}
         self.error = None
@@ -198,6 +195,7 @@ class channel(object):
         self.config = config
         self.symbol_rate = int(from_dict(config, 'symbol_rate', _def_symbol_rate))
         self.channel_rate = self.symbol_rate
+        self.ws_instance = get_ws_instance(from_dict(config, 'destination', ""))
         if dev.args == 'wavsrc':
             self.demod = p25_demodulator.p25_demod_fb(
                              msgq_id = self.msgq_id,
@@ -244,19 +242,20 @@ class channel(object):
             for keyid in self.crypt_keys.keys():
                 self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'crypt_key', 'keyid': int(keyid), 'algid': int(self.crypt_keys[keyid]['algid']), 'key': self.crypt_keys[keyid]['key']}))
         
-        # Load crypt_behavior
-        # self.crypt_behavior = int(from_dict(config, 'crypt_behavior', 0))
-        # export crypt_behavior to c
-        # self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': self.crypt_behavior})) 
-        # sys.stderr.write("%s crypt behavior: %d\n" % (log_ts.get(), self.crypt_behavior))
+        # Load crypt_behavior from channel if it exists
+        crypt_behavior = from_dict(config, 'crypt_behavior', None)
+        if crypt_behavior is not None:
+            self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': int(crypt_behavior)})) 
+            sys.stderr.write("%s [%d] crypt behavior: %d\n" % (log_ts.get(), self.msgq_id, int(crypt_behavior)))
         
         # Relative-tune the demodulator
         if not self.demod.set_relative_frequency((dev.frequency + dev.offset + dev.fractional_corr) - self.frequency):
             sys.stderr.write("%s [%d] Unable to initialize demod to freq: %d, using device freq: %d\n" % (log_ts.get(), self.msgq_id, self.frequency, dev.frequency))
             self.frequency = dev.frequency
 
-        if 'key' in config and (config['key'] != ""):
-            self.set_key(int(config['key'], 0))
+        # Load the DMR Basic Privacy key, if specified
+        if 'bp_key' in config and (config['bp_key'] != ""):
+            self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'set_slotkey', 'slotkey': int(config['bp_key'], 0)}))
 
         enable_analog = str(from_dict(config, 'enable_analog', "auto")).lower()
         if enable_analog == "off":
@@ -451,48 +450,42 @@ class channel(object):
             return True
 
         old_freq = self.frequency
-        old_track = self.tracking
         self.frequency = freq
-        self.tracking_cache[old_freq] = old_track
-        if self.frequency in self.tracking_cache:
-            self.tracking = self.tracking_cache[self.frequency]     # if cached value available use it otherwise continue with existing
 
-        if not self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr + self.tracking - freq): # First attempt relative tune
+        if not self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr - freq): # First attempt relative tune
             if self.device.tunable:                                                                  # then hard tune if allowed
                 self.device.frequency = self.frequency
                 if self.device.src is not None:
                     self.device.src.set_center_freq(self.frequency + self.device.offset)
                 self.device.fractional_corr = int((int(round(self.device.ppm)) - self.device.ppm) * (self.device.frequency/1e6))        # Calc frac ppm using new freq
-                self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr + self.tracking - freq)
+                self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr - freq)
                 if self.verbosity >= 9:
-                    sys.stderr.write("%s [%d] Hardware tune: dev_freq(%d), dev_off(%d), dev_frac(%d), tune_freq(%d), tracking(%d)\n" % (log_ts.get(), self.msgq_id, self.device.frequency, self.device.offset, self.device.fractional_corr, (self.device.frequency - (self.device.offset + self.device.frequency + self.device.fractional_corr - freq)), self.tracking))
+                    sys.stderr.write("%s [%d] Hardware tune: dev_freq(%d), dev_off(%d), dev_frac(%d), tune_freq(%d)\n" % (log_ts.get(), self.msgq_id, self.device.frequency, self.device.offset, self.device.fractional_corr, (self.device.frequency - (self.device.offset + self.device.frequency + self.device.fractional_corr - freq))))
             else:                                                                                    # otherwise fail and reset to prev freq
-                self.tracking = old_track
-                self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr + self.tracking - old_freq)
+                self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr - old_freq)
                 self.frequency = old_freq
                 if self.verbosity:
                     sys.stderr.write("%s [%d] Unable to tune %s to frequency %f\n" % (log_ts.get(), self.msgq_id, self.name, (freq/1e6)))
                 return False
         else:
             if self.verbosity >= 9:
-                sys.stderr.write("%s [%d] Relative tune: dev_freq(%d), dev_off(%d), dev_frac(%d), tune_freq(%d), tracking(%d)\n" % (log_ts.get(), self.msgq_id, self.device.frequency, self.device.offset, self.device.fractional_corr, (self.device.frequency - (self.device.offset + self.device.frequency + self.device.fractional_corr + self.tracking - freq)), self.tracking))
+                sys.stderr.write("%s [%d] Relative tune: dev_freq(%d), dev_off(%d), dev_frac(%d), tune_freq(%d)\n" % (log_ts.get(), self.msgq_id, self.device.frequency, self.device.offset, self.device.fractional_corr, (self.device.frequency - (self.device.offset + self.device.frequency + self.device.fractional_corr - freq))))
         if 'fft' in self.sinks:
                 self.sinks['fft'][0].set_center_freq(self.device.frequency)
                 self.sinks['fft'][0].set_relative_freq(self.device.frequency - freq)
         if self.verbosity >= 9:
             sys.stderr.write("%s [%d] Tuning to frequency %f\n" % (log_ts.get(), self.msgq_id, (freq/1e6)))
-        self.demod.reset()          # reset gardner-costas tracking loop
+        #self.demod.reset()          # reset gardner-costas tracking loop NOTE: tuning appears to be faster without this step
         self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'sync_reset'}))
         return True
 
     def adj_tune(self, adjustment): # ideally this would all be done at the device level but the demod belongs to the channel object
-        self.tracking = 0
         self.device.ppm -= get_fractional_ppm(self.device.frequency, adjustment)
         if self.device.src is not None:
             self.device.src.set_freq_corr(int(round(self.device.ppm)))
             self.device.src.set_center_freq(self.device.frequency + self.device.offset)
         self.device.fractional_corr = int((int(round(self.device.ppm)) - self.device.ppm) * (self.device.frequency/1e6))
-        self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr + self.tracking - self.frequency)
+        self.demod.set_relative_frequency(self.device.offset + self.device.frequency + self.device.fractional_corr - self.frequency)
         self.demod.reset()          # reset gardner-costas tracking loop
 
     def configure_p25_tdma(self, params):
@@ -551,31 +544,8 @@ class channel(object):
             return
         self.error = self.demod.get_freq_error()
 
-    def dump_tracking(self):
-        sys.stderr.write("%s [%d] Frequency Tracking Cache: ch(%d)\n{\n" % (log_ts.get(), self.msgq_id, self.msgq_id))
-        for freq in sorted(self.tracking_cache):
-            sys.stderr.write("%f : %d\n" % ((freq/1e6), self.tracking_cache[freq]))
-        sys.stderr.write("}\n")
-
-    def set_tracking(self, tracking):
-        if tracking > 0:
-            self.auto_tracking = True
-        elif tracking == 0:
-            self.auto_tracking = False
-        else:
-            self.auto_tracking = not self.auto_tracking
-        if self.verbosity >= 10:
-            sys.stderr.write("%s [%d] set auto_tracking:%s\n" % (log_ts.get(), self.msgq_id, ("on" if self.auto_tracking else "off")))
-
     def get_error(self):
         return self.error
-
-    def get_tracking(self):
-        return self.tracking
-
-    def get_auto_tracking(self):
-        return self.auto_tracking
-
 
 class rx_block (gr.top_block):
 
@@ -613,6 +583,9 @@ class rx_block (gr.top_block):
 
         if "trunking" in config:
             self.configure_trunking(config['trunking'])
+        else:
+            self.config['trunking'] = {"module": "tk_p25.py", "chans": []}
+            self.configure_trunking(self.config['trunking']) # add default module for P25 Conventional terminal support
 
         self.configure_devices(config['devices'])
         self.configure_channels(config['channels'])
@@ -647,9 +620,9 @@ class rx_block (gr.top_block):
             audio_mod = audio_mod[:-3]
         try:
             self.audio = importlib.import_module(audio_mod)
-        except:
+        except (ImportError, ModuleNotFoundError) as e:
             self.audio = None
-            sys.stderr.write("Error: unable to import audio module: %s\n%s\n" % (config['module'], sys.exc_info()[1]))
+            sys.stderr.write("Error: unable to import audio module: %s\n%s\n" % (config['module'], e))
 
         idx = 0
         for instance in config['instances']:
@@ -666,9 +639,8 @@ class rx_block (gr.top_block):
                 try:
                     audio_s = self.audio.audio_thread("127.0.0.1", audio_port, audio_device, audio_2chan, audio_gain, instance_name=instance_name)
                     self.audio_instances[instance_name] = audio_s
-                except:
-                    sys.stderr.write("Error configuring audio instance #%d; %s\n" % (idx, sys.exc_info()[1]))
-                    #sys.exc_clear()
+                except Exception as e:
+                    sys.stderr.write("Error configuring audio instance #%d; %s\n" % (idx, e))
                     self.audio_instances[instance_name] = None
             else:
                 sys.stderr.write("Ignoring unnamed audio instance #%d\n" % idx)
@@ -680,9 +652,9 @@ class rx_block (gr.top_block):
             term_mod = term_mod[:-3]
         try:
             terminal = importlib.import_module(term_mod)
-        except:
+        except (ImportError, ModuleNotFoundError) as e:
             terminal = None
-            sys.stderr.write("Error: unable to import terminal module: %s\n%s\n" % (config['module'], sys.exc_info()[1]))
+            sys.stderr.write("Error: unable to import terminal module: %s\n%s\n" % (config['module'], e))
             return
         term_type = str(from_dict(config,'terminal_type', "curses"))
         self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type)
@@ -694,17 +666,14 @@ class rx_block (gr.top_block):
         self.ui_timeout = float(from_dict(config, 'terminal_timeout', 5.0))
 
     def configure_trunking(self, config):
-        if (("module" in config and (config['module'] == "")) or 
-            ("chans" in config and (config['chans'] == ""))):
-            return
+        tk_mod = str(from_dict(config, 'module', 'tk_p25.py'))
 
-        tk_mod = config['module']
         if tk_mod.endswith('.py'):
             tk_mod = tk_mod[:-3]
         try:
             self.trunking = importlib.import_module(tk_mod)
-        except:
-            sys.stderr.write("Error: unable to import trunking module: %s\n%s\n" % (config['module'], sys.exc_info()[1]))
+        except (ImportError, ModuleNotFoundError) as e:
+            sys.stderr.write("Error: unable to import trunking module: %s\n%s\n" % (config['module'], e))
             self.trunking = None
 
         if self.trunking is not None:
@@ -718,9 +687,9 @@ class rx_block (gr.top_block):
             meta_mod = meta_mod[:-3]
         try:
             self.metadata = importlib.import_module(meta_mod)
-        except:
+        except (ImportError, ModuleNotFoundError) as e:
             self.metadata = None
-            sys.stderr.write("Error: unable to import metadata module: %s\n%s\n" % (config['module'], sys.exc_info()[1]))
+            sys.stderr.write("Error: unable to import metadata module: %s\n%s\n" % (config['module'], e))
 
         idx = 0
         for stream in config['streams']:
@@ -734,9 +703,8 @@ class rx_block (gr.top_block):
                     meta_s = self.metadata.meta_server(meta_q, stream, debug=self.verbosity)
                     self.meta_streams[stream_name] = (meta_s, meta_q)
                     sys.stderr.write("Configuring metadata stream #%d [%s]: %s\n" % (idx, stream_name, stream['icecastServerAddress'] + "/" + stream['icecastMountpoint']))
-                except:
-                    sys.stderr.write("Error configuring metadata stream #%d; %s\n" % (idx, sys.exc_info()[1]))
-                    #sys.exc_clear()
+                except Exception as e:
+                    sys.stderr.write("Error configuring metadata stream #%d; %s\n" % (idx, e))
             else:
                 sys.stderr.write("Ignoring unnamed metadata stream #%d\n" % idx)
             idx += 1
@@ -865,21 +833,29 @@ class rx_block (gr.top_block):
         if msg is None:
             return True
         s = msg.to_string()
+        ui_rsp = []
         if type(s) is not str and isinstance(s, bytes):
             # should only get here if python3
             s = s.decode()
+        try:    # See if we can treat the incoming message as JSON format (from HTTP UI)
+            d = json.loads(s)
+            s = d['command'] if "command" in d and d['command'] is not None else ""
+            m_uuid = d['uuid'] if "uuid" in d and d['uuid'] is not None else "no-uuid"
+        except (json.JSONDecodeError): # otherwise fall back to string format (Curses)
+            m_uuid = "no-uuid"
+
         if s == 'quit':
             return True
-        elif s == 'update':                     # UI initiated update request
+        elif s == 'update':                             # UI initiated update request
             self.ui_last_update = time.time()
-            self.ui_freq_update()
             if self.trunking is None or self.trunk_rx is None:
                 return False
-            js = self.trunk_rx.to_json()        # extract data from trunking module
-            msg = gr.message().make_from_string(js, -4, 0, 0)
-            if not self.ui_in_q.full_p():
-                self.ui_in_q.insert_tail(msg)   # send info back to UI as long asa queue not full
-            self.ui_plot_update()
+            js = json.loads(self.trunk_rx.to_json())    # extract data from trunking module
+            js['uuid'] = m_uuid
+            ui_rsp.append(js)
+            ui_rsp.append(self.ui_freq_update())
+            ui_rsp.append(self.ui_calllog_update())
+            ui_rsp.append(self.ui_plot_update())
         elif s == 'toggle_plot':
             if not self.get_interactive():
                 sys.stderr.write("%s Cannot start plots for non-realtime (replay) sessions\n" % log_ts.get())
@@ -887,50 +863,58 @@ class rx_block (gr.top_block):
             plot_type = int(msg.arg1())
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).toggle_plot(plot_type)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'adj_tune':
             freq = msg.arg1()
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).adj_tune(freq)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'set_debug':
             dbglvl = int(msg.arg1())
             self.set_debug(dbglvl)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'get_terminal_config':
             if self.terminal is not None and self.terminal_config is not None:
-                self.terminal_config['json_type'] = "terminal_config"
-                js = json.dumps(self.terminal_config)
-                msg = gr.message().make_from_string(js, -4, 0, 0)
-                if not self.ui_in_q.full_p():
-                    self.ui_in_q.insert_tail(msg)
+                js = self.terminal_config
+                js['json_type'] = "terminal_config"
+                js['uuid'] = m_uuid
+                ui_rsp.append(js)
             else:
                 return False
         elif s == 'get_full_config':
-            cfg = self.config
-            cfg['json_type'] = "full_config"
-            js = json.dumps(cfg)
-            msg = gr.message().make_from_string(js, -4, 0, 0)
-            if not self.ui_in_q.full_p():
-                self.ui_in_q.insert_tail(msg)
+            js = self.config
+            js['json_type'] = "full_config"
+            js['uuid'] = m_uuid
+            ui_rsp.append(js)
         elif s == 'set_full_config':
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
             pass
+        elif s == 'get_ws_instances':
+            js = {}
+            js['json_type'] = "ws_instances"
+            js['uuid'] = m_uuid
+            for chan in self.channels:
+                js[chan.msgq_id] = chan.ws_instance
+            ui_rsp.append(js)
         elif s == 'dump_tgids':
             self.trunk_rx.dump_tgids()
-        elif s == 'dump_tracking':
-            msgq_id = int(msg.arg2())
-            self.channels[msgq_id].dump_tracking()
-        elif s == 'set_tracking':
-            tracking = msg.arg1()
-            msgq_id = int(msg.arg2())
-            self.find_channel(msgq_id).set_tracking(tracking)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'capture':
             if not self.get_interactive():
                 sys.stderr.write("%s Cannot start capture for non-realtime (replay) sessions\n" % log_ts.get())
                 return
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).toggle_capture()
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+        elif s == 'dump_buffer':
+            for chan in self.channels:
+                chan.decoder.control(json.dumps({'tuner': chan.msgq_id, 'cmd': 'dump_buffer'}))
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'watchdog':
             if self.ui_last_update > 0 and (time.time() > (self.ui_last_update + self.ui_timeout)):
                 self.ui_last_update = 0
-                sys.stderr.write("%s UI Timeout\n" % log_ts.get())
+                if self.verbosity > 10:
+                    sys.stderr.write("%s UI Timeout\n" % log_ts.get())
                 for chan in self.channels:
                     chan.close_plots()
             # Experimental automatic fine tuning 
@@ -940,44 +924,52 @@ class rx_block (gr.top_block):
         elif s in RX_COMMANDS:
             if self.trunking is not None and self.trunk_rx is not None:
                 self.trunk_rx.ui_command(s, msg.arg1(), msg.arg2())
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+
+        if len(ui_rsp) > 0:
+            msg = gr.message().make_from_string(json.dumps(ui_rsp), -4, 0, 0)
+            if not self.ui_in_q.full_p():
+                self.ui_in_q.insert_tail(msg)           # send info back to UI as long as queue not full
+
         return False
+
+    def ui_calllog_update(self):
+        if self.trunking is None or self.trunk_rx is None:
+            return { }
+        js = json.loads(self.trunk_rx.get_call_log())
+        return js
 
     def ui_freq_update(self):
         if self.trunking is None or self.trunk_rx is None:
-            return False
+            return { }
         params = json.loads(self.trunk_rx.get_chan_status())   # extract data from all channels
         for rx_id in params['channels']:                       # iterate and convert stream name to url
             params[rx_id]['ppm'] = self.find_channel(int(rx_id)).device.get_ppm()
             params[rx_id]['capture'] = False if self.find_channel(int(rx_id)).raw_sink is None else True
-            params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error() if self.find_channel(int(rx_id)).auto_tracking else None
-            params[rx_id]['auto_tracking'] = self.find_channel(int(rx_id)).get_auto_tracking()
-            params[rx_id]['tracking'] = self.find_channel(int(rx_id)).get_tracking()
+            params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error()
             s_name = params[rx_id]['stream']
             if s_name not in self.meta_streams:
                 continue
             meta_s, meta_q = self.meta_streams[s_name]
             params[rx_id]['stream_url'] = meta_s.get_url()
-        js = json.dumps(params)
-        msg = gr.message().make_from_string(js, -4, 0, 0)
-        if not self.ui_in_q.full_p():
-            self.ui_in_q.insert_tail(msg)
+        return params
 
     def ui_plot_update(self):
         if self.terminal_type is None or self.terminal_type != "http":
-            return
+            return { }
 
         filenames = []
         for chan in self.channels:
             for sink in chan.sinks:
-                if chan.sinks[sink][0].gnuplot.filename is not None:
-                    filenames.append(chan.sinks[sink][0].gnuplot.filename)
+                fn = chan.sinks[sink][0].gnuplot.filename
+                if fn is not None and os.access(os.path.join(self.http_plot_directory, fn), os.R_OK):
+                    filenames.append(fn)
         d = {'json_type': 'rx_update', 'files': filenames}
-        msg = gr.message().make_from_string(json.dumps(d), -4, 0, 0)
-        if not self.ui_in_q.full_p():
-            self.ui_in_q.insert_tail(msg)
+        return d
 
     def kill(self):
         for chan in self.channels:
+            chan.decoder.control(json.dumps({'tuner': chan.msgq_id, 'cmd': 'stop'}))
             chan.kill()
 
         for instance in self.audio_instances:
@@ -994,6 +986,7 @@ class rx_block (gr.top_block):
     def stop(self):
         sys.stderr.write("%s rx_block::stop() flowgraph stop called\n" % log_ts.get())
         self.kill()
+        time.sleep(0.5) # allow a little time for processes and ports to end gracefully
         gr.top_block.stop(self)
 
 # data unit receive queue
@@ -1096,16 +1089,16 @@ class rx_main(object):
                 self.tb.wait() # curiously wait() matures when a flowgraph gets locked
             sys.stderr.write('Flowgraph complete. Exiting\n')
         except (KeyboardInterrupt):
-            self.tb.stop()
-            self.tb.kill()
-            self.keep_running = False
             sys.stderr.write("Ctrl-C detected\n")
-        except:
             self.tb.stop()
             self.tb.kill()
             self.keep_running = False
+        except Exception:
             sys.stderr.write('main: exception occurred\n')
             sys.stderr.write('main: exception:\n%s\n' % traceback.format_exc())
+            self.tb.stop()
+            self.tb.kill()
+            self.keep_running = False
 
 if __name__ == "__main__":
     if sys.version[0] > '2':

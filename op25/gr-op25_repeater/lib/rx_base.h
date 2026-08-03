@@ -37,9 +37,15 @@ namespace gr {
                 virtual void set_slot_key(int mask) = 0;
                 virtual void set_nac(int nac) = 0;
                 virtual void set_debug(int debug) = 0;
+                virtual void dump_buffer() { };
                 // Crypt_behavior
                 virtual void set_xormask(const char* p) = 0;
                 virtual void crypt_behavior(int behavior) = 0;
+                // FEC stats: JSON envelope returned to {"cmd":"fec_stats"} via
+                // frame_assembler::control(). Default empty so non-P25 sync types
+                // (Smartnet, subchannel) report nothing.
+                virtual std::string get_fec_stats_json() const { return {}; }
+                virtual void stop(void) { }
                 rx_base(const char * options, log_ts& logger, int debug, int msgq_id, gr::msg_queue::sptr queue) { };
                 rx_base() {}; // default constructor called by derived classes
                 virtual ~rx_base() {};

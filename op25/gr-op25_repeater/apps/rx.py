@@ -130,6 +130,7 @@ class p25_rx_block (gr.top_block):
         self.eye_sink = None
         self.mixer_sink = None
         self.fll_sink = None
+        self.demod = None
         self.target_freq = 0.0
         self.last_error_update = 0
         self.tuning_error = 0
@@ -155,7 +156,7 @@ class p25_rx_block (gr.top_block):
                 sys.stdout.write("osmosdr source_c creation failure\n")
                 ignore = True
  
-            if any(x in options.args.lower() for x in ['rtl', 'airspy', 'hackrf', 'uhd']):
+            if any(x in options.args.lower() for x in ['rtl', 'airspy', 'hackrf', 'uhd', 'hydrasdr']):
                 self.rtl_found = True
 
             if options.gain_mode is not None:
@@ -254,6 +255,13 @@ class p25_rx_block (gr.top_block):
         self.terminal = op25_terminal(self.input_q, self.output_q, self.options.terminal_type)
         if self.terminal is None:
             sys.exit(1)
+        ui_rsp = []
+        js = self.send_terminal_config()
+        js['uuid'] = "no-uuid"
+        ui_rsp.append(js)
+        msg = gr.message().make_from_string(json.dumps(ui_rsp), -4, 0, 0)
+        if not self.input_q.full_p():
+            self.input_q.insert_tail(msg)
 
         # attach meta server thread
         if self.options.metacfg is not None:
@@ -426,7 +434,8 @@ class p25_rx_block (gr.top_block):
         if params['tdma'] is not None:
             set_tdma = True
             self.decoder.control({'tuner': 0, 'cmd': 'set_slotid', 'slotid': params['tdma']})
-        self.demod.set_tdma(set_tdma)
+        if self.demod is not None:
+            self.demod.set_tdma(set_tdma)
         if set_tdma == self.tdma_state:
             return    # already in desired state
         self.tdma_state = set_tdma
@@ -533,10 +542,7 @@ class p25_rx_block (gr.top_block):
             error = self.demod.get_freq_error()
         params['error'] = error
         params['stream_url'] = self.stream_url
-        js = json.dumps(params)
-        msg = gr.message().make_from_string(js, -4, 0, 0)
-        if not self.input_q.full_p():
-            self.input_q.insert_tail(msg)
+        return params
 
     def meta_update(self, tgid, tag, rid = None):
         if self.meta_server is None:
@@ -922,30 +928,44 @@ class p25_rx_block (gr.top_block):
         if self.demod is not None:
             error = self.demod.get_freq_error()
         d = {'json_type': 'rx_update', 'error': error, 'fine_tune': self.options.fine_tune, 'files': filenames}
-        msg = gr.message().make_from_string(json.dumps(d), -4, 0, 0)
-        if not self.input_q.full_p():
-            self.input_q.insert_tail(msg)
+        return d
+
+    def send_terminal_config(self):
+        self.terminal_config = {'json_type': 'terminal_config', 'terminal_interface': 'legacy'}
+        return self.terminal_config
 
     def process_qmsg(self, msg):
         # return true = end top block
         RX_COMMANDS = 'skip lockout hold whitelist reload'.split()
         s = msg.to_string()
+        ui_rsp = []
         if type(s) is not str and isinstance(s, bytes):
             # should only get here if python3
             s = s.decode()
-        if s == 'quit': return True
+        try:    # See if we can treat the incoming message as JSON format (from HTTP UI)
+            d = json.loads(s)
+            s = d['command'] if "command" in d and d['command'] is not None else ""
+            m_uuid = d['uuid'] if "uuid" in d and d['uuid'] is not None else "no-uuid"
+        except (json.JSONDecodeError): # otherwise fall back to string format (Curses)
+            m_uuid = "no-uuid"
+
+        if s == 'quit':
+            return True
         elif s == 'update':
             self.ui_last_update = time.time()
-            self.freq_update()
             if self.trunk_rx is None:
                 return False    ## possible race cond - just ignore
-            js = self.trunk_rx.to_json()
-            msg = gr.message().make_from_string(js, -4, 0, 0)
-            if not self.input_q.full_p():
-                self.input_q.insert_tail(msg)
-            self.process_ajax()
+            js = json.loads(self.trunk_rx.to_json())
+            js['uuid'] = m_uuid
+            ui_rsp.append(js)
+            ui_rsp.append(self.freq_update())
+            ui_rsp.append(self.process_ajax())
         elif s == 'set_debug':
             self.set_debug(int(msg.arg1()))
+        elif s == 'get_terminal_config':
+            js = self.send_terminal_config()
+            js['uuid'] = m_uuid
+            ui_rsp.append(js)
         elif s == 'set_freq':
             freq = msg.arg1()
             self.last_freq_params['freq'] = freq
@@ -966,12 +986,19 @@ class p25_rx_block (gr.top_block):
         elif s == 'watchdog':
             if self.ui_last_update > 0 and (time.time() > (self.ui_last_update + self.ui_timeout)):
                 self.ui_last_update = 0
-                sys.stderr.write("%s UI Timeout\n" % log_ts.get())
+                if self.options.verbosity >= 10:
+                    sys.stderr.write("%s UI Timeout\n" % log_ts.get())
                 self.toggle_plot(0)
 
         elif s in RX_COMMANDS:
             if not self.rx_q.full_p():
                 self.rx_q.insert_tail(msg)
+
+        if len(ui_rsp) > 0:
+            msg = gr.message().make_from_string(json.dumps(ui_rsp), -4, 0, 0)
+            if not self.input_q.full_p():
+                self.input_q.insert_tail(msg)
+
         return False
 
 ############################################################################
