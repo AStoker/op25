@@ -66,5 +66,8 @@ In `"noise"` and `"voice"` modes the power squelch is bypassed entirely and
 The DSP core is in `squelch_core.py` and can be validated without GNU Radio or
 radio hardware by running `python3 squelch_core_test.py`, which simulates the
 receive chain (channel noise, IF filtering, discriminator) and prints a
-CNR-to-quieting table along with pass/fail functional checks.
+CNR-to-quieting table along with pass/fail functional checks.  With GNU Radio
+and op25 built, `python3 squelch_gr_test.py` additionally verifies the
+flowgraph integration: gating under scheduler-driven buffer chunking matches
+the core bit-for-bit, and `op25_nbfm_c` builds and runs in all three modes.
 
