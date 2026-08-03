@@ -248,7 +248,7 @@ class NoiseSquelch(object):
         if self.state != prev:
             self.state_frames = 0
             self.gate_target = 1.0 if self.state in (ST_OPEN, ST_HANG) else 0.0
-            if self.debug >= 10:
+            if self.debug >= 2:
                 names = {ST_CLOSED: 'closed', ST_OPENING: 'opening',
                          ST_OPEN: 'open', ST_HANG: 'hang'}
                 self._log("noise squelch %s->%s quieting=%.1fdB" %
