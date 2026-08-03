@@ -1,11 +1,12 @@
 {
-    "#comment": "NBFM power-squelch baseline (legacy behavior) for A/B against noise mode",
-    "#comment2": "SET THE FREQUENCY below (channel and device) plus LNA gain and ppm for your dongle",
+    "#comment": "Base template for NBFM squelch field tests. Do not edit for a run --",
+    "#comment2": "run-field-test.sh renders this into results/<run>/op25.json with the",
+    "#comment3": "chosen mode, frequency and overrides. See README.md.",
     "channels": [
         {
             "name": "nbfm test",
-            "frequency": 162550000,
-            "device": "rtl0",
+            "frequency": 162400000,
+            "device": "sdr0",
             "trunking_sysname": "",
             "meta_stream_name": "",
             "demod_type": "fsk4",
@@ -17,9 +18,9 @@
             "symbol_rate": 4800,
             "enable_analog": "on",
             "nbfm_deviation": 4000,
-            "nbfm_squelch_mode": "power",
-            "nbfm_squelch_threshold": -60,
-            "nbfm_squelch_gain": 0.0015,
+            "nbfm_squelch_mode": "noise",
+            "nbfm_noise_squelch_db": 8,
+            "nbfm_noise_squelch_hang": 250,
             "nbfm_raw_output": "",
             "blacklist": "",
             "whitelist": ""
@@ -28,10 +29,10 @@
     "devices": [
         {
             "args": "rtl=0",
-            "frequency": 162550000,
+            "frequency": 162400000,
             "gains": "LNA:32",
             "gain_mode": false,
-            "name": "rtl0",
+            "name": "sdr0",
             "offset": 0,
             "ppm": 0.0,
             "rate": 960000,
@@ -49,7 +50,7 @@
             {
                 "instance_name": "audio0",
                 "device_name": "default",
-                "udp_port": 23456,
+                "udp_port": 23458,
                 "audio_gain": 1.0,
                 "number_channels": 1
             }
@@ -57,7 +58,7 @@
     },
     "terminal": {
         "module": "terminal.py",
-        "terminal_type": "http:0.0.0.0:8080",
+        "terminal_type": "http:127.0.0.1:8080",
         "curses_plot_interval": 0.2,
         "http_plot_interval": 1.0,
         "http_plot_directory": "../www/images",

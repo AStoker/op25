@@ -1,94 +1,180 @@
 # NBFM Noise-Squelch Field Test Kit
 
-Live-antenna test plan for the PA3FWM noise squelch on this branch
-(`nbfm-noise-squelch`).  Target: a Ubuntu 22.04 or 24.04 host with an
-RTL-SDR (any gr-osmosdr device works; the configs assume `rtl=0`).
+Live-antenna test equipment for the PA3FWM noise squelch on this branch
+(`nbfm-noise-squelch`).  Target: Ubuntu 22.04 or 24.04 with an RTL-SDR.
+
+Receive only.  Nothing here transmits, and nothing decrypts anything.
+Monitoring rules vary by jurisdiction; comply with the ones that apply to
+you and to anything you record.
 
 ## Quick start
 
+```bash
+sudo ./deploy.sh
 ```
-sudo ./deploy.sh                  # deps + build + install + self-tests
-rtl_test -t                       # dongle sanity (reboot once if DVB driver held it)
-$EDITOR cfg-nbfm-noise.json       # set frequency, LNA gain, ppm
-./run-field-test.sh noise         # go
+```bash
+./run-field-test.sh --check noaa
 ```
-
-`deploy.sh` finishes by running the two self-test suites
-(`squelch_core_test.py`, `squelch_gr_test.py`); expect `15/15` and `9/9`.
-The run script starts `multi_rx.py` at verbosity 2, where every squelch
-transition prints with its measured quieting:
-
-```
-noise squelch closed->opening ...
-noise squelch opening->open quieting=14.2dB
-noise squelch open->hang quieting=4.8dB
-noise squelch hang->closed quieting=0.3dB
+```bash
+./run-field-test.sh noise noaa
 ```
 
-Status page: `http://<host>:8080`.  Audio plays on the host's default
-ALSA device.  Listening remotely instead: change the channel
-`destination` to `udp://<your-workstation-ip>:23456` and on the
-workstation run
-`ffplay -f s16le -ar 8000 -ac 1 -i udp://0.0.0.0:23456 -nodisp`.
+`deploy.sh` installs GNU Radio 3.10 and dependencies, patches OP25's CMake
+policies for CMake 4, builds and installs, verifies the GNU Radio Python
+modules import, and runs both self-test suites (expect 21/21 and 9/9).
 
-## Picking test frequencies
+Nothing needs hand-editing: `run-field-test.sh` renders the config for each
+run from `template-nbfm.json` and saves it alongside the results.
 
-| Target | Why |
+Do **not** use `rtl_test -t` to check the dongle — it is an E4000-only
+benchmark that reports "No E4000 tuner found" on R820T/R820T2 hardware.
+`--check` performs a tuned sample read instead.
+
+## What a run produces
+
+Each run writes a timestamped directory under `results/`:
+
+| File | What it is |
 |---|---|
-| NOAA weather radio (162.400-162.550 MHz) | Always-on carrier: first-light check. Gate must open within ~100 ms of tuning on and never chatter. Tune 25 kHz off-channel: gate must close and stay closed. |
-| 2m ham repeater output (144-148 MHz) | Intermittent traffic: key-up attack, tail/hang behavior, weak mobile flutter. |
-| VHF public safety / business (150-160 MHz, 12.5 kHz channels) | The design target: narrowband voice, varied signal strength. |
-| MURS 151.820/151.880/151.940 MHz | Legal to monitor, sporadic short transmissions. |
+| `gated-audio.wav` | 8 kHz mono audio that passed the squelch, gate timeline preserved |
+| `audio-levels.tsv` | per-second RMS, peak, and gate state |
+| `op25.log` | OP25 diagnostics including squelch transitions |
+| `op25.json` | the exact configuration that produced this run |
+| `run-metadata.txt` | frequency, gain, ppm, thresholds, host, commit, timings |
+| `discriminator.raw` | raw discriminator, if `NBFM_RAW_OUTPUT=on` |
 
-NOAA WX uses wider deviation (+/-5 kHz); that's fine for squelch testing.
-For narrowband channels `nbfm_deviation: 4000` in the configs is right
-(lower it to 2500 if audio is too quiet on very narrow systems).
+At verbosity 2 (the default) OP25 prints one line per audible change:
+
+```text
+noise squelch opened quieting=14.7dB
+noise squelch closed quieting=4.8dB
+```
+
+The live meter shows what is reaching the audio device, including whether
+the gate is open — the NBFM path streams PCM continuously and the squelch
+gates it to zero, so the monitor recovers the gate timeline from the audio
+itself:
+
+```text
+AUDIO [##########..............] RMS  -31.4 dBFS  peak  -12.8 dBFS  gate open      open   42.0s /  115.0s
+```
+
+When the run stops, `summarize-run.py` prints a verdict and flags chatter,
+never-opened, never-closed, and threshold flapping. Status UI while running:
+`http://127.0.0.1:8080` (remote: `ssh -L 8080:127.0.0.1:8080 user@host`).
+
+## Choosing a target
+
+`./run-field-test.sh --list` prints the built-in profiles.
+
+| Profile | Why |
+|---|---|
+| `noaa`, `noaa2`…`noaa7` | NOAA weather radio: a permanent carrier with real voice. The best first-light check, and the right place to measure your receiver's reference. |
+| `murs1`…`murs5` | MURS: sporadic short transmissions, legal to monitor. |
+| `ham2m` | 146.520 MHz FM simplex: key-up/unkey behavior with a handheld. |
+| `custom` | `NBFM_FREQUENCY_HZ=154935000 ./run-field-test.sh noise custom` |
 
 ## Test matrix
 
-1. **Empty channel** (tune somewhere quiet): gate stays closed for
-   minutes on end.  Any false open is a finding - note the logged
-   quieting value.
-2. **Strong signal**: opens promptly on key-up, no mid-transmission
-   dropouts, closes ~250 ms (hang) after unkey.
-3. **Weak signal**: find a distant repeater or attenuate the antenna.
-   Default `nbfm_noise_squelch_db: 8` should open around "weak but
-   readable" (~6-7 dB CNR).  Compare intelligibility at the margin
-   against power mode.
-4. **A/B against legacy**: `./run-field-test.sh power` runs the same
-   channel with the original power squelch (`-60 dB` absolute
-   threshold).  The claim under test: noise mode needs no per-device
-   threshold fiddling and opens on signals power mode misses (or vice
-   versa - note which).
-5. **Voice mode** (optional): `./run-field-test.sh voice` also requires
-   speech to open.  A NOAA WX carrier is voice ~100% of the time so it
-   should behave like noise mode there; on a channel with data bursts
-   (MDC1200, telemetry) it should stay closed for the bursts.
+1. **Empty channel** — tune somewhere quiet. The gate must stay closed for
+   minutes. Any false open is a finding; keep `op25.log`.
+2. **Constant carrier** (`noaa`) — opens within ~100 ms and stays open with
+   no chatter. `summarize-run.py` will report NEVER CLOSED, which is
+   correct here.
+3. **Intermittent traffic** (`ham2m`, `murs*`) — prompt open on key-up, no
+   mid-transmission dropouts, closes about `NBFM_HANG_MS` after unkey.
+4. **Weak signal** — a distant repeater, or attenuate the antenna. The
+   default 8 dB threshold should open at roughly "weak but readable".
+5. **A/B against the legacy squelch** — `./run-field-test.sh power noaa`
+   runs the same channel with the original absolute-power squelch. The
+   claim under test is that noise mode needs no per-device threshold
+   hunting; note which mode opens on signals the other misses.
+6. **Voice mode** — `./run-field-test.sh voice ...` additionally requires
+   speech to open, so it stays shut for data bursts and steady tones.
 
-## Capturing evidence
+## Deterministic A/B on one recording
 
-Set `"nbfm_raw_output": "/tmp/disc.raw"` in the running config to
-record the raw discriminator (float32 @ 24 kHz).  Replay it later
-through either squelch offline - no radio needed - by setting
-`"nbfm_raw_input": "/tmp/disc.raw"` and toggling `nbfm_squelch_mode`,
-which is the cleanest apples-to-apples comparison for a marginal
-signal.  Keep captures of anything that misbehaves.
+The cleanest comparison uses identical input for every mode. Capture the
+discriminator once, then replay it through each squelch:
+
+```bash
+NBFM_RAW_OUTPUT=on ./run-field-test.sh noise ham2m
+```
+```bash
+NBFM_RAW_FILE=results/<run>/discriminator.raw ./run-field-test.sh power
+```
+
+Add `NBFM_DURATION=15m` to any run to stop on a timer and print the summary
+automatically, which is what you want for an unattended soak test or a
+bounded replay.
+
+No radio is needed for the replay, and both modes see exactly the same
+samples. `NBFM_IQ_FILE=` replays an IQ recording the same way.
+
+## Measuring your receiver instead of guessing
+
+`capture-diagnostic.sh` records unprocessed discriminator audio straight
+from the dongle, then analyzes it:
+
+```bash
+./capture-diagnostic.sh noaa 2m
+```
+
+`analyze-quieting.py` reports the measured no-carrier reference, the
+distribution of quieting, how much time sat above each candidate
+threshold, and the open/close timeline the real state machine would
+produce. Run it on any FM discriminator capture, including P25 C4FM: it
+will not decode voice, but it does separate "nothing was transmitting"
+from "a carrier was present but not decodable" — which speaker audio
+alone cannot.
+
+```bash
+./analyze-quieting.py results/<run>/raw-channel.wav --trace
+```
+
+Capture on a **quiet** channel and the reported
+`nbfm_noise_squelch_ref` is the correct no-carrier reference for that
+receiver, antenna and gain setting. Pin it with `NBFM_SQUELCH_REF=` to
+skip run-time calibration entirely.
+
+The timeline the analyzer prints is produced by the same state machine the
+receiver runs, scaled to the recording's own noise floor, so it matches
+what OP25 would have done live — verified against a full replay run. That
+makes threshold selection a desk exercise: capture once, then try
+thresholds offline instead of standing at the antenna.
 
 ## Tuning
 
 | Symptom | Adjust |
 |---|---|
-| Opens on noise flutter / distant intermod | raise `nbfm_noise_squelch_db` toward 12 |
-| Misses weak-but-readable signals | lower it toward 5 |
-| Tail chops syllables on fading mobiles | raise `nbfm_noise_squelch_hang` (ms) |
-| Squelch tail noise burst audible | lower hang; report it - the gate should ramp, not click |
+| Opens on noise, flutter, or distant intermod | raise `NBFM_SQUELCH_DB` toward 12 |
+| Misses weak-but-readable signals | lower `NBFM_SQUELCH_DB` toward 5 |
+| Tail chops syllables on fading mobiles | raise `NBFM_HANG_MS` |
+| Quieting reads a couple of dB low right after start-up | expected; see below |
+
+**Why quieting can read low at start-up.** The threshold is measured
+against the receiver's no-carrier noise floor, which the squelch
+calibrates at run time. The built-in starting value matches the
+demodulator's ±7 kHz filter, but `multi_rx` leaves the wider ±9.6 kHz
+taps selected unless trunking narrows them, and that floor sits about
+1.9 dB hotter. Calibration is deliberately one-way (it can only raise the
+reference, so noise never gets mistaken for signal), so until the squelch
+observes actual noise, quieting reads up to ~1.9 dB low. A receiver
+started on a live carrier learns from the first dropout. To remove the
+uncertainty, measure the reference with `capture-diagnostic.sh` on a quiet
+channel and pin it with `NBFM_SQUELCH_REF=`.
 
 ## Troubleshooting
 
-- `rtl_test` shows `usb_claim_interface error`: DVB driver grabbed the
-  dongle - `deploy.sh` installed the blacklist; reboot once.
-- No audio: check `aplay -l`, set `device_name` in the config's audio
-  section (e.g. `"hw:1,0"`, or `"pulse"` on a desktop).
-- `vmcircbuf` warnings at startup are normal GNU Radio first-run noise.
-- Frequency looks right but audio is off-pitch/garbled: set the
-  dongle's `ppm` correction in the config.
+- `usb_claim_interface error -6`: the DVB kernel driver owns the dongle.
+  `deploy.sh` installs the blacklist; reboot once.
+- "Another SDR process already holds the dongle": only one process can own
+  an RTL-SDR. Stop `dump1090`/`readsb`/another op25 first; the scripts
+  name what they found.
+- No audio: check `aplay -l`, then set the audio `device_name` in
+  `template-nbfm.json` (e.g. `hw:1,0`, or `pulse` on a desktop).
+  `NBFM_AUDIO=off` keeps metering and recording without local playback.
+- `vmcircbuf` warnings at start-up are normal GNU Radio first-run noise.
+- Audio present but off-pitch or garbled: set `NBFM_PPM` for your dongle.
+- Meter says "idle - no PCM from op25": OP25 is not emitting audio at all,
+  which is different from the squelch being closed. Check `op25.log`.
