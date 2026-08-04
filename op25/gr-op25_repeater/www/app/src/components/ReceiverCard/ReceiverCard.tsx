@@ -75,7 +75,9 @@ export default function ReceiverCard() {
   useEffect(() => { refreshCaptures(); }, [refreshCaptures, capturing]);
 
   return (
-    <CardShell title="Tuning & Diagnostics">
+    // Collapsed by default: these are occasional-use controls, not something to
+    // scan. The header still names them, so they are findable when wanted.
+    <CardShell title="Tuning & Diagnostics" defaultCollapsed>
       <Stack spacing={2}>
         <Box>
           <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>

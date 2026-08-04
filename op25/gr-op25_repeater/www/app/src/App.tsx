@@ -95,12 +95,12 @@ function DesktopLayout() {
         <SubscribersCard />
       </Stack>
 
-      {/* Tuning sits at the top of this column deliberately: below Site
-          Information — whose frequency grid is tall — its controls landed
-          exactly one screen down on a 1440x900 laptop, so nobody found them. */}
+      {/* Tuning & Diagnostics starts collapsed (see ReceiverCard), so its
+          position below Site Information costs nothing — the header is one line
+          and the controls are one click away when actually needed. */}
       <Stack direction="column" spacing={2} sx={{ flex: 1, minWidth: 0 }}>
-        <ReceiverCard />
         <SiteInfoCard />
+        <ReceiverCard />
         <SignalPlotsCard />
         <BandPlanCard />
         <AdjacentSitesCard />
