@@ -75,7 +75,7 @@ export default function ReceiverCard() {
   useEffect(() => { refreshCaptures(); }, [refreshCaptures, capturing]);
 
   return (
-    <CardShell title="Receiver">
+    <CardShell title="Tuning & Diagnostics">
       <Stack spacing={2}>
         <Box>
           <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>

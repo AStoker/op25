@@ -41,7 +41,8 @@ const SECTIONS = [
   { label: 'Live',   render: () => <><PlayerCard /><ChannelsCard /></> },
   { label: 'Audio',  render: () => <><TranscriptsCard /><CallHistoryCard /></> },
   { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /><ConfigCard /></> },
-  { label: 'Signal', render: () => <><ReceiverCard /><SignalPlotsCard /></> },
+  // "Signal" alone did not suggest the tuning controls were in here.
+  { label: 'Signal & Tuning', render: () => <><ReceiverCard /><SignalPlotsCard /></> },
 ];
 
 function MobileLayout() {
@@ -94,9 +95,12 @@ function DesktopLayout() {
         <SubscribersCard />
       </Stack>
 
+      {/* Tuning sits at the top of this column deliberately: below Site
+          Information — whose frequency grid is tall — its controls landed
+          exactly one screen down on a 1440x900 laptop, so nobody found them. */}
       <Stack direction="column" spacing={2} sx={{ flex: 1, minWidth: 0 }}>
-        <SiteInfoCard />
         <ReceiverCard />
+        <SiteInfoCard />
         <SignalPlotsCard />
         <BandPlanCard />
         <AdjacentSitesCard />
