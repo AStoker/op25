@@ -1734,8 +1734,10 @@ function update_auto_btn() {
 }
 
 function f_dump_button(command) {
+    // dump_tgids already dumps patches, wuids, rids and source-id history.
+    // (A second 'dump_tracking' command used to be sent here; no version of
+    // rx.py or multi_rx.py has ever implemented it.)
     send_command('dump_tgids', 0, Number(channel_list[channel_index]));
-    send_command('dump_tracking', 0, Number(channel_list[channel_index]));
 }
 
 function f_dump_buffer(command) {

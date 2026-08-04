@@ -40,20 +40,21 @@ function formatFreq(hz: number | null | undefined): string {
 }
 
 export default function PlayerCard() {
-  const { status, send } = useWebSocketService();
+  const { status } = useWebSocketService();
   const { start, stop, audioStatus } = useAudioStream(AUDIO_STREAM_URL);
   const channel        = useSelectedChannel();
   const system         = useSelectedSystem();
   const { decoderRunning, releaseHold, skipCall } = useOp25Service();
 
+  // Muting is entirely client-side: stopping the Web Audio path stops pulling
+  // /api/stream, which is the whole mechanism.  This used to also send
+  // SYSTEM_CONTROL mute/unmute, which the server silently discarded.
   function handlePlay() {
     start().catch(() => {});
-    send({ type: 'SYSTEM_CONTROL', payload: { action: 'unmute' } });
   }
 
   function handleStop() {
     stop();
-    send({ type: 'SYSTEM_CONTROL', payload: { action: 'mute' } });
   }
 
   const connected = status === 'open';

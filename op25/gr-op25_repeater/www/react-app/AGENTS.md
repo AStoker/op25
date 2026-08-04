@@ -112,11 +112,16 @@ The server replies with a JSON array of response objects. Each has a `json_type`
 | `lockout` | tgid | channel | Lockout (blacklist) talkgroup |
 | `adj_tune` | Hz offset | channel | Adjust frequency offset |
 | `capture` | 0 | channel | Toggle IQ capture |
-| `dump_tgids` | 0 | channel | Log talkgroup IDs to server console |
-| `dump_tracking` | 0 | channel | Log tracking state |
+| `dump_tgids` | 0 | channel | Log talkgroups, patches, wuids and rids to server console |
 | `dump_buffer` | -1 | channel | Force buffer dump |
 | `set_debug` | level (0–10) | channel | Set log verbosity |
 | `toggle_plot` | plot type (cast as number) | channel | Toggle gnuplot |
+| `reload` | 0 | channel | Re-read blacklist/whitelist files |
+| `set_freq` | Hz | channel | Retune the channel (`rx.py`, and `multi_rx.py` as of this fork) |
+
+**Not a command:** earlier revisions of this table listed `dump_tracking`, and
+both legacy UIs sent it. Neither `rx.py` nor `multi_rx.py` has ever had a
+handler for it, so it was always a no-op; the sends have been removed.
 
 "Hold on talkgroup" requires sending `whitelist` first then `hold` — see `holdTalkgroup()` in `App.tsx`.
 

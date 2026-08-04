@@ -147,7 +147,10 @@ class device(object):
 
             for tup in config['gains'].split(','):
                 name, gain = tup.split(':')
-                self.src.set_gain(int(gain), str(name))
+                # Accept fractional gains ("LNA:49.6") — osmosdr rounds to the
+                # nearest supported step anyway, and int() alone raised
+                # ValueError at startup on a perfectly reasonable config.
+                self.src.set_gain(int(round(float(gain))), str(name))
 
             self.ppm = float(from_dict(config, 'ppm', "0.0"))
             self.src.set_freq_corr(int(round(self.ppm)))
@@ -901,6 +904,30 @@ class rx_block (gr.top_block):
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).adj_tune(freq)
             ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+        elif s == 'set_freq':
+            # The curses terminal's 'f' key has always sent this; only rx.py
+            # implemented it, so under multi_rx the keystroke did nothing.
+            freq = msg.arg1()
+            msgq_id = int(msg.arg2())
+            chan = self.find_channel(msgq_id)
+            if chan is None:
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid, 'detail': "no such channel"})
+            elif chan.set_freq(freq):
+                sys.stderr.write("%s [%d] tuned to %f\n" % (log_ts.get(), msgq_id, (freq/1e6)))
+                ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+            else:
+                # Out of the device's usable span, and the device is not tunable.
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                               'detail': "cannot tune %f on this device" % (freq/1e6)})
+        elif s == 'add_default_config':
+            # rx.py builds a trunking config on the fly for a newly seen NAC
+            # (trunking.py:add_default_config).  multi_rx takes its systems from
+            # the JSON config and the tk_* modules have no equivalent, so say so
+            # rather than silently dropping the request.
+            sys.stderr.write("%s add_default_config is not supported by multi_rx "
+                             "(define the system in the config file instead)\n" % log_ts.get())
+            ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                           'detail': "add_default_config is not supported by multi_rx"})
         elif s == 'set_debug':
             dbglvl = int(msg.arg1())
             self.set_debug(dbglvl)

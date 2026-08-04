@@ -3,7 +3,7 @@
 //
 // Every message on the wire is:  { type: MessageType, payload: <PayloadType> }
 //
-// Downstream  (server → client):  SYSTEM_STATE | SDR_STATUS | CALL_ACTIVITY
+// Downstream  (server → client):  SYSTEM_STATE | CALL_ACTIVITY | CALL_AUDIO
 // Upstream    (client → server):  CALL_CONTROL | SYSTEM_CONTROL
 //
 // The Python decoder wraps every emission with a `json_type` field; the
@@ -20,36 +20,30 @@ import type {
 } from './op25';
 
 // ---------------------------------------------------------------------------
-// Initial SYSTEM_STATE snapshot sent from websocket_server.py on connect.
+// Health SYSTEM_STATE payload from websocket_server.py::_system_state_payload().
+// Sent on connect and then on the server's 1 Hz tick, so `status` reports
+// whether the decoder is actually feeding the bridge — not a fixed value.
 // ---------------------------------------------------------------------------
 
-export interface InitialSystemStatePayload {
+export interface SystemHealthPayload {
+  /** 'running' while decoder updates are arriving, 'error' once they stall,
+   *  'stopped' before the first one. */
   status: 'running' | 'stopped' | 'error';
+  /** Server uptime in seconds. */
   uptime: number;
   site_name: string;
   trunk_id: string;
   error_detail: string;
 }
 
-// SYSTEM_STATE payload union — initial snapshot OR decoder-emitted updates
+// SYSTEM_STATE payload union — the health payload OR decoder-emitted updates
 // that fall through the json_type map (e.g. trunk_update, channel_update,
-// terminal_config, full_config, ws_instances).
+// plot, terminal_config, full_config, ws_instances).
 export type SystemStatePayload =
-  | InitialSystemStatePayload
+  | SystemHealthPayload
   | TrunkUpdatePayload
   | ChannelUpdatePayload
   | (Record<string, unknown> & { json_type: string });
-
-export interface SdrStatusPayload {
-  json_type?: string;
-  source?: string;
-  frequency?: number;
-  gain?: number;
-  locked?: boolean;
-  signal_level?: number;
-  error_rate?: number;
-  [k: string]: unknown;
-}
 
 // CALL_ACTIVITY payload — call_log / trunked_site_status / sys_info all
 // arrive on this channel with a json_type discriminator.
@@ -72,9 +66,12 @@ export interface CallControlPayload {
   arg2?: number;          // typically msgqid (channel index)
 }
 
+/** The only system-level action the decoder implements.  Muting is handled in
+ *  the browser (the player stops pulling /api/stream), and start/stop/restart
+ *  would mean process control the decoder does not expose — so neither is
+ *  declared here.  See websocket_server.py::handle_system_control. */
 export interface SystemControlPayload {
-  action: 'start' | 'stop' | 'restart' | 'mute' | 'unmute' | 'quit';
-  volume?: number;
+  action: 'quit';
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +80,6 @@ export interface SystemControlPayload {
 
 export type DownstreamMessage =
   | { type: 'SYSTEM_STATE'; payload: SystemStatePayload; }
-  | { type: 'SDR_STATUS'; payload: SdrStatusPayload; }
   | { type: 'CALL_ACTIVITY'; payload: CallActivityPayload; }
   | { type: 'CALL_AUDIO'; payload: CallClipPayload; }
   | { type: 'ERROR'; payload: { detail: string; }; };

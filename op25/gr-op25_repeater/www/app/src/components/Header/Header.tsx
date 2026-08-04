@@ -16,8 +16,10 @@ import Button from '@mui/material/Button';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import RadioIcon from '@mui/icons-material/Radio';
+import Tooltip from '@mui/material/Tooltip';
 import { useThemeService } from '../../services/themeService';
 import { useWebSocketService } from '../../services/websocketService';
+import { useSystemState } from '../../hooks/useSystemState';
 
 export interface NavItem {
   label: string;
@@ -39,10 +41,20 @@ const CONNECTION_LABEL: Record<string, string> = {
   error:      'error',
 };
 
+/** Compact uptime: 45s, 12m, 3h 07m, 2d 04h. */
+function formatUptime(secs: number): string {
+  if (!Number.isFinite(secs) || secs < 0) return '';
+  if (secs < 60)    return `${Math.floor(secs)}s`;
+  if (secs < 3600)  return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ${String(Math.floor((secs % 3600) / 60)).padStart(2, '0')}m`;
+  return `${Math.floor(secs / 86400)}d ${String(Math.floor((secs % 86400) / 3600)).padStart(2, '0')}h`;
+}
+
 export default function Header({ navItems }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { mode, toggleTheme } = useThemeService();
   const { status } = useWebSocketService();
+  const health = useSystemState();
 
   const handleDrawerToggle = () => {
     setMobileOpen((prev) => !prev);
@@ -149,6 +161,29 @@ export default function Header({ navItems }: HeaderProps) {
               </Button>
             ))}
           </Box>
+
+          {/* Decoder health, distinct from socket state: the page can be
+              connected to a server whose decoder has stopped answering. */}
+          {health && (
+            <Tooltip
+              title={health.error_detail
+                || `${health.site_name || 'decoder'}${health.trunk_id ? ` · ${health.trunk_id}` : ''} · up ${formatUptime(health.uptime)}`}
+            >
+              <Chip
+                size="small"
+                variant="outlined"
+                label={health.status === 'running'
+                  ? `decoder · ${formatUptime(health.uptime)}`
+                  : `decoder ${health.status}`}
+                sx={{
+                  display: { xs: 'none', md: 'inline-flex' },
+                  mr: 1,
+                  color: 'inherit',
+                  borderColor: health.status === 'running' ? 'currentColor' : 'error.light',
+                }}
+              />
+            </Tooltip>
+          )}
 
           {/* Connection state — a dot on phones, a labelled chip elsewhere,
               so the most important status is never the thing that wraps. */}

@@ -1,5 +1,7 @@
+import { useCallback, useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Link from '@mui/material/Link';
 import ButtonGroup from '@mui/material/ButtonGroup';
 import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
@@ -22,6 +24,20 @@ function formatHz(hz: number | null | undefined): string {
   return `${hz > 0 ? '+' : ''}${Math.round(hz)} Hz`;
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+interface CaptureFile {
+  name: string;
+  path: string;
+  size: number;
+  modified: number;
+  exists: boolean;
+}
+
 /**
  * Receiver-level controls: the commands multi_rx has always accepted from the
  * curses terminal (fine tune, log level, symbol capture, list reload, state
@@ -42,6 +58,21 @@ export default function ReceiverCard() {
   const disabled   = noChannels || !decoderRunning;
   const capturing  = Boolean(channel?.capture);
   const channelName = channel?.name || (selectedChannelId !== null ? `Channel ${selectedChannelId}` : '—');
+
+  const [captures, setCaptures] = useState<CaptureFile[]>([]);
+
+  const refreshCaptures = useCallback(() => {
+    fetch('/api/captures')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { captures?: CaptureFile[] } | null) => {
+        if (body?.captures) setCaptures(body.captures);
+      })
+      .catch(() => { /* older server without the endpoint — no list, no harm */ });
+  }, []);
+
+  // Refresh on mount and whenever a capture starts or stops, so a file appears
+  // as soon as it exists and its final size shows once the sink is closed.
+  useEffect(() => { refreshCaptures(); }, [refreshCaptures, capturing]);
 
   return (
     <CardShell title="Receiver">
@@ -144,6 +175,43 @@ export default function ReceiverCard() {
             channel's <code>symbols</code> device args. Not available for replay
             (non-realtime) sessions.
           </Typography>
+
+          {captures.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Captures this session
+              </Typography>
+              <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                {captures.map((c) => (
+                  <Stack
+                    key={c.path}
+                    direction="row"
+                    spacing={1}
+                    alignItems="baseline"
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    {c.exists ? (
+                      <Link
+                        href={`/api/captures/${encodeURIComponent(c.name)}`}
+                        variant="body2"
+                        sx={{ overflowWrap: 'anywhere' }}
+                      >
+                        {c.name}
+                      </Link>
+                    ) : (
+                      <Tooltip title="The decoder reported this file but it is no longer on disk">
+                        <Typography variant="body2" color="text.disabled">{c.name}</Typography>
+                      </Tooltip>
+                    )}
+                    <Typography variant="caption" color="text.secondary">
+                      {formatBytes(c.size)}
+                    </Typography>
+                  </Stack>
+                ))}
+              </Stack>
+            </Box>
+          )}
         </Box>
 
         <Divider />

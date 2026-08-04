@@ -16,14 +16,19 @@ All messages are JSON objects with two required top-level keys:
     { "type": "<MESSAGE_TYPE>", "payload": { ... } }
 
 Downstream (server → client)
-    SYSTEM_STATE   – Overall system health/status snapshot
-    SDR_STATUS     – Software-defined radio receiver metrics
-    CALL_ACTIVITY  – Currently active / most-recent call details
+    SYSTEM_STATE   – Health snapshot (status/uptime), plus every decoder
+                     json_type without a more specific home: trunk_update,
+                     channel_update, plot, terminal_config, full_config
+    CALL_ACTIVITY  – call_log entries (a draining delta feed; the server keeps
+                     a ring of recent ones so late joiners are not left blank)
     CALL_AUDIO     – A captured call clip, and later its transcript
 
 Upstream (client → server)
-    CALL_CONTROL   – Hold, skip, lockout, or whitelist a talk-group
-    SYSTEM_CONTROL – Start/stop/restart the decoder, or adjust volume
+    CALL_CONTROL   – Any decoder UI command: hold, skip, lockout, whitelist,
+                     reload, adj_tune, set_debug, capture, dump_tgids,
+                     dump_buffer, toggle_plot, get_full_config, …
+    SYSTEM_CONTROL – quit.  Muting is a browser-side concern (the page simply
+                     stops pulling /api/stream), so there is no mute command.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlparse
@@ -90,18 +96,45 @@ def load_config(path: str) -> dict[str, Any]:
             return json.loads(f.read())
 
 
-def _initial_system_state() -> dict[str, Any]:
-    """Build a SYSTEM_STATE payload from the loaded config (status=stopped)."""
+# Server start, and the last time the decoder sent us anything.  Together these
+# are what makes SYSTEM_STATE a live health signal rather than the frozen
+# 'stopped' / uptime 0 placeholder it used to be.
+_server_started_at: float = time.time()
+_last_decoder_msg_at: float = 0.0
+
+# How long without decoder traffic before we call the decoder stopped.  The
+# ws_terminal heartbeat asks for an update every second, so a few missed
+# replies is a real stall, not jitter.
+_DECODER_STALE_SECS = 5.0
+
+
+def _system_state_payload() -> dict[str, Any]:
+    """Build the SYSTEM_STATE health payload.
+
+    ``status`` reflects whether the decoder is actually feeding us: 'running'
+    once messages are arriving, 'stopped' before the first one or after
+    _DECODER_STALE_SECS of silence.  ``uptime`` is this server's, in seconds.
+    """
     channels      = (_config or {}).get('channels', [])
     trunk_chans   = (_config or {}).get('trunking', {}).get('chans', [])
     site_name     = channels[0].get('name', '')    if channels    else ''
     trunk_id      = trunk_chans[0].get('sysname', '') if trunk_chans else ''
+
+    now = time.time()
+    if _last_decoder_msg_at and (now - _last_decoder_msg_at) < _DECODER_STALE_SECS:
+        status, detail = 'running', ''
+    elif _last_decoder_msg_at:
+        status = 'error'
+        detail = 'no decoder update for %.0fs' % (now - _last_decoder_msg_at)
+    else:
+        status, detail = 'stopped', 'waiting for the decoder'
+
     return {
-        'status':       'stopped',
-        'uptime':       0,
+        'status':       status,
+        'uptime':       int(now - _server_started_at),
         'site_name':    site_name,
         'trunk_id':     trunk_id,
-        'error_detail': '',
+        'error_detail': detail,
     }
 
 # ---------------------------------------------------------------------------
@@ -354,6 +387,18 @@ _ha_bridge: HomeAssistantBridge | None = None
 _last_channels: dict[str, Any] = {}
 _last_channels_lock = threading.Lock()
 
+# Symbol-capture files the decoder has told us it is writing, newest last.
+# Kept even after a capture stops so the finished file stays downloadable.
+_capture_files: list[str] = []
+
+# call_log is a *draining* delta feed: tk_p25.get_call_log() clears its buffer
+# on every read and ws_terminal polls once a second whether or not a browser is
+# attached.  Without this ring a client that connects late permanently misses
+# every call that happened before it arrived.
+_CALL_LOG_HISTORY = 200
+_recent_calls: deque[dict[str, Any]] = deque(maxlen=_CALL_LOG_HISTORY)
+_recent_calls_lock = threading.Lock()
+
 
 def _note_channel_state(entry: dict[str, Any]) -> None:
     """Remember the newest channel_update so clips can be tagged with it."""
@@ -365,6 +410,26 @@ def _note_channel_state(entry: dict[str, Any]) -> None:
     with _last_channels_lock:
         _last_channels.clear()
         _last_channels.update(snapshot)
+
+    for chan in snapshot.values():
+        path = chan.get('capture_file')
+        if path and path not in _capture_files:
+            _capture_files.append(path)
+
+
+def _note_call_log(entry: dict[str, Any]) -> None:
+    """Accumulate the draining call_log feed so late joiners see history."""
+    log = entry.get('log')
+    if not isinstance(log, list) or not log:
+        return
+    with _recent_calls_lock:
+        _recent_calls.extend(e for e in log if isinstance(e, dict))
+
+
+def _recent_call_log(limit: int = _CALL_LOG_HISTORY) -> list[dict[str, Any]]:
+    with _recent_calls_lock:
+        entries = list(_recent_calls)
+    return entries[-limit:]
 
 
 def _current_call_metadata() -> dict[str, Any]:
@@ -712,7 +777,6 @@ _audio_receiver: UdpAudioReceiver | None = None
 
 # Downstream
 MSG_SYSTEM_STATE  = "SYSTEM_STATE"
-MSG_SDR_STATUS    = "SDR_STATUS"
 MSG_CALL_ACTIVITY = "CALL_ACTIVITY"
 MSG_CALL_AUDIO    = "CALL_AUDIO"
 
@@ -720,7 +784,7 @@ MSG_CALL_AUDIO    = "CALL_AUDIO"
 MSG_CALL_CONTROL   = "CALL_CONTROL"
 MSG_SYSTEM_CONTROL = "SYSTEM_CONTROL"
 
-DOWNSTREAM_TYPES = {MSG_SYSTEM_STATE, MSG_SDR_STATUS, MSG_CALL_ACTIVITY, MSG_CALL_AUDIO}
+DOWNSTREAM_TYPES = {MSG_SYSTEM_STATE, MSG_CALL_ACTIVITY, MSG_CALL_AUDIO}
 UPSTREAM_TYPES   = {MSG_CALL_CONTROL, MSG_SYSTEM_CONTROL}
 
 # ---------------------------------------------------------------------------
@@ -789,14 +853,23 @@ def _broadcast_from_thread(msg_type: str, payload: dict[str, Any]) -> None:
 
 
 # Maps the decoder's json_type field to the appropriate downstream WS message.
+#
+# Every key here is a json_type some decoder module actually emits — grep for
+# "'json_type'" under apps/ for the authoritative list.  An earlier version of
+# this table keyed on chan_status / trunked_site_status / sys_info, none of
+# which exist, which made the documented protocol wider than the wire.
+# Anything not listed falls through to SYSTEM_STATE (see _dispatch), which is
+# where trunk_update, channel_update and plot land.
 _JSON_TYPE_TO_MSG: dict[str, str] = {
-    "chan_status":         MSG_SDR_STATUS,
-    "call_log":           MSG_CALL_ACTIVITY,
-    "trunked_site_status": MSG_CALL_ACTIVITY,
-    "sys_info":           MSG_CALL_ACTIVITY,
-    "terminal_config":    MSG_SYSTEM_STATE,
-    "full_config":        MSG_SYSTEM_STATE,
-    "ws_instances":       MSG_SYSTEM_STATE,
+    "call_log":        MSG_CALL_ACTIVITY,
+    "terminal_config": MSG_SYSTEM_STATE,
+    "full_config":     MSG_SYSTEM_STATE,
+    "ws_instances":    MSG_SYSTEM_STATE,
+    "meta_update":     MSG_SYSTEM_STATE,
+    # rx_update carries the http terminal's gnuplot PNG filenames and is only
+    # emitted when terminal_type == "http" (multi_rx.ui_plot_update), so the ws
+    # terminal never sees one.  Listed so its absence is a documented fact
+    # rather than an oversight.
 }
 
 
@@ -819,8 +892,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # frontend can show system identity even before the decoder starts.
     await manager.send(websocket, {
         "type": MSG_SYSTEM_STATE,
-        "payload": _initial_system_state(),
+        "payload": _system_state_payload(),
     })
+    # Replay the call history this client missed.  call_log is a draining feed,
+    # so without this a page opened mid-shift starts blank and stays blank
+    # until the next transmission.
+    history = _recent_call_log()
+    if history:
+        await manager.send(websocket, {
+            "type": MSG_CALL_ACTIVITY,
+            "payload": {"json_type": "call_log", "log": history, "replay": True},
+        })
     try:
         while True:
             raw = await websocket.receive_text()
@@ -978,6 +1060,62 @@ async def call_audio(
     )
 
 
+# ---------------------------------------------------------------------------
+# Symbol captures  (the 'capture' command's output)
+# ---------------------------------------------------------------------------
+
+def _capture_entry(path: str) -> dict[str, Any]:
+    """Describe one capture file, whether or not it still exists on disk."""
+    try:
+        stat = os.stat(path)
+        return {
+            'name':     os.path.basename(path),
+            'path':     path,
+            'size':     stat.st_size,
+            'modified': int(stat.st_mtime),
+            'exists':   True,
+        }
+    except OSError:
+        return {'name': os.path.basename(path), 'path': path,
+                'size': 0, 'modified': 0, 'exists': False}
+
+
+@app.get("/api/captures")
+async def list_captures() -> Response:
+    """Raw symbol-capture files this decoder run has written.
+
+    The decoder names them from the channel's ``raw_output`` config key, or
+    ``ch<N>-<default>``, relative to the directory multi_rx was started in —
+    which is why the list comes from what channel_update reported rather than
+    from scanning a directory.
+    """
+    body = {"captures": [_capture_entry(p) for p in _capture_files]}
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/captures/{name}")
+async def get_capture(name: str) -> Response:
+    """Download one capture file by basename.
+
+    Only files the decoder actually reported are served — the name is matched
+    against that list rather than joined onto a directory, so there is no path
+    for a request to reach an arbitrary file.
+    """
+    for path in _capture_files:
+        if os.path.basename(path) == name:
+            if not os.path.isfile(path):
+                return Response(content='{"error": "capture file is gone"}',
+                                status_code=404, media_type="application/json")
+            return FileResponse(
+                path,
+                media_type="application/octet-stream",
+                filename=name,
+            )
+    return Response(content='{"error": "unknown capture"}', status_code=404,
+                    media_type="application/json")
+
+
 @app.get("/api/ha/status")
 async def ha_status() -> Response:
     """Diagnostics for the call-capture and Home Assistant pipeline.
@@ -1044,16 +1182,6 @@ async def serve_spa(full_path: str) -> Response:
 async def broadcast_system_state(payload: dict[str, Any]) -> None:
     """Broadcast a SYSTEM_STATE message to all connected clients."""
     await manager.broadcast({"type": MSG_SYSTEM_STATE, "payload": payload})
-
-
-async def broadcast_sdr_status(payload: dict[str, Any]) -> None:
-    """Broadcast an SDR_STATUS message to all connected clients."""
-    await manager.broadcast({"type": MSG_SDR_STATUS, "payload": payload})
-
-
-async def broadcast_call_activity(payload: dict[str, Any]) -> None:
-    """Broadcast a CALL_ACTIVITY message to all connected clients."""
-    await manager.broadcast({"type": MSG_CALL_ACTIVITY, "payload": payload})
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1277,9 @@ class ws_terminal(threading.Thread):
             now = time.time()
             if now - last_update >= self.UPDATE_INTERVAL:
                 self._send_cmd('update')
+                # Ride the same 1 Hz tick for the health payload so `status`
+                # goes stale on its own when the decoder stops answering.
+                _broadcast_from_thread(MSG_SYSTEM_STATE, _system_state_payload())
                 last_update = now
             if not self.input_q.empty_p():
                 msg = self.input_q.delete_head_nowait()
@@ -1188,6 +1319,10 @@ class ws_terminal(threading.Thread):
             data: Any = json.loads(msg.to_string())
         except Exception:
             return
+
+        global _last_decoder_msg_at
+        _last_decoder_msg_at = time.time()   # drives SYSTEM_STATE.status
+
         for entry in (data if isinstance(data, list) else [data]):
             if not isinstance(entry, dict):
                 continue
@@ -1199,6 +1334,8 @@ class ws_terminal(threading.Thread):
                 # Keep the newest talkgroup/source per channel so captured
                 # call clips can be tagged with what was on the air.
                 _note_channel_state(entry)
+            elif json_type == 'call_log':
+                _note_call_log(entry)
             ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
             _broadcast_from_thread(ws_type, entry)
 

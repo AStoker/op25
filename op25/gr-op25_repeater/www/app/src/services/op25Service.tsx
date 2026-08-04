@@ -194,6 +194,22 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     }
   }, [wsStatus, send]);
 
+  // Seed the config from the server's own copy of the JSON file. The decoder
+  // answers get_full_config over the WebSocket too, but only once it is up;
+  // this makes system identity available immediately after page load, which is
+  // what /api/config exists for.  Whichever arrives first wins.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg: OP25Config | null) => {
+        if (cancelled || !cfg) return;
+        setConfig((prev) => prev ?? cfg);
+      })
+      .catch(() => { /* server started without -c: full_config will fill in */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Seed the clip list from the server's ring buffer. Unlike call_log — which
   // is a draining delta feed — captured clips survive on the server, so a
   // reloaded page can show the calls it missed while it was gone.

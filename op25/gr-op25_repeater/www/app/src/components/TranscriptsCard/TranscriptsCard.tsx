@@ -18,6 +18,91 @@ import type { CallClip } from '../../types/op25';
 /** Clips are short; keep the list light rather than virtualising it. */
 const MAX_VISIBLE = 60;
 
+/** How often to re-check the capture/STT pipeline. Slow: it only changes when
+ *  the server is reconfigured, or when errors start accumulating. */
+const HA_STATUS_POLL_MS = 30_000;
+
+interface HaStatusResponse {
+  call_recording?: boolean;
+  home_assistant?: {
+    enabled?: boolean;
+    url?: string;
+    stt_engine?: string | null;
+    webhook_id?: string | null;
+    keywords?: string[];
+    stt_errors?: number;
+    transcribed?: number;
+    hallucinations?: number;
+    webhook_errors?: number;
+  };
+}
+
+interface HaChipState {
+  label: string;
+  color: 'default' | 'success' | 'warning' | 'error';
+  detail: string;
+}
+
+/** Summarise /api/ha/status for the one chip that answers "why no transcripts?" */
+function summariseHa(body: HaStatusResponse): HaChipState {
+  if (!body.call_recording) {
+    return {
+      label: 'capture off',
+      color: 'warning',
+      detail: 'The server is not recording call clips, so nothing can be transcribed.',
+    };
+  }
+  const ha = body.home_assistant;
+  if (!ha?.enabled) {
+    return {
+      label: 'transcripts off',
+      color: 'default',
+      detail: 'Clips are being captured but no Home Assistant speech-to-text is '
+        + 'configured — see README-home-assistant.md.',
+    };
+  }
+  const errs = (ha.stt_errors ?? 0) + (ha.webhook_errors ?? 0);
+  if (errs > 0) {
+    return {
+      label: `STT ${errs} error${errs === 1 ? '' : 's'}`,
+      color: 'error',
+      detail: `${ha.url ?? 'Home Assistant'} — ${ha.stt_errors ?? 0} speech-to-text `
+        + `error(s), ${ha.webhook_errors ?? 0} webhook error(s). `
+        + `${ha.transcribed ?? 0} transcribed so far.`,
+    };
+  }
+  return {
+    label: ha.stt_engine ? `STT ${ha.stt_engine}` : 'HA webhook',
+    color: 'success',
+    detail: `${ha.url ?? 'Home Assistant'} — ${ha.transcribed ?? 0} transcribed`
+      + `${ha.hallucinations ? `, ${ha.hallucinations} discarded as hallucinations` : ''}`
+      + `${ha.keywords?.length ? `, ${ha.keywords.length} keyword(s) watched` : ''}.`,
+  };
+}
+
+/** Poll the capture / Home Assistant pipeline status. Null until first reply,
+ *  and stays null on an older server that has no such endpoint. */
+function useHaStatus(): HaChipState | null {
+  const [state, setState] = useState<HaChipState | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch('/api/ha/status')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body: HaStatusResponse | null) => {
+          if (!cancelled && body) setState(summariseHa(body));
+        })
+        .catch(() => { /* endpoint absent — no chip */ });
+    };
+    load();
+    const timer = setInterval(load, HA_STATUS_POLL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  return state;
+}
+
 function fmtClock(epoch: number): string {
   if (!epoch) return '—';
   return new Date(epoch * 1000).toLocaleTimeString();
@@ -185,14 +270,26 @@ export default function TranscriptsCard() {
     [callClips],
   );
 
+  const ha = useHaStatus();
+
   return (
     <CardShell title="Call Audio & Transcripts">
       <Stack spacing={1}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            {callClips.length} captured
-            {alertCount > 0 ? ` · ${alertCount} keyword ${alertCount === 1 ? 'hit' : 'hits'}` : ''}
-          </Typography>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="caption" color="text.secondary">
+              {callClips.length} captured
+              {alertCount > 0 ? ` · ${alertCount} keyword ${alertCount === 1 ? 'hit' : 'hits'}` : ''}
+            </Typography>
+            {/* Whether transcription is even configured is the first thing to
+                check when transcripts do not appear — /api/ha/status knows, so
+                surface it here instead of making the user curl it. */}
+            {ha && (
+              <Tooltip title={ha.detail}>
+                <Chip size="small" variant="outlined" color={ha.color} label={ha.label} />
+              </Tooltip>
+            )}
+          </Stack>
           <FormControlLabel
             control={<Switch size="small" checked={alertsOnly} onChange={(e) => setAlertsOnly(e.target.checked)} />}
             label={<Typography variant="caption">Keyword hits only</Typography>}

@@ -596,8 +596,10 @@ export default function App() {
   );
 
   const dumpTgids = useCallback(() => {
+    // dump_tgids covers patches, wuids, rids and source-id history. The
+    // 'dump_tracking' command this used to send has no handler in rx.py or
+    // multi_rx.py and never had one.
     sendCommand('dump_tgids', 0, currentChannelArg());
-    sendCommand('dump_tracking', 0, currentChannelArg());
   }, [currentChannelArg, sendCommand]);
 
   const dumpBuffer = useCallback(() => {
