@@ -11,6 +11,7 @@ import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
+import { useSmartColor } from '../../hooks/useSmartColor';
 import { useSelectedSystem } from '../../services/op25Service';
 import { isKind, SYSTEM_KIND_LABEL, systemKind } from '../../utils/systemKind';
 
@@ -47,6 +48,7 @@ const VirtuosoTableComponents: TableComponents<SubscriberRow> = {
 export default function SubscribersCard() {
   const system = useSelectedSystem();
   const phone  = useIsPhone();
+  const tint   = useSmartColor();
 
   const rows = useMemo<SubscriberRow[]>(() => {
     if (!system?.wuid_data) return [];
@@ -76,7 +78,7 @@ export default function SubscribersCard() {
   const rowContent = (_index: number, r: SubscriberRow) => (
     <>
       <TableCell sx={{ overflowWrap: 'anywhere' }}>{r.tag || r.srcaddr}</TableCell>
-      <TableCell sx={{ overflowWrap: 'anywhere' }}>
+      <TableCell sx={{ overflowWrap: 'anywhere', color: tint(r.aff_ga_tag) }}>
         {r.aff_ga_tag ? `${r.aff_ga_tag} (${r.aff_ga})` : (r.aff_ga || '\u2014')}
       </TableCell>
       {!phone && <TableCell>{`${r.rfss}.${r.site}`}</TableCell>}

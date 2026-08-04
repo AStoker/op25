@@ -297,6 +297,13 @@ export interface OP25Config {
   terminal?: TerminalConfig;
 }
 
+/** One smart-colour rule: any tag containing one of `keywords` (case-
+ *  insensitive substring) is drawn in `color`. */
+export interface SmartColorRule {
+  keywords: string[];
+  color: string;
+}
+
 /** The `terminal` block of the multi_rx config, echoed back by the decoder as
  *  `json_type: "terminal_config"`.  The curses terminal honours the tuning
  *  steps and default channel (terminal.py:504-514); so do we. */
@@ -308,8 +315,9 @@ export interface TerminalConfig {
   tuning_step_large?: number;
   /** Channel `name` to focus when the UI first sees the channel list. */
   default_channel?: string;
-  /** Colour-code talkgroup tags by keyword. */
-  smart_colors?: boolean;
+  /** Keyword → colour rules for tinting talkgroup tags. A list here replaces
+   *  the built-in defaults rather than extending them. */
+  smart_colors?: SmartColorRule[];
   http_plot_interval?: number;
   curses_plot_interval?: number;
   http_plot_directory?: string;

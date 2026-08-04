@@ -11,6 +11,7 @@ import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
+import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
 
 interface Row {
@@ -56,6 +57,7 @@ export default function CallHistoryCard() {
   const system    = useSelectedSystem();
   const { callLog } = useOp25Service();
   const phone     = useIsPhone();
+  const tint      = useSmartColor();
 
   // Primary source: the rolling call_log (when present).
   // Fallback: derive entries from per-frequency tgid/srcaddr history.
@@ -129,7 +131,9 @@ export default function CallHistoryCard() {
           <TableCell>{r.prio ?? '\u2014'}</TableCell>
         </>
       )}
-      <TableCell sx={{ overflowWrap: 'anywhere' }}>{r.tag || (r.tgid ? `TG ${r.tgid}` : '\u2014')}</TableCell>
+      <TableCell sx={{ overflowWrap: 'anywhere', color: tint(r.tag) }}>
+        {r.tag || (r.tgid ? `TG ${r.tgid}` : '\u2014')}
+      </TableCell>
       <TableCell sx={{ overflowWrap: 'anywhere' }}>
         {r.src ? (r.srcTag ? `${r.srcTag} (${r.src})` : r.src) : '\u2014'}
       </TableCell>

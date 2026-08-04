@@ -24,10 +24,10 @@ import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
 import SubscribersCard from './components/SubscribersCard/SubscribersCard';
 import TranscriptsCard from './components/TranscriptsCard/TranscriptsCard';
 
+// Settings live behind the gear in the AppBar (see Header). The remaining
+// entries here are still placeholders from the original scaffold.
 const navItems: NavItem[] = [
-  { label: 'Settings', onClick: () => { /* TODO: open Settings dialog */ } },
   { label: 'Config', onClick: () => { /* TODO: open Config dialog */ } },
-  { label: 'Legacy UI', href: '/' },
   { label: 'About', onClick: () => { /* TODO: open About dialog */ } },
 ];
 

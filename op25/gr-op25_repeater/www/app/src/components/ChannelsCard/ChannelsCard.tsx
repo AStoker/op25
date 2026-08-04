@@ -65,6 +65,7 @@ import MoreVertIcon from '@mui/icons-material/MoreVert';
 import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
+import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
 
 interface TalkGroupRow {
@@ -126,6 +127,7 @@ export default function ChannelsCard() {
     lockoutTalkGroup, whitelistTalkGroup,
   } = useOp25Service();
   const system = useSelectedSystem();
+  const tint = useSmartColor();
 
   const closeMenu = () => setMenuAnchor(null);
   const openMenu = (el: HTMLElement, tgid: number) => {
@@ -256,7 +258,9 @@ export default function ChannelsCard() {
     return (
       <>
         <TableCell>{row.tgid}</TableCell>
-        <TableCell sx={{ overflowWrap: 'anywhere' }}>{row.tag || '\u2014'}</TableCell>
+        <TableCell sx={{ overflowWrap: 'anywhere', color: tint(row.tag) }}>
+          {row.tag || '\u2014'}
+        </TableCell>
         {!phone && <TableCell>{row.prio ?? '\u2014'}</TableCell>}
         {!phone && <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>}
         {!phone && <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>}

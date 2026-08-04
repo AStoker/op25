@@ -16,10 +16,15 @@ import Button from '@mui/material/Button';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import RadioIcon from '@mui/icons-material/Radio';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Menu from '@mui/material/Menu';
+import Switch from '@mui/material/Switch';
 import Tooltip from '@mui/material/Tooltip';
+import SettingsIcon from '@mui/icons-material/Settings';
 import { useThemeService } from '../../services/themeService';
 import { useWebSocketService } from '../../services/websocketService';
 import { useSystemState } from '../../hooks/useSystemState';
+import { useSmartColorsEnabled } from '../../hooks/useSmartColor';
 
 export interface NavItem {
   label: string;
@@ -55,6 +60,8 @@ export default function Header({ navItems }: HeaderProps) {
   const { mode, toggleTheme } = useThemeService();
   const { status } = useWebSocketService();
   const health = useSystemState();
+  const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(null);
+  const [smartColors, setSmartColors] = useSmartColorsEnabled();
 
   const handleDrawerToggle = () => {
     setMobileOpen((prev) => !prev);
@@ -210,6 +217,41 @@ export default function Header({ navItems }: HeaderProps) {
                 : status === 'connecting' ? 'warning.light' : 'error.light',
             }}
           />
+
+          {/* Settings */}
+          <Tooltip title="Display settings">
+            <IconButton
+              color="inherit"
+              onClick={(e) => setSettingsAnchor(e.currentTarget)}
+              aria-label="display settings"
+              aria-haspopup="true"
+            >
+              <SettingsIcon />
+            </IconButton>
+          </Tooltip>
+          <Menu
+            anchorEl={settingsAnchor}
+            open={Boolean(settingsAnchor)}
+            onClose={() => setSettingsAnchor(null)}
+          >
+            <Box sx={{ px: 2, py: 1, maxWidth: 300 }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={smartColors}
+                    onChange={(e) => setSmartColors(e.target.checked)}
+                  />
+                }
+                label={<Typography variant="body2">Smart colours</Typography>}
+              />
+              <Typography variant="caption" color="text.secondary" display="block">
+                Tint talkgroup tags by keyword, using the{' '}
+                <code>smart_colors</code> rules from the config (fire, law,
+                EMS by default).
+              </Typography>
+            </Box>
+          </Menu>
 
           {/* Theme toggle */}
           <IconButton

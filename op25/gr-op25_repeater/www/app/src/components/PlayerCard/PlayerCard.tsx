@@ -16,6 +16,7 @@ import CardShell from '../CardShell/CardShell';
 import { useWebSocketService } from '../../services/websocketService';
 import { useAudioStream } from '../../hooks/useAudioStream';
 import { audioSourceLabel, useAudioSources, AGGREGATE_AUDIO_URL } from '../../hooks/useAudioSources';
+import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedChannel, useSelectedSystem } from '../../services/op25Service';
 
 const AUDIO_STREAM_URL = AGGREGATE_AUDIO_URL;
@@ -23,15 +24,17 @@ const AUDIO_STREAM_URL = AGGREGATE_AUDIO_URL;
 interface InfoRowProps {
   label: string;
   value: string;
+  /** Smart-colour tint, when the value is a talkgroup tag. */
+  color?: string;
 }
 
-function InfoRow({ label, value }: InfoRowProps) {
+function InfoRow({ label, value, color }: InfoRowProps) {
   return (
     <Box>
       <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
         {label}
       </Typography>
-      <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere' }}>
+      <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere', color }}>
         {value}
       </Typography>
     </Box>
@@ -53,6 +56,7 @@ export default function PlayerCard() {
   const channel        = useSelectedChannel();
   const system         = useSelectedSystem();
   const { decoderRunning, releaseHold, skipCall } = useOp25Service();
+  const tint = useSmartColor();
 
   // Muting is entirely client-side: stopping the Web Audio path stops pulling
   // /api/stream, which is the whole mechanism.  This used to also send
@@ -173,7 +177,7 @@ export default function PlayerCard() {
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
           <InfoRow label="Channel"    value={channelName} />
           <InfoRow label="Frequency"  value={freqValue} />
-          <InfoRow label="Talk Group" value={tgValue} />
+          <InfoRow label="Talk Group" value={tgValue} color={tint(channel?.tag)} />
           <InfoRow label="Source"     value={sourceValue} />
         </Box>
 
