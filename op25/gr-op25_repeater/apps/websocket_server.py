@@ -314,7 +314,36 @@ class AudioStreamManager:
             await asyncio.sleep(max(0.0, delay))
 
 
+# The aggregate stream: every UDP port mixed together.  This is what bare
+# /api/stream serves, so a single-channel setup — and Home Assistant, and any
+# existing consumer — behaves exactly as before.
 audio_manager = AudioStreamManager()
+
+# One manager per UDP port, so a multi-channel setup can be listened to one
+# channel (or one DMR slot) at a time instead of hearing everything at once.
+# Created up front from the discovered endpoints; the UDP thread only ever
+# looks ports up, so no locking is needed on the hot path.
+_port_managers: dict[int, AudioStreamManager] = {}
+
+# Which endpoint each port belongs to, for /api/audio/channels.
+_audio_endpoints: list[dict[str, Any]] = []
+
+
+def _init_port_managers(endpoints: list[dict[str, Any]]) -> None:
+    """Give every discovered port its own stream manager."""
+    _audio_endpoints.clear()
+    _audio_endpoints.extend(endpoints)
+    _port_managers.clear()
+    for ep in endpoints:
+        _port_managers[ep['port']] = AudioStreamManager()
+
+
+def _manager_for_channel(channel: int) -> AudioStreamManager | None:
+    """The stream for a channel's slot-A port, or None if there isn't one."""
+    for ep in _audio_endpoints:
+        if ep['channel'] == channel and ep['slot'] == 'A':
+            return _port_managers.get(ep['port'])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -565,30 +594,56 @@ _AUDIO_FLAG_BYTES   = 2
 def _discover_audio_ports(config: dict[str, Any] | None) -> list[tuple[str, int]]:
     """Return the list of ``(host, port)`` pairs the decoder will UDP to.
 
-    Each channel with ``destination`` of the form ``udp://host:port``
-    contributes two ports — ``port`` (slot A) and ``port + 1`` (slot B,
-    used for TDMA phase-2).  If no UDP destinations are configured we
-    fall back to the OP25 default of ``127.0.0.1:23456``/``23457`` so the
-    browser stream still has a chance of receiving audio when the user
-    later adds a destination matching the default.
+    Thin wrapper over :func:`_discover_audio_endpoints` for the UDP receiver,
+    which only needs somewhere to bind.
     """
-    ports: list[tuple[str, int]] = []
+    return [(ep['host'], ep['port']) for ep in _discover_audio_endpoints(config)]
+
+
+def _discover_audio_endpoints(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Describe every UDP audio stream the decoder will produce.
+
+    Each entry is ``{host, port, channel, name, slot}`` where *channel* is the
+    index into the config's ``channels`` list (None when it cannot be
+    attributed) and *slot* is ``'A'`` or ``'B'``.
+
+    Each channel with a ``destination`` of the form ``udp://host:port``
+    contributes two ports — ``port`` (slot A) and ``port + 1`` (slot B, used
+    for TDMA phase-2 and DMR).  The two slots of one channel are *independent
+    conversations*, which is why they stay separate streams rather than being
+    mixed together.  If no UDP destinations are configured we fall back to the
+    OP25 default of ``127.0.0.1:23456``/``23457`` so the browser stream still
+    has a chance of receiving audio when the user later adds a destination
+    matching the default.
+    """
+    endpoints: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
+
+    def add(host: str, port: int, channel: int | None, name: str, slot: str) -> None:
+        key = (host, port)
+        if key in seen:
+            return
+        seen.add(key)
+        endpoints.append({'host': host, 'port': port,
+                          'channel': channel, 'name': name, 'slot': slot})
 
     # An explicit "audio_ports" in the terminal config wins outright.  It is the
     # escape hatch for running local speaker output and browser audio at once:
     # point the channel at two udp destinations and name the spare one here.
+    # Which channel such a port belongs to is not knowable from the config, so
+    # these are reported unattributed.
     override = (config or {}).get('terminal', {}).get('audio_ports')
     if override:
         for entry in (override if isinstance(override, list) else [override]):
             try:
-                ports.append(('127.0.0.1', int(entry)))
+                add('127.0.0.1', int(entry), None, 'audio_ports override', 'A')
             except (TypeError, ValueError):
                 sys.stderr.write('ws audio: ignoring invalid audio_ports entry %r\n' % (entry,))
-        if ports:
-            return ports
+        if endpoints:
+            return endpoints
 
-    for ch in (config or {}).get('channels', []) or []:
+    for idx, ch in enumerate((config or {}).get('channels', []) or []):
+        ch_name = str(ch.get('name') or f'channel {idx}')
         # 'destination' is a comma-separated list of destinations — op25_audio.cc
         # tokenizes on ',' — so a channel may feed udp and ws sinks at once,
         # e.g. "udp://0.0.0.0:23456, ws://0.0.0.0:9000".  Only the udp ones
@@ -605,11 +660,8 @@ def _discover_audio_ports(config: dict[str, Any] | None) -> list[tuple[str, int]
                 continue
             if port <= 0:
                 continue
-            for p in (port, port + 1):
-                key = (host, p)
-                if key not in seen:
-                    seen.add(key)
-                    ports.append(key)
+            add(host, port,     idx, ch_name, 'A')
+            add(host, port + 1, idx, ch_name, 'B')
 
     # Ports sockaudio.py will bind for local speaker output.  A unicast UDP port
     # has exactly one consumer, so binding these as well would only make
@@ -624,21 +676,21 @@ def _discover_audio_ports(config: dict[str, Any] | None) -> list[tuple[str, int]
         local.update((port, port + 1))       # sockaudio binds both TDMA slots
 
     if local:
-        kept = [(h, p) for (h, p) in ports if p not in local]
-        if ports and not kept:
+        kept = [ep for ep in endpoints if ep['port'] not in local]
+        if endpoints and not kept:
             sys.stderr.write(
                 'ws audio: every UDP audio port is claimed by the local audio module, '
                 'so browser audio is disabled.  To run both, give the channel a second '
                 'destination on a free port and point this server at it, e.g.\n'
                 '    "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458"\n'
                 '    "terminal": { ..., "audio_ports": [23458] }\n')
-        ports = kept
+        endpoints = kept
 
-    if not ports and not local:
-        ports = [('127.0.0.1', _DEFAULT_AUDIO_PORT),
-                 ('127.0.0.1', _DEFAULT_AUDIO_PORT + 1)]
+    if not endpoints and not local:
+        add('127.0.0.1', _DEFAULT_AUDIO_PORT,     None, 'default', 'A')
+        add('127.0.0.1', _DEFAULT_AUDIO_PORT + 1, None, 'default', 'B')
 
-    return ports
+    return endpoints
 
 
 class UdpAudioReceiver(threading.Thread):
@@ -724,9 +776,13 @@ class UdpAudioReceiver(threading.Thread):
                     self.packets_flag += 1
                 elif len(data) >= _AUDIO_FRAME_BYTES and (len(data) % 2 == 0):
                     self.packets_pcm += 1
-                    audio_manager.push_audio(data)
+                    port = self._port_by_fd.get(s.fileno(), 0)
+                    audio_manager.push_audio(data)          # aggregate stream
+                    per_port = _port_managers.get(port)     # per-channel stream
+                    if per_port is not None:
+                        per_port.push_audio(data)
                     if _call_capture is not None:
-                        _call_capture.push(self._port_by_fd.get(s.fileno(), 0), data)
+                        _call_capture.push(port, data)
                 else:
                     # Unknown packet shape — log once-ish via the throttle.
                     self.packets_other += 1
@@ -976,17 +1032,47 @@ async def get_config() -> Response:
 _ALLOWED_STREAM_RATES = (8_000, 16_000, 22_050, 24_000, 44_100, 48_000)
 
 
+@app.get("/api/audio/channels")
+async def list_audio_channels() -> Response:
+    """The audio streams this server can serve, one per decoder UDP port.
+
+    A channel's two slots are listed separately because on DMR they carry two
+    unrelated conversations; ``bytes`` lets a client hide the ones that have
+    never carried anything (slot B on a P25 system, for instance).
+    """
+    streams = []
+    for ep in _audio_endpoints:
+        mgr = _port_managers.get(ep['port'])
+        streams.append({
+            'channel': ep['channel'],
+            'name':    ep['name'],
+            'slot':    ep['slot'],
+            'port':    ep['port'],
+            'bytes':   mgr.bytes_pushed if mgr else 0,
+            'url':     '/api/stream?port=%d' % ep['port'],
+        })
+    body = {'streams': streams, 'aggregate_url': '/api/stream'}
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/stream")
 async def audio_stream(
     rate: int = Query(_SAMPLE_RATE, description="Output sample rate in Hz"),
     format: str = Query("wav", pattern="^(wav|raw)$",
                         description="'wav' for a WAV-wrapped stream, 'raw' for headerless PCM"),
+    channel: int | None = Query(None, description="Config channel index; streams that channel's slot A"),
+    port: int | None = Query(None, description="Exact decoder UDP port to stream (see /api/audio/channels)"),
 ) -> StreamingResponse:
     """Continuous audio stream — the browser player and external consumers.
 
-    Streams 16-bit / mono PCM.  Defaults (8 kHz, WAV-wrapped) are exactly
-    what the decoder produces and what the React player expects; nothing
-    changes unless a query parameter is supplied.
+    Streams 16-bit / mono PCM.  Defaults (8 kHz, WAV-wrapped, every channel
+    mixed together) are exactly what the decoder produces and what the React
+    player expects; nothing changes unless a query parameter is supplied.
+
+    ``channel=N`` streams just that config channel, and ``port=N`` just that
+    UDP port (which is how to reach a DMR slot B) — without either, the mix of
+    all ports is served as it always has been.
 
     ``rate=16000`` resamples on the way out, which is what Home Assistant's
     voice pipeline and Whisper require.  ``format=raw`` drops the WAV header
@@ -1005,8 +1091,34 @@ async def audio_stream(
             status_code=400,
             media_type="application/json",
         )
+
+    manager = audio_manager
+    if port is not None:
+        manager = _port_managers.get(port)
+        if manager is None:
+            return Response(
+                content=json.dumps({
+                    "error": "unknown port",
+                    "known": sorted(_port_managers),
+                }),
+                status_code=404,
+                media_type="application/json",
+            )
+    elif channel is not None:
+        manager = _manager_for_channel(channel)
+        if manager is None:
+            return Response(
+                content=json.dumps({
+                    "error": "unknown channel",
+                    "known": sorted({ep['channel'] for ep in _audio_endpoints
+                                     if ep['channel'] is not None}),
+                }),
+                status_code=404,
+                media_type="application/json",
+            )
+
     return StreamingResponse(
-        audio_manager.generate(out_rate=rate, container=format),
+        manager.generate(out_rate=rate, container=format),
         media_type="audio/wav" if format == "wav" else "audio/L16",
         headers={
             "Cache-Control":          "no-store",
@@ -1243,7 +1355,10 @@ class ws_terminal(threading.Thread):
 
         global _audio_receiver
         if _audio_receiver is None:
-            _audio_receiver = UdpAudioReceiver(_discover_audio_ports(_config))
+            endpoints = _discover_audio_endpoints(_config)
+            _init_port_managers(endpoints)   # per-channel streams for /api/stream?channel=
+            _audio_receiver = UdpAudioReceiver(
+                [(ep['host'], ep['port']) for ep in endpoints])
             _audio_receiver.start()
 
         # Register upstream WebSocket handlers that forward client commands

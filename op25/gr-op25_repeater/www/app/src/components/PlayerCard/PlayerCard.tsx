@@ -1,6 +1,9 @@
+import { useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
+import MenuItem from '@mui/material/MenuItem';
+import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import LockIcon from '@mui/icons-material/Lock';
@@ -12,9 +15,10 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import CardShell from '../CardShell/CardShell';
 import { useWebSocketService } from '../../services/websocketService';
 import { useAudioStream } from '../../hooks/useAudioStream';
+import { audioSourceLabel, useAudioSources, AGGREGATE_AUDIO_URL } from '../../hooks/useAudioSources';
 import { useOp25Service, useSelectedChannel, useSelectedSystem } from '../../services/op25Service';
 
-const AUDIO_STREAM_URL = '/api/stream';
+const AUDIO_STREAM_URL = AGGREGATE_AUDIO_URL;
 
 interface InfoRowProps {
   label: string;
@@ -41,7 +45,11 @@ function formatFreq(hz: number | null | undefined): string {
 
 export default function PlayerCard() {
   const { status } = useWebSocketService();
-  const { start, stop, audioStatus } = useAudioStream(AUDIO_STREAM_URL);
+  const sources = useAudioSources();
+  // Which stream to pull. Defaults to the aggregate mix, so a single-channel
+  // setup behaves exactly as it did before per-channel streams existed.
+  const [sourceUrl, setSourceUrl] = useState<string>(AUDIO_STREAM_URL);
+  const { start, stop, audioStatus } = useAudioStream(sourceUrl);
   const channel        = useSelectedChannel();
   const system         = useSelectedSystem();
   const { decoderRunning, releaseHold, skipCall } = useOp25Service();
@@ -59,6 +67,22 @@ export default function PlayerCard() {
 
   const connected = status === 'open';
   const playing   = audioStatus === 'playing' || audioStatus === 'loading';
+
+  // Switching source mid-playback has to re-open the HTTP stream; start()
+  // tears down the previous session itself. Skip the first run so mounting
+  // does not auto-play (browsers require a gesture for that anyway).
+  const playedUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!playing) return;
+    if (playedUrlRef.current === sourceUrl) return;
+    playedUrlRef.current = sourceUrl;
+    start().catch(() => {});
+  }, [sourceUrl, playing, start]);
+
+  // Only worth showing a picker when there is more than one thing to pick, and
+  // hide slots that have never carried a byte (slot B on a P25 system).
+  const selectableSources = sources.filter((s) => s.slot === 'A' || s.bytes > 0);
+  const showSourcePicker  = selectableSources.length > 1;
 
   const channelName = channel?.name ?? '—';
   const tgValue     = channel?.tgid
@@ -219,6 +243,30 @@ export default function PlayerCard() {
               </Typography>
             )}
         </Box>
+
+        {/* Audio source. Every configured channel sends its own UDP audio, so
+            with more than one there is a real choice to make — a single mixed
+            stream means hearing two conversations at once. */}
+        {showSourcePicker && (
+          <TextField
+            select
+            size="small"
+            label="Audio source"
+            value={sourceUrl}
+            onChange={(e) => setSourceUrl(e.target.value)}
+            helperText={sourceUrl === AGGREGATE_AUDIO_URL
+              ? 'All channels mixed together'
+              : 'One channel only'}
+            sx={{ maxWidth: { sm: 320 } }}
+          >
+            <MenuItem value={AGGREGATE_AUDIO_URL}>All channels (mix)</MenuItem>
+            {selectableSources.map((src) => (
+              <MenuItem key={src.port} value={src.url}>
+                {audioSourceLabel(src)}
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
       </Box>
     </CardShell>
   );
