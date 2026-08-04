@@ -1,4 +1,16 @@
-# OP25 React GUI — Agent Reference
+# OP25 React GUI — Agent Reference (LEGACY)
+
+> **This is the legacy GUI.** It builds to `../www-static/` and is served by
+> `http_server.py` (waitress, two ports) when the config says
+> `"module": "terminal.py", "terminal_type": "http:host:port"`.
+>
+> The **current** GUI is `../app/`, which builds to `../dist/` and is served by
+> `websocket_server.py` on a single port. See `../app/AGENTS.md` and
+> `README-new-gui.md` at the repo root.
+>
+> Kept because the `http:` terminal and the curses terminal still work and are
+> still supported. Sections below describing `json_type` shapes remain the best
+> reference for the underlying `multi_rx.py` messages, which both stacks share.
 
 This document describes the full architecture, server protocol, and implementation conventions for the OP25 React GUI. Read this before making changes to avoid unnecessary exploration turns.
 
@@ -7,7 +19,7 @@ This document describes the full architecture, server protocol, and implementati
 ## Project Layout
 
 ```
-react-app/               ← this directory
+react-app-legacy/               ← this directory
   src/
     App.tsx              ← root component; all state, polling, response dispatch
     main.tsx             ← ReactDOM.createRoot entry
@@ -35,7 +47,7 @@ react-app/               ← this directory
 
 The Python server that serves the built files is at:
 ```
-../../../apps/http_server.py   (relative to react-app/)
+../../../apps/http_server.py   (relative to react-app-legacy/)
 ```
 
 ---
@@ -43,7 +55,7 @@ The Python server that serves the built files is at:
 ## Build
 
 ```bash
-cd react-app/
+cd react-app-legacy/
 yarn install     # first time
 yarn build       # tsc -b && vite build → outputs to ../www-static/
 yarn dev         # Vite dev server (proxies nothing; see remote server section)

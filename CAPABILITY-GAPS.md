@@ -2,7 +2,7 @@
 
 Audit date: 2026-08-04. Branch `feature/updated-gui` @ `bf56b51b`.
 Reference points: upstream `README.md` capability lists, `op25/gr-op25_repeater/apps/README*.md`,
-the legacy control protocol table in `op25/gr-op25_repeater/www/react-app/AGENTS.md`,
+the legacy control protocol table in `op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md`,
 and `upstream/dev` (12 commits ahead of our merge-base `b2e04c3f`).
 
 Scope: what upstream *advertises* (or ships) that this fork's new stack
@@ -140,8 +140,8 @@ The new UI only ever sends `get_full_config`, `get_terminal_config`, `hold`,
       implement config write-back or remove the command and the dialog claim.
 - [x] **[P2] `dump_tracking` has no handler at all.** Sent by both legacy UIs
       ([main.js:1738](op25/gr-op25_repeater/www/www-static/main.js#L1738),
-      `react-app/src/App.tsx:600`) and documented in
-      [www/react-app/AGENTS.md:116](op25/gr-op25_repeater/www/react-app/AGENTS.md#L116) as "Log tracking
+      `react-app-legacy/src/App.tsx:600`) and documented in
+      [www/react-app-legacy/AGENTS.md:116](op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md#L116) as "Log tracking
       state". No matching branch in `multi_rx.py` or `rx.py`. Documented capability that never existed.
 - [x] **[P3] `set_freq` and `add_default_config` are curses-only.** Bound at
       [terminal.py:216,234](op25/gr-op25_repeater/apps/terminal.py#L216-L234) but only handled by
@@ -236,7 +236,7 @@ P25 payload shape.
       destinations, per-channel headphone toggle, "Mute Browser Audio at Startup"). Needs a "new stack"
       section or an explicit note.
 - [x] **[P2] `www/app/AGENTS.md` is thin; the new protocol is documented only in `CLAUDE.md`.**
-      The detailed reference (`www/react-app/AGENTS.md`) describes the legacy stack and includes at least
+      The detailed reference (`www/react-app-legacy/AGENTS.md`) describes the legacy stack and includes at least
       one command that does not exist (`dump_tracking`, §4).
 - [x] **[P3] `apps/README.md` "HTTP Console" section covers only `rx.py -l http:…`.** No mention of
       `terminal_type: "ws:host:port"` or that the new GUI is `multi_rx.py`-only

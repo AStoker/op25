@@ -57,7 +57,7 @@ Config selector:
 
 ### Legacy stack (still present, being replaced)
 ```
-op25/gr-op25_repeater/www/react-app/    older React GUI (source)
+op25/gr-op25_repeater/www/react-app-legacy/    older React GUI (source)
         └─ yarn build → www/www-static/ served by http_server.py
 op25/gr-op25_repeater/apps/http_server.py        waitress WSGI
 ```
@@ -71,7 +71,7 @@ Config selector:
   `lib/op25_audio.cc`); the new stack ignores them and re-streams UDP instead.
 - `terminal.py` also provides `terminal_type: "curses"` for a TUI.
 
-`www/react-app/AGENTS.md` is the detailed (legacy) protocol reference and is
+`www/react-app-legacy/AGENTS.md` is the detailed (legacy) protocol reference and is
 still the best description of the underlying `multi_rx.py` JSON message shapes
 (`json_type: channel_update / trunk_update / rx_update / terminal_config`),
 which the new stack reuses.

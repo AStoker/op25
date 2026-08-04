@@ -6,7 +6,7 @@ changing anything here.
 The full server/protocol reference is [`README-new-gui.md`](../../../../README-new-gui.md)
 at the repo root; this document covers the frontend.
 
-Do not confuse this app with `../react-app/`, the older GUI that targets
+Do not confuse this app with `../react-app-legacy/`, the older GUI that targets
 `http_server.py` and builds to `../www-static/`. Both stacks are present in the
 tree and are selected by the `terminal` block of the multi_rx JSON config.
 

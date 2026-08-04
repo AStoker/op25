@@ -1,7 +1,7 @@
 # OP25 WebSocket & HTTP Communication Architecture (legacy stack)
 
 > **This describes the LEGACY stack**: `terminal.py` + `http_server.py`
-> (waitress WSGI) serving `www/www-static/` or `www/react-app/`, selected with
+> (waitress WSGI) serving `www/www-static/` or `www/react-app-legacy/`, selected with
 > `"terminal": { "module": "terminal.py", "terminal_type": "http:0.0.0.0:8080" }`.
 > It uses **two ports** (HTTP on N, control WebSocket on N+1), an HTTP POST
 > fallback, and per-channel `ws://` audio sinks in the C++ layer.
