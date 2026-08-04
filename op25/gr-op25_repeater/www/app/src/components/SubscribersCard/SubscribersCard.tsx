@@ -12,6 +12,7 @@ import TableContainer from '@mui/material/TableContainer';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
 import { useSelectedSystem } from '../../services/op25Service';
+import { isKind, SYSTEM_KIND_LABEL, systemKind } from '../../utils/systemKind';
 
 function fmtTime(epoch: number): string {
   if (!epoch) return '—';
@@ -83,11 +84,20 @@ export default function SubscribersCard() {
     </>
   );
 
+  // Affiliation tracking (wuid_data) comes from P25 registration messages.
+  // SmartNet reports a source radio per call but keeps no registry, and
+  // Connect+ reports neither.
+  const notApplicable = system !== null && !isKind(system, 'p25', 'unknown');
+
   return (
     <CardShell title="Subscribers">
       {rows.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No subscriber units seen yet.
+          {notApplicable
+            ? `Subscriber affiliation tracking needs P25 registration messages — `
+              + `${SYSTEM_KIND_LABEL[systemKind(system)]} does not provide them. `
+              + `Source radio IDs still appear in Call History.`
+            : 'No subscriber units seen yet.'}
         </Typography>
       ) : (
         <Box sx={{ height: { xs: 240, sm: 280 } }}>

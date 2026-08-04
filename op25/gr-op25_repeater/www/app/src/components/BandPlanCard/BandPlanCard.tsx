@@ -7,16 +7,22 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import CardShell from '../CardShell/CardShell';
 import { useSelectedSystem } from '../../services/op25Service';
+import { isKind, systemKind, SYSTEM_KIND_LABEL } from '../../utils/systemKind';
 
 export default function BandPlanCard() {
   const system = useSelectedSystem();
   const entries = system ? Object.entries(system.band_plan || {}) : [];
 
   if (!system || entries.length === 0) {
+    // A band plan (iden_up) is a P25 concept. Saying "not yet" on a SmartNet or
+    // Connect+ system promises data that is never coming.
+    const notApplicable = system !== null && !isKind(system, 'p25', 'unknown');
     return (
       <CardShell title="Band Plan">
         <Typography variant="body2" color="text.secondary">
-          No band-plan data yet.
+          {notApplicable
+            ? `Band plans are P25-specific — ${SYSTEM_KIND_LABEL[systemKind(system)]} does not broadcast one.`
+            : 'No band-plan data yet.'}
         </Typography>
       </CardShell>
     );
