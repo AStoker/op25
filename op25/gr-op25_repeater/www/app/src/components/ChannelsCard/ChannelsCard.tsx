@@ -13,8 +13,8 @@ function sortRows(rows: TalkGroupRow[], sortKey: SortKey, direction: SortDirecti
     if (aVal == null && bVal == null) return 0;
     if (aVal == null) return direction === 'asc' ? -1 : 1;
     if (bVal == null) return direction === 'asc' ? 1 : -1;
-    // Numeric sort for tgid, lastFreq
-    if (sortKey === 'tgid' || sortKey === 'lastFreq') {
+    // Numeric sort for tgid, lastFreq, prio
+    if (sortKey === 'tgid' || sortKey === 'lastFreq' || sortKey === 'prio') {
       return direction === 'asc' ? (Number(aVal) - Number(bVal)) : (Number(bVal) - Number(aVal));
     }
     // Date/time sort for lastActivity (string)
@@ -41,9 +41,13 @@ function sortRows(rows: TalkGroupRow[], sortKey: SortKey, direction: SortDirecti
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
 import IconButton from '@mui/material/IconButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
 import Table from '@mui/material/Table';
@@ -54,8 +58,11 @@ import TableRow from '@mui/material/TableRow';
 import Tooltip from '@mui/material/Tooltip';
 import TextField from '@mui/material/TextField';
 import TableContainer from '@mui/material/TableContainer';
+import BlockIcon from '@mui/icons-material/Block';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
@@ -67,6 +74,8 @@ interface TalkGroupRow {
   seen: boolean;
   lastFreq?: number;
   lastActivity?: string;
+  /** Trunk priority for mid-call preemption; lower wins, 3 is the default. */
+  prio?: number;
 }
 
 function formatFreqMHz(hz?: number): string {
@@ -102,14 +111,33 @@ export default function ChannelsCard() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   // Filter state
   const [tagFilter, setTagFilter] = useState('');
+  // Row overflow menu (one Menu instance, re-anchored per row — a virtualized
+  // table must not mount a Menu per row).
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [menuTgid, setMenuTgid] = useState<number>(0);
+  // Manual TGID entry, mirroring the curses H / W / B prompts.
+  const [manualTgid, setManualTgid] = useState('');
   const phone = useIsPhone();
   const {
     config,
     channels, channelIds,
     selectedChannelId, selectChannel,
     holdTalkGroup, releaseHold,
+    lockoutTalkGroup, whitelistTalkGroup,
   } = useOp25Service();
   const system = useSelectedSystem();
+
+  const closeMenu = () => setMenuAnchor(null);
+  const openMenu = (el: HTMLElement, tgid: number) => {
+    setMenuTgid(tgid);
+    setMenuAnchor(el);
+  };
+
+  // The decoder rejects anything outside 1-65534 (add_blacklist/add_whitelist),
+  // so screen it here rather than sending a command that only logs a warning.
+  const manualTgidValue = Number(manualTgid);
+  const manualTgidValid = Number.isInteger(manualTgidValue)
+    && manualTgidValue > 0 && manualTgidValue <= 65534;
 
   const activeChannel = selectedChannelId !== null ? channels[selectedChannelId] : null;
   const heldTgid = activeChannel?.hold_tgid ?? 0;
@@ -164,18 +192,25 @@ export default function ChannelsCard() {
       }
     }
 
-    // Configured talk-groups from tgid_tags (populated by tgid_tags_file on the server).
+    // Talk-groups the decoder knows about (tgid_tags carries every TG it has
+    // seen or loaded from tgid_tags_file, plus the trunk priority).
     if (system?.tgid_tags) {
       for (const [tgidStr, tgData] of Object.entries(system.tgid_tags)) {
-        if (!tgData.configured) continue;
         const tgid = Number(tgidStr);
         if (!Number.isFinite(tgid) || tgid <= 0) continue;
         const existing = map.get(tgid);
         if (existing) {
-          existing.configured = true;
+          if (tgData.configured) existing.configured = true;
           if (tgData.tag && !existing.tag) existing.tag = tgData.tag;
-        } else {
-          map.set(tgid, { tgid, tag: tgData.tag || '', configured: true, seen: false });
+          if (tgData.prio !== undefined) existing.prio = tgData.prio;
+        } else if (tgData.configured) {
+          map.set(tgid, {
+            tgid,
+            tag: tgData.tag || '',
+            configured: true,
+            seen: false,
+            prio: tgData.prio,
+          });
         }
       }
     }
@@ -207,11 +242,12 @@ export default function ChannelsCard() {
   const fixedHeaderContent = () => (
     <TableRow>
       {sortableHead('tgid', 'TGID', phone ? '20%' : '10%')}
-      {sortableHead('tag',  'Tag',  phone ? '44%' : '30%')}
-      {!phone && sortableHead('lastFreq',     'Freq', '14%')}
-      {!phone && sortableHead('lastActivity', 'Last', '18%')}
-      {sortableHead('configured', 'State', phone ? '22%' : '20%')}
-      <TableCell variant="head" align="right" sx={{ backgroundColor: 'background.paper', width: phone ? '14%' : '8%' }}>Hold</TableCell>
+      {sortableHead('tag',  'Tag',  phone ? '40%' : '26%')}
+      {!phone && sortableHead('prio',         'Prio', '8%')}
+      {!phone && sortableHead('lastFreq',     'Freq', '13%')}
+      {!phone && sortableHead('lastActivity', 'Last', '16%')}
+      {sortableHead('configured', 'State', phone ? '20%' : '15%')}
+      <TableCell variant="head" align="right" sx={{ backgroundColor: 'background.paper', width: phone ? '20%' : '12%' }}>Actions</TableCell>
     </TableRow>
   );
 
@@ -221,6 +257,7 @@ export default function ChannelsCard() {
       <>
         <TableCell>{row.tgid}</TableCell>
         <TableCell sx={{ overflowWrap: 'anywhere' }}>{row.tag || '\u2014'}</TableCell>
+        {!phone && <TableCell>{row.prio ?? '\u2014'}</TableCell>}
         {!phone && <TableCell>{formatFreqMHz(row.lastFreq)}</TableCell>}
         {!phone && <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>}
         <TableCell>
@@ -237,7 +274,7 @@ export default function ChannelsCard() {
             }
           </Stack>
         </TableCell>
-        <TableCell align="right">
+        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
           <Tooltip title={isHeld ? 'Release hold' : `Hold ${row.tgid}`}>
             <IconButton
               size="small"
@@ -245,6 +282,11 @@ export default function ChannelsCard() {
               color={isHeld ? 'warning' : 'default'}
             >
               {isHeld ? <LockOpenIcon fontSize="small" /> : <LockIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="More actions">
+            <IconButton size="small" onClick={(e) => openMenu(e.currentTarget, row.tgid)}>
+              <MoreVertIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         </TableCell>
@@ -345,6 +387,53 @@ export default function ChannelsCard() {
               sx={{ width: { xs: '100%', sm: 240 } }}
             />
           </Box>
+
+          {/* Act on a TGID that is not in the table yet — the curses terminal's
+              H / W / B prompts, which had no browser equivalent. */}
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ mb: 1 }}
+          >
+            <TextField
+              size="small"
+              label="TGID"
+              value={manualTgid}
+              onChange={(e) => setManualTgid(e.target.value.replace(/[^0-9]/g, ''))}
+              error={manualTgid !== '' && !manualTgidValid}
+              helperText={manualTgid !== '' && !manualTgidValid ? '1–65534' : ' '}
+              inputProps={{ inputMode: 'numeric', 'aria-label': 'talkgroup id' }}
+              sx={{ width: 120 }}
+            />
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={!manualTgidValid}
+              onClick={() => { holdTalkGroup(manualTgidValue); setManualTgid(''); }}
+            >
+              Hold
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={!manualTgidValid}
+              onClick={() => { whitelistTalkGroup(manualTgidValue); setManualTgid(''); }}
+            >
+              Whitelist
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              color="error"
+              disabled={!manualTgidValid}
+              onClick={() => { lockoutTalkGroup(manualTgidValue); setManualTgid(''); }}
+            >
+              Lockout
+            </Button>
+          </Stack>
           {rows.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
               No talk-groups seen yet.
@@ -362,6 +451,27 @@ export default function ChannelsCard() {
           )}
         </Box>
       </Stack>
+
+      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeMenu}>
+        <MenuItem
+          onClick={() => { whitelistTalkGroup(menuTgid); closeMenu(); }}
+        >
+          <ListItemIcon><PlaylistAddCheckIcon fontSize="small" /></ListItemIcon>
+          <ListItemText
+            primary={`Whitelist ${menuTgid}`}
+            secondary="Scan only whitelisted talk-groups"
+          />
+        </MenuItem>
+        <MenuItem
+          onClick={() => { lockoutTalkGroup(menuTgid); closeMenu(); }}
+        >
+          <ListItemIcon><BlockIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText
+            primary={`Lockout ${menuTgid}`}
+            secondary="Blacklist until reload"
+          />
+        </MenuItem>
+      </Menu>
     </CardShell>
   );
 }

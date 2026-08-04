@@ -17,6 +17,7 @@ import BandPlanCard from './components/BandPlanCard/BandPlanCard';
 import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
 import AdjacentSitesCard from './components/AdjacentSitesCard/AdjacentSitesCard';
 import PatchesCard from './components/PatchesCard/PatchesCard';
+import ReceiverCard from './components/ReceiverCard/ReceiverCard';
 import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
 import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
 import SubscribersCard from './components/SubscribersCard/SubscribersCard';
@@ -39,7 +40,7 @@ const SECTIONS = [
   { label: 'Live',   render: () => <><PlayerCard /><ChannelsCard /></> },
   { label: 'Audio',  render: () => <><TranscriptsCard /><CallHistoryCard /></> },
   { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /></> },
-  { label: 'Signal', render: () => <SignalPlotsCard /> },
+  { label: 'Signal', render: () => <><ReceiverCard /><SignalPlotsCard /></> },
 ];
 
 function MobileLayout() {
@@ -94,6 +95,7 @@ function DesktopLayout() {
 
       <Stack direction="column" spacing={2} sx={{ flex: 1, minWidth: 0 }}>
         <SiteInfoCard />
+        <ReceiverCard />
         <SignalPlotsCard />
         <BandPlanCard />
         <AdjacentSitesCard />

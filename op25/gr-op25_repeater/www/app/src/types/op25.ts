@@ -73,8 +73,45 @@ export interface TrunkSystem {
   adjacent_data: Record<string, AdjacentEntry>;
   band_plan: Record<string, BandPlanEntry>;
   /** All known talkgroups keyed by TGID string. `configured` is true for
-   *  entries loaded from tgid_tags_file at startup. */
-  tgid_tags?: Record<string, { tag: string; configured: boolean }>;
+   *  entries loaded from tgid_tags_file at startup.  `prio` is the trunk
+   *  priority used for mid-call preemption (lower = higher priority,
+   *  default 3 when the tags file omits a third column). */
+  tgid_tags?: Record<string, { tag: string; configured: boolean; prio?: number }>;
+
+  // --- P25-only site details -------------------------------------------
+  /** Non-null when the control channel itself is encrypted (P_PARM_BCST). */
+  encryption_algid?: number | null;
+  /** 0 means the site is running failsoft (RFSS_STS_BCST 'A' bit clear). */
+  network_active?: number;
+  /** Location Registration Area. */
+  lra?: number;
+
+  // --- SmartNet-only site details ---------------------------------------
+  /** SmartNet/SmartZone system id (`rx_sys_id`). */
+  sysid_smartnet?: number | null;
+  /** SmartZone site id; null on a single-site SmartNet system. */
+  siteid?: number | null;
+
+  // --- Connect+/DMR-only details ----------------------------------------
+  /** Logical channel number → frequency map. */
+  lcn_data?: Record<string, DmrLcnEntry>;
+  /** LCN currently carrying the rest channel, 0 when unknown. */
+  rest_lcn?: number;
+}
+
+/** One Connect+ logical channel and the state of its two time slots. */
+export interface DmrLcnEntry {
+  lcn: number;
+  frequency: number;
+  slots: DmrSlotEntry[];
+}
+
+export interface DmrSlotEntry {
+  slot: number;
+  tgid: number;
+  srcaddr: number;
+  /** Unix epoch seconds of the most recent grant, 0 when never granted. */
+  grant_time: number;
 }
 
 export interface TrunkUpdatePayload {
@@ -102,8 +139,16 @@ export interface ChannelStatus {
   name: string;
   ppm?: number;
   capture?: boolean;
+  /** Path the raw symbol capture is being written to while `capture` is true. */
+  capture_file?: string;
+  /** Demodulator frequency error in Hz (AFC figure — NOT a bit error rate). */
   error?: number;
   conventional?: boolean;
+  /** Time slot for two-slot DMR; absent/0 elsewhere. */
+  slot?: number;
+  /** Encryption algorithm / key ids for the current call, when known. */
+  algid?: number;
+  keyid?: number;
 }
 
 export interface ChannelUpdatePayload {
@@ -249,5 +294,27 @@ export interface OP25Config {
     module: string;
     chans: TrunkingChanConfig[];
   };
-  terminal?: Record<string, unknown>;
+  terminal?: TerminalConfig;
+}
+
+/** The `terminal` block of the multi_rx config, echoed back by the decoder as
+ *  `json_type: "terminal_config"`.  The curses terminal honours the tuning
+ *  steps and default channel (terminal.py:504-514); so do we. */
+export interface TerminalConfig {
+  module?: string;
+  terminal_type?: string;
+  /** Fine-tune increments in Hz for the ±small / ±large controls. */
+  tuning_step_small?: number;
+  tuning_step_large?: number;
+  /** Channel `name` to focus when the UI first sees the channel list. */
+  default_channel?: string;
+  /** Colour-code talkgroup tags by keyword. */
+  smart_colors?: boolean;
+  http_plot_interval?: number;
+  curses_plot_interval?: number;
+  http_plot_directory?: string;
+  terminal_timeout?: number;
+  /** Explicit browser-audio UDP port override. */
+  audio_ports?: number[];
+  [k: string]: unknown;
 }

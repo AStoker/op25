@@ -21,6 +21,11 @@ interface Row {
   tag: string;
   src: number;
   srcTag: string;
+  /** Time slot — the two slots of a DMR/TDMA channel are independent
+   *  conversations, so a call log without it is ambiguous. */
+  slot?: number;
+  /** Trunk priority (lower wins). */
+  prio?: number;
 }
 
 function fmtFreq(hz: number): string {
@@ -67,6 +72,8 @@ export default function CallHistoryCard() {
           tag:    e.tgtag,
           src:    e.rid,
           srcTag: e.rtag,
+          slot:   e.slot,
+          prio:   e.prio,
         }));
     }
 
@@ -100,12 +107,14 @@ export default function CallHistoryCard() {
       <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '24%' : '16%' }}>Time</TableCell>
       {!phone && (
         <>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '14%' }}>Freq</TableCell>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '10%' }}>TG</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '13%' }}>Freq</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '9%' }}>TG</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '7%' }}>Slot</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '7%' }}>Prio</TableCell>
         </>
       )}
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '40%' : '28%' }}>Tag</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '36%' : '32%' }}>Source</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '40%' : '25%' }}>Tag</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '36%' : '24%' }}>Source</TableCell>
     </TableRow>
   );
 
@@ -116,6 +125,8 @@ export default function CallHistoryCard() {
         <>
           <TableCell>{fmtFreq(r.freq)}</TableCell>
           <TableCell>{r.tgid || '\u2014'}</TableCell>
+          <TableCell>{r.slot === undefined || r.slot === null ? '\u2014' : r.slot}</TableCell>
+          <TableCell>{r.prio ?? '\u2014'}</TableCell>
         </>
       )}
       <TableCell sx={{ overflowWrap: 'anywhere' }}>{r.tag || (r.tgid ? `TG ${r.tgid}` : '\u2014')}</TableCell>

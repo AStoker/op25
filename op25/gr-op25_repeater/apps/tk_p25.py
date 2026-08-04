@@ -2043,13 +2043,16 @@ class p25_system(object):
         # Band Plan (from iden_up)
         d['band_plan'] = self.freq_table
 
-        # Talkgroup tags: all known TGs with tag and configured flag for the GUI
+        # Talkgroup tags: all known TGs with tag, configured flag and trunk
+        # priority for the GUI (priority drives mid-call preemption, so it is
+        # worth showing next to the tag rather than hiding it in the tags file)
         tgid_tags = {}
         with self.talkgroups_mutex:
             for tgid, tg in self.talkgroups.items():
                 tgid_tags[str(tgid)] = {
                     'tag':        tg.get('tag', ''),
                     'configured': tg.get('configured', False),
+                    'prio':       tg.get('prio', TGID_DEFAULT_PRIO),
                 }
         d['tgid_tags'] = tgid_tags
 

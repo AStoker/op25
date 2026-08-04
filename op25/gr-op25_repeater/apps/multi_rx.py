@@ -181,6 +181,7 @@ class channel(object):
         self.tb = tb
         self.raw_sink = None
         self.raw_file = None
+        self.raw_sink_file = None
         self.throttle = None
         self.nbfm = None
         self.nbfm_mode = 0
@@ -309,12 +310,14 @@ class channel(object):
             self.raw_sink = blocks.file_sink(gr.sizeof_char, sink_file)
             self.tb.connect(self.demod, self.raw_sink)
             self.tb.unlock()
+            self.raw_sink_file = sink_file   # reported in channel_update for the UI
         else:                       # turn off raw symbol capture
             sys.stderr.write("%s Ending raw symbol capture\n" % log_ts.get())
             self.tb.lock()
             self.tb.disconnect(self.demod, self.raw_sink)
             self.tb.unlock()
             self.raw_sink = None
+            self.raw_sink_file = None
 
     def set_plot_destination(self, plot): # match plot rate/output to the terminal in use
         if plot is None or plot not in self.sinks or self.tb.terminal_type is None:
@@ -975,6 +978,7 @@ class rx_block (gr.top_block):
         for rx_id in params['channels']:                       # iterate and convert stream name to url
             params[rx_id]['ppm'] = self.find_channel(int(rx_id)).device.get_ppm()
             params[rx_id]['capture'] = False if self.find_channel(int(rx_id)).raw_sink is None else True
+            params[rx_id]['capture_file'] = self.find_channel(int(rx_id)).raw_sink_file
             params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error()
             s_name = params[rx_id]['stream']
             if s_name not in self.meta_streams:

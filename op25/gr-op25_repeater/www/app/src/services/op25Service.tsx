@@ -16,6 +16,7 @@ import type {
   OP25Config,
   PlotMode,
   PlotPayload,
+  TerminalConfig,
   TrunkSystem,
 } from '../types/op25';
 
@@ -66,9 +67,36 @@ export interface OP25ServiceContextType {
   lockoutTalkGroup: (tgid?: number) => void;
   /** Whitelist the given tgid on the selected channel. */
   whitelistTalkGroup: (tgid: number) => void;
+
+  /** The `terminal` config block as echoed back by the decoder. */
+  terminalConfig: TerminalConfig | null;
+  /** Fine-tune increments in Hz, from terminal_config (100 / 1200 default). */
+  tuningStepSmall: number;
+  tuningStepLarge: number;
+
+  /** Nudge the selected channel's tuning by *hz* (signed). */
+  adjustTune: (hz: number) => void;
+  /** Set decoder log verbosity (0-10). */
+  setLogLevel: (level: number) => void;
+  /** Last verbosity this UI asked for; null when it has never set one.
+   *  The decoder does not report its verbosity, so this is optimistic. */
+  logLevel: number | null;
+  /** Start/stop raw symbol capture on the selected channel. */
+  toggleCapture: () => void;
+  /** Re-read the blacklist/whitelist files for the selected channel. */
+  reloadLists: () => void;
+  /** Log all known tgids (and patches/wuids/rids) to the decoder's stderr. */
+  dumpTgids: () => void;
+  /** Force a decoder buffer dump to stderr. */
+  dumpBuffer: () => void;
 }
 
 const noop = () => { };
+
+/** Fine-tune increments when terminal_config does not override them.
+ *  Same defaults the curses terminal uses (terminal.py:104-105). */
+const DEFAULT_TUNING_STEP_SMALL = 100;
+const DEFAULT_TUNING_STEP_LARGE = 1200;
 
 const OP25ServiceContext = createContext<OP25ServiceContextType>({
   config:             null,
@@ -88,6 +116,16 @@ const OP25ServiceContext = createContext<OP25ServiceContextType>({
   skipCall:           noop,
   lockoutTalkGroup:   noop,
   whitelistTalkGroup: noop,
+  terminalConfig:     null,
+  tuningStepSmall:    DEFAULT_TUNING_STEP_SMALL,
+  tuningStepLarge:    DEFAULT_TUNING_STEP_LARGE,
+  adjustTune:         noop,
+  setLogLevel:        noop,
+  logLevel:           null,
+  toggleCapture:      noop,
+  reloadLists:        noop,
+  dumpTgids:          noop,
+  dumpBuffer:         noop,
 });
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -135,6 +173,12 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   const [decoderRunning, setDecoderRunning] = useState(false);
   const [plots, setPlots] = useState<Record<string, PlotPayload>>({});
   const [activePlotModes, setActivePlotModes] = useState<Set<PlotMode>>(new Set());
+  const [terminalConfig, setTerminalConfig] = useState<TerminalConfig | null>(null);
+  const [logLevel, setLogLevelState] = useState<number | null>(null);
+
+  // default_channel is honoured exactly once — after that the user's channel
+  // choice wins, so a late terminal_config cannot yank the selection back.
+  const defaultChannelAppliedRef = useRef(false);
 
   // Per-plot last-flush timestamp for client-side throttling.
   const plotLastFlushRef = useRef<Record<string, number>>({});
@@ -165,12 +209,23 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     return () => { cancelled = true; };
   }, []);
 
-  // Auto-pick the first channel as soon as we see one.
+  // Pick a channel as soon as we see one: terminal_config's default_channel
+  // names one by `name` (the curses terminal resolves it the same way at
+  // terminal.py:423-428); otherwise take the first the decoder reported.
   useEffect(() => {
-    if (selectedChannelId === null && channelIds.length > 0) {
-      setSelectedChannelId(channelIds[0]);
+    if (selectedChannelId !== null || channelIds.length === 0) return;
+
+    const wanted = terminalConfig?.default_channel;
+    if (wanted && !defaultChannelAppliedRef.current) {
+      const match = channelIds.find((id) => channels[id]?.name === wanted);
+      if (match) {
+        defaultChannelAppliedRef.current = true;
+        setSelectedChannelId(match);
+        return;
+      }
     }
-  }, [channelIds, selectedChannelId]);
+    setSelectedChannelId(channelIds[0]);
+  }, [channelIds, channels, selectedChannelId, terminalConfig]);
 
   // Subscribe to every downstream WS message and route by json_type.
   useEffect(() => {
@@ -181,6 +236,9 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
           // full_config is the complete multi_rx JSON (same shape as OP25Config).
           const { json_type: _jt, ...cfg } = p;
           setConfig(cfg as unknown as OP25Config);
+        } else if (p.json_type === 'terminal_config') {
+          const { json_type: _jt, ...tc } = p;
+          setTerminalConfig(tc as unknown as TerminalConfig);
         } else if (p.json_type === 'trunk_update') {
           // Numeric-string keys are system indexes; everything else is metadata.
           const next: Record<string, TrunkSystem> = {};
@@ -294,6 +352,35 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     sendCommand('whitelist', tgid, resolveMsgqid());
   }, [sendCommand, resolveMsgqid]);
 
+  const adjustTune = useCallback((hz: number) => {
+    sendCommand('adj_tune', hz, resolveMsgqid());
+  }, [sendCommand, resolveMsgqid]);
+
+  const setLogLevel = useCallback((level: number) => {
+    const clamped = Math.max(0, Math.min(10, Math.trunc(level)));
+    sendCommand('set_debug', clamped, resolveMsgqid());
+    setLogLevelState(clamped);
+  }, [sendCommand, resolveMsgqid]);
+
+  const toggleCapture = useCallback(() => {
+    // One command both starts and stops it; multi_rx tracks the raw_sink and
+    // reports the resulting state back in channel_update.capture.
+    sendCommand('capture', 0, resolveMsgqid());
+  }, [sendCommand, resolveMsgqid]);
+
+  const reloadLists = useCallback(() => {
+    sendCommand('reload', 0, resolveMsgqid());
+  }, [sendCommand, resolveMsgqid]);
+
+  const dumpTgids = useCallback(() => {
+    sendCommand('dump_tgids', 0, resolveMsgqid());
+  }, [sendCommand, resolveMsgqid]);
+
+  const dumpBuffer = useCallback(() => {
+    // multi_rx fans this out to every channel, so the msgqid is irrelevant.
+    sendCommand('dump_buffer', -1, resolveMsgqid());
+  }, [sendCommand, resolveMsgqid]);
+
   const togglePlotMode = useCallback((mode: PlotMode) => {
     const msgqid = resolveMsgqid();
     // Toggle the decoder-side sink. The same command both enables and disables.
@@ -334,10 +421,23 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     skipCall,
     lockoutTalkGroup,
     whitelistTalkGroup,
+    terminalConfig,
+    tuningStepSmall: Number(terminalConfig?.tuning_step_small) > 0
+      ? Number(terminalConfig?.tuning_step_small) : DEFAULT_TUNING_STEP_SMALL,
+    tuningStepLarge: Number(terminalConfig?.tuning_step_large) > 0
+      ? Number(terminalConfig?.tuning_step_large) : DEFAULT_TUNING_STEP_LARGE,
+    adjustTune,
+    setLogLevel,
+    logLevel,
+    toggleCapture,
+    reloadLists,
+    dumpTgids,
+    dumpBuffer,
   }), [config, systems, channels, channelIds, callLog, callClips, plots, activePlotModes,
        togglePlotMode, decoderRunning, selectedChannelId,
        selectChannel, holdTalkGroup, releaseHold, skipCall,
-       lockoutTalkGroup, whitelistTalkGroup]);
+       lockoutTalkGroup, whitelistTalkGroup, terminalConfig, adjustTune,
+       setLogLevel, logLevel, toggleCapture, reloadLists, dumpTgids, dumpBuffer]);
 
   return (
     <OP25ServiceContext.Provider value={value}>
