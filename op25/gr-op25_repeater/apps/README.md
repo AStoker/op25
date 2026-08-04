@@ -166,6 +166,20 @@ Options:
                         spectrum decimation
 ```
 
+## Terminal types
+
+`multi_rx.py` picks its terminal from the `terminal` block of the JSON config:
+
+| `module` | `terminal_type` | Result |
+|---|---|---|
+| `websocket_server.py` | `ws:<host>:<port>` | **Current web GUI** — React SPA, FastAPI/uvicorn, single port. See [README-new-gui.md](../../../README-new-gui.md). |
+| `terminal.py` | `http:<host>:<port>` | Legacy web GUI — two ports (HTTP on N, control WebSocket on N+1). See [README-websockets.md](../../../README-websockets.md). |
+| `terminal.py` | `curses` | Text UI in the terminal (keys listed above). |
+| `terminal.py` | `<udp port>` | Headless; attach `terminal.py <host> <port>` later. |
+
+The `ws:` terminal is `multi_rx.py`-only — `rx.py` imports `terminal.py`
+directly and only understands `curses`, `http:` and a UDP port.
+
 ## HTTP Console
 
 The OP25 dashboard can be made accessible to any web browser over HTTP by including the option `-l http:<host>:<port>` when starting the `rx.py` app, where `<host>` is either `127.0.0.1` to limit access from only this host, or `0.0.0.0` if HTTP access from anywhere is to be allowed*.  After `rx.py` has started it begins listening on the specified port for incoming connections.

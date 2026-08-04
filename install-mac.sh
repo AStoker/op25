@@ -207,6 +207,18 @@ make -j"$(sysctl -n hw.logicalcpu)" 2>&1 | tee make.log
 
 echo "====== Installing op25 (may require sudo)..."
 sudo make install 2>&1 | tee install.log
+cd ..
+
+# Build the web GUI.  www/dist is committed, so this is not strictly required —
+# but a checkout can be newer than the artifact, and serving stale assets is
+# extremely confusing to debug.  Skipped (with a warning) when yarn is absent.
+if command -v yarn >/dev/null 2>&1; then
+    echo "====== Building web GUI..."
+    ( cd op25/gr-op25_repeater/www/app && yarn install --frozen-lockfile && yarn build )
+else
+    echo "====== yarn not found: skipping web GUI build, using the committed www/dist"
+    echo "====== (brew install yarn, then 'yarn build' in op25/gr-op25_repeater/www/app)"
+fi
 
 # Update the dynamic linker cache (macOS uses dyld; no ldconfig needed,
 # but ensure the Homebrew lib path is in DYLD_LIBRARY_PATH if required).

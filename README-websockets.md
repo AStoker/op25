@@ -1,8 +1,20 @@
-# OP25 WebSocket & HTTP Communication Architecture
+# OP25 WebSocket & HTTP Communication Architecture (legacy stack)
 
-This document describes how the React-based GUI communicates with the Python
-backend (`multi_rx.py`) over HTTP and WebSockets — covering both the control
-channel and the browser audio stream.
+> **This describes the LEGACY stack**: `terminal.py` + `http_server.py`
+> (waitress WSGI) serving `www/www-static/` or `www/react-app/`, selected with
+> `"terminal": { "module": "terminal.py", "terminal_type": "http:0.0.0.0:8080" }`.
+> It uses **two ports** (HTTP on N, control WebSocket on N+1), an HTTP POST
+> fallback, and per-channel `ws://` audio sinks in the C++ layer.
+>
+> For the **current** stack — `websocket_server.py` (FastAPI/uvicorn) serving
+> `www/dist`, single port, `/ws`, no POST fallback — see
+> [README-new-gui.md](README-new-gui.md). The two are configuration-selected
+> and do not share a protocol; do not follow this document to configure the new
+> one.
+
+This document describes how the legacy React-based GUI communicates with the
+Python backend (`multi_rx.py`) over HTTP and WebSockets — covering both the
+control channel and the browser audio stream.
 
 ---
 

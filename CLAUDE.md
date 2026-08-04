@@ -39,14 +39,21 @@ Config selector:
 ```
 - Single port. Static files, control WebSocket, and the audio stream
   (`/api/stream`, WAV over HTTP) all live on it.
-- Protocol is `{ "type": ..., "payload": ... }`. Downstream: `SYSTEM_STATE`,
-  `SDR_STATUS`, `CALL_ACTIVITY`, `CALL_AUDIO`. Upstream: `CALL_CONTROL`,
-  `SYSTEM_CONTROL`.
+- Protocol is `{ "type": ..., "payload": ... }`. Downstream: `SYSTEM_STATE`
+  (health payload **and** every decoder json_type without a more specific home
+  — trunk_update, channel_update, plot, terminal_config, full_config),
+  `CALL_ACTIVITY` (call_log), `CALL_AUDIO` (clips + transcripts), `ERROR`.
+  Upstream: `CALL_CONTROL` (any decoder UI command), `SYSTEM_CONTROL` (`quit`
+  only — muting is client-side).
+  There is no `SDR_STATUS`; it was declared but never emitted.
 - Audio path: decoder UDP → `UdpAudioReceiver` → `AudioStreamManager` →
   browser. Ports are discovered from each channel's `destination`
   (`udp://host:port`, plus `port+1` for the TDMA slot B), defaulting to
-  `127.0.0.1:23456/23457`.
-- Docs: `www/app/AGENTS.md` (thin).
+  `127.0.0.1:23456/23457`. There is one manager per port plus an aggregate:
+  bare `/api/stream` is the mix, `?channel=N` one channel, `?port=N` one exact
+  stream (how to reach a DMR slot B), `/api/audio/channels` lists them.
+- Docs: `README-new-gui.md` (protocol + endpoints), `www/app/AGENTS.md`
+  (frontend conventions).
 
 ### Legacy stack (still present, being replaced)
 ```
@@ -59,8 +66,9 @@ Config selector:
 "terminal": { "module": "terminal.py", "terminal_type": "http:0.0.0.0:8080" }
 ```
 - Two ports: HTTP on N, control WebSocket on **N+1**, HTTP POST fallback on N.
-- Documented in `README-websockets.md` — note that doc describes the **legacy**
-  stack, not `websocket_server.py`.
+- Documented in `README-websockets.md`, which is explicitly labelled legacy.
+- This is the stack that uses `ws://` audio destinations (websocketpp sinks in
+  `lib/op25_audio.cc`); the new stack ignores them and re-streams UDP instead.
 - `terminal.py` also provides `terminal_type: "curses"` for a TUI.
 
 `www/react-app/AGENTS.md` is the detailed (legacy) protocol reference and is
@@ -249,16 +257,28 @@ Things to know:
 ## Known remaining gaps
 
 1. `www/dist` is a **committed build artifact**. It can drift from `www/app/src`
-   — rebuild before testing UI changes.
+   — rebuild before testing UI changes. (`install.sh` / `install-mac.sh` now run
+   `yarn build` when yarn is present.)
 2. `call_log` is a **draining delta feed**: `tk_p25.get_call_log()` clears the
    buffer on every read, and `ws_terminal` polls once per second whether or not
-   a client is attached. Clients must accumulate (the frontend does), and a
-   client that connects late permanently misses earlier calls.
-3. `gains` values must be **integers** — `multi_rx.py:150` does `int(gain)`, so
-   `"LNA:49.6"` raises `ValueError` at startup.
-4. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
+   a client is attached. Clients must accumulate (the frontend does). The server
+   keeps a 200-entry ring and replays it on connect, so a late-joining client is
+   no longer blank — but calls from before the server started are still gone.
+3. **SmartNet and Connect+/DMR parity is unverified on air.** The payloads and
+   the Connect+ hold/skip/lockout/whitelist gating are covered by
+   `tests/trunk_json_spec.py` against synthesized state only; there is no such
+   system in range here. Two real bugs were fixed blind in `tk_trbo.py` (slot
+   state aliasing, and `current_chan` never advancing during a CC hunt) — treat
+   both as needing an on-air confirmation.
+4. `set_full_config` still does nothing. It now returns an explicit error rather
+   than a false `ok`, and the UI can display the config read-only. Writing the
+   user's JSON from an unauthenticated browser is a deliberate non-goal.
+5. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
    path in particular is unchanged in its ALSA/PulseAudio ordering but has only
    been exercised through the fallback chain on macOS.
+6. `add_default_config` (curses `t` key) is rx.py-only; under multi_rx it
+   answers with an explicit "not supported" error, since systems come from the
+   JSON config.
 
 ## Testing the running stack without a browser
 
@@ -295,7 +315,7 @@ $(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 137 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 213 tests,
 in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
 `httpx`.
 
@@ -304,9 +324,19 @@ in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
 - `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
   speech heuristics, hallucination filtering, clip store, keyword matching, HA
   config, HA HTTP round-trips, REST endpoints, per-port capture (116).
+- `tests/protocol_spec.py` — json_type routing, live SYSTEM_STATE, call-log
+  ring, capture listing/download, upstream type validation (26).
+- `tests/trunk_json_spec.py` — trunk_update payload shapes for P25 / SmartNet /
+  Connect+, plus Connect+ grant handling and call filtering (28).
+- `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
+  `?channel=` / `?port=` selection (20).
+- `tests/squelch_upstream_spec.py` — runs upstream's `squelch_core_test.py` and
+  `squelch_gr_test.py`, which are standalone `main()` scripts rather than
+  pytest modules, as subprocesses (2).
 
 Note that `TestClient.stream()` hangs on `/api/stream` — it is an unbounded
-generator. Drive `audio_manager.generate()` directly under `asyncio` instead.
+generator. Drive `AudioStreamManager.generate()` directly under `asyncio`
+instead (see `tests/audio_streams_spec.py`).
 
 ## Local config files (gitignored)
 

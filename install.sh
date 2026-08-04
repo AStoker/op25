@@ -69,4 +69,16 @@ cmake ../         2>&1 | tee cmake.log
 make              2>&1 | tee make.log
 sudo make install 2>&1 | tee install.log
 sudo ldconfig
+cd ..
+
+# Build the web GUI.  www/dist is committed, so this is not strictly required —
+# but a checkout can be newer than the artifact, and serving stale assets is
+# extremely confusing to debug.  Skipped (with a warning) when yarn is absent.
+if command -v yarn >/dev/null 2>&1; then
+    echo ====== building web GUI
+    ( cd op25/gr-op25_repeater/www/app && yarn install --frozen-lockfile && yarn build )
+else
+    echo "====== yarn not found: skipping web GUI build, using the committed www/dist"
+    echo "====== (install yarn and run 'yarn build' in op25/gr-op25_repeater/www/app to refresh it)"
+fi
 

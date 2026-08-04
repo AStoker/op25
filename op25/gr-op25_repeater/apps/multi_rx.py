@@ -946,8 +946,13 @@ class rx_block (gr.top_block):
             js['uuid'] = m_uuid
             ui_rsp.append(js)
         elif s == 'set_full_config':
-            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
-            pass
+            # Never implemented: this replied 'ok' and did nothing, so the
+            # legacy UI's "save config" silently failed.  Writing the user's
+            # JSON from an unauthenticated browser is a deliberate non-goal —
+            # say so rather than pretending it worked.
+            sys.stderr.write("%s set_full_config is not supported; edit the config file instead\n" % log_ts.get())
+            ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                           'detail': "set_full_config is not supported; edit the config file instead"})
         elif s == 'get_ws_instances':
             js = {}
             js['json_type'] = "ws_instances"

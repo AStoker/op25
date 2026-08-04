@@ -17,6 +17,7 @@ import BandPlanCard from './components/BandPlanCard/BandPlanCard';
 import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
 import AdjacentSitesCard from './components/AdjacentSitesCard/AdjacentSitesCard';
 import PatchesCard from './components/PatchesCard/PatchesCard';
+import ConfigCard from './components/ConfigCard/ConfigCard';
 import ReceiverCard from './components/ReceiverCard/ReceiverCard';
 import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
 import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
@@ -39,7 +40,7 @@ const navItems: NavItem[] = [
 const SECTIONS = [
   { label: 'Live',   render: () => <><PlayerCard /><ChannelsCard /></> },
   { label: 'Audio',  render: () => <><TranscriptsCard /><CallHistoryCard /></> },
-  { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /></> },
+  { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /><ConfigCard /></> },
   { label: 'Signal', render: () => <><ReceiverCard /><SignalPlotsCard /></> },
 ];
 
@@ -100,6 +101,7 @@ function DesktopLayout() {
         <BandPlanCard />
         <AdjacentSitesCard />
         <PatchesCard />
+        <ConfigCard />
       </Stack>
     </Stack>
   );

@@ -54,21 +54,44 @@ the encryption on traffic with unknown keys.
 - DES-OFB
 - AES-256
 
+## Additions in this fork (AStoker)
+
+Beyond the upstream capabilities above:
+
+- **New web GUI** — React 18 + MUI 6 SPA served by a FastAPI/uvicorn backend
+  (`websocket_server.py`) on a **single port**: static files, the control
+  WebSocket and the audio stream all share it. Selected with
+  `"terminal": { "module": "websocket_server.py", "terminal_type": "ws:0.0.0.0:8080" }`.
+  Works on a phone as well as a desktop, and renders the six signal plots
+  client-side from raw data instead of gnuplot PNGs.
+- **Per-channel browser audio** — `/api/stream?channel=N` (or `?port=N` for a
+  DMR slot B), plus the mixed stream at `/api/stream` for existing consumers.
+- **Call capture, speech-to-text and Home Assistant** — `ha_bridge.py` slices
+  the UDP audio into one clip per transmission, optionally transcribes each one
+  through Home Assistant's speech-to-text API, matches keywords and posts to a
+  webhook. Stdlib only, so nothing extra to install on a Pi.
+- **macOS (Apple Silicon) support** — a cross-platform PortAudio/CoreAudio
+  backend in `sockaudio.py` alongside the existing ALSA and PulseAudio ones,
+  and an `install-mac.sh`.
+- The legacy two-port GUI (`terminal.py` + `http_server.py`) and the curses
+  terminal are unchanged and still selectable.
+
 ## Installation
 
 - Debian based Linux (including Raspberry Pi): [README-installation.md](README-installation.md)
 - macOS (Apple Silicon or Intel): [README-macos.md](README-macos.md)
 
-## HTTP / WebSocket Communication
+## Documentation
 
-The web-based GUI communicates with the Python backend over HTTP and WebSockets.
-See [README-websockets.md](README-websockets.md) for a detailed description of:
-
-- The control channel (WebSocket on HTTP port+1, HTTP POST fallback)
-- How commands flow from the browser to the Python trunking engine
-- How state updates are pushed from Python back to the browser
-- Browser audio streaming (raw PCM over dedicated WebSocket ports)
-- CORS headers and remote access configuration
+| Topic | Document |
+|---|---|
+| New GUI: FastAPI server, WebSocket protocol, REST endpoints, audio | [README-new-gui.md](README-new-gui.md) |
+| Legacy GUI: two-port control channel, HTTP POST fallback, `ws://` audio | [README-websockets.md](README-websockets.md) |
+| Browser audio, both stacks | [README-browser-audio.md](README-browser-audio.md) |
+| Call capture, speech-to-text, Home Assistant | [README-home-assistant.md](README-home-assistant.md) |
+| Config keys, terminal types, command line | [op25/gr-op25_repeater/apps/README.md](op25/gr-op25_repeater/apps/README.md) |
+| NBFM analog and squelch modes | [op25/gr-op25_repeater/apps/README-analog.md](op25/gr-op25_repeater/apps/README-analog.md) |
+| SmartNet/SmartZone · DMR · metadata | [README-smartnet.md](op25/gr-op25_repeater/apps/README-smartnet.md) · [README-dmr.md](op25/gr-op25_repeater/apps/README-dmr.md) · [README-metadata.md](op25/gr-op25_repeater/apps/README-metadata.md) |
 
 ## Roadmap (under development)
 - Demodulator improvements to speed up channel lock-time
