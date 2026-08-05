@@ -60,6 +60,7 @@ from ha_bridge import (
     ClipStore,
     HomeAssistantBridge,
     HomeAssistantConfig,
+    mix_pcm16,
     redact_config,
     resample_pcm16,
     wav_bytes,
@@ -206,10 +207,18 @@ class AudioStreamManager:
     # we are unrecoverably behind; drop the oldest to bound latency.
     _MAX_BUFFERED_BYTES = _SAMPLE_RATE * _SAMPLE_WIDTH * 4
 
-    def __init__(self) -> None:
+    def __init__(self, mix: bool = False) -> None:
         self._buffer: bytearray = bytearray()
         self._lock: threading.Lock = threading.Lock()
         self.mock: bool = MOCK   # set False once the real decoder feeds audio
+
+        # Mixing mode, used only by the aggregate stream.  Each source port
+        # gets its own queue and :meth:`_take_chunk` sums one chunk across all
+        # of them.  A single shared buffer cannot work here: appending would
+        # interleave fragments of separate conversations and would also accept
+        # audio N times faster than the consumer drains it.
+        self._mix: bool = mix
+        self._mix_buffers: dict[int, bytearray] = {}
 
         # Diagnostics
         self.bytes_pushed: int = 0
@@ -223,17 +232,25 @@ class AudioStreamManager:
     # Producer side (called from UDP receiver thread)
     # ------------------------------------------------------------------
 
-    def push_audio(self, pcm_chunk: bytes) -> None:
-        """Thread-safe: append raw 8 kHz / 16-bit LE mono PCM bytes."""
+    def push_audio(self, pcm_chunk: bytes, port: int = 0) -> None:
+        """Thread-safe: append raw 8 kHz / 16-bit LE mono PCM bytes.
+
+        *port* is only consulted in mixing mode, where it selects which source
+        queue the bytes join.
+        """
         if not pcm_chunk:
             return
         with self._lock:
-            self._buffer.extend(pcm_chunk)
+            buf = self._mix_buffers.setdefault(port, bytearray()) if self._mix \
+                else self._buffer
+            buf.extend(pcm_chunk)
             self.bytes_pushed += len(pcm_chunk)
             self.last_push_ts = time.time()
-            overflow = len(self._buffer) - self._MAX_BUFFERED_BYTES
+            # Bound each source independently, so one channel falling behind
+            # cannot evict another channel's audio.
+            overflow = len(buf) - self._MAX_BUFFERED_BYTES
             if overflow > 0:
-                del self._buffer[:overflow]
+                del buf[:overflow]
                 self.bytes_dropped += overflow
 
     # ------------------------------------------------------------------
@@ -248,6 +265,18 @@ class AudioStreamManager:
         of the chunk is silence padding when the buffer underran).
         """
         with self._lock:
+            if self._mix:
+                parts: list[bytes] = []
+                for buf in self._mix_buffers.values():
+                    if not buf:
+                        continue
+                    take = min(len(buf), _CHUNK_BYTES)
+                    parts.append(bytes(buf[:take]))
+                    del buf[:take]
+                if not parts:
+                    return b'', 0
+                chunk = mix_pcm16(parts)
+                return chunk, len(chunk)
             if not self._buffer:
                 return b'', 0
             take = min(len(self._buffer), _CHUNK_BYTES)
@@ -257,6 +286,10 @@ class AudioStreamManager:
 
     def buffered_bytes(self) -> int:
         with self._lock:
+            if self._mix:
+                # The backlog is however far the *most* backed-up source is,
+                # not the sum: the sources are drained in parallel.
+                return max((len(b) for b in self._mix_buffers.values()), default=0)
             return len(self._buffer)
 
     async def generate(
@@ -318,7 +351,7 @@ class AudioStreamManager:
 # The aggregate stream: every UDP port mixed together.  This is what bare
 # /api/stream serves, so a single-channel setup — and Home Assistant, and any
 # existing consumer — behaves exactly as before.
-audio_manager = AudioStreamManager()
+audio_manager = AudioStreamManager(mix=True)
 
 # One manager per UDP port, so a multi-channel setup can be listened to one
 # channel (or one DMR slot) at a time instead of hearing everything at once.
@@ -786,7 +819,7 @@ class UdpAudioReceiver(threading.Thread):
                 elif len(data) >= _AUDIO_FRAME_BYTES and (len(data) % 2 == 0):
                     self.packets_pcm += 1
                     port = self._port_by_fd.get(s.fileno(), 0)
-                    audio_manager.push_audio(data)          # aggregate stream
+                    audio_manager.push_audio(data, port)    # aggregate stream (mixed)
                     per_port = _port_managers.get(port)     # per-channel stream
                     if per_port is not None:
                         per_port.push_audio(data)

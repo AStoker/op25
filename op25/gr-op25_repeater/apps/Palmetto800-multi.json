@@ -123,11 +123,7 @@
     "module": "websocket_server.py",
     "terminal_type": "ws:0.0.0.0:8080",
     "http_plot_interval": 1.0,
-    "audio_ports": [
-      23458,
-      23462,
-      23466
-    ],
+    "#audio_ports": "Deliberately absent. An explicit audio_ports list wins outright over discovery, and cannot say which channel a port belongs to - every stream then reports channel=null and the player's source picker shows three identical 'audio_ports override' entries. Letting discovery read the channel destinations instead attributes 23458/23462/23466 to rx0/rx1/rx2 by name, which is what makes /api/stream?channel=N work. The sockaudio ports are excluded automatically.",
     "home_assistant": {
       "enabled": true,
       "url": "http://192.168.0.217:8123",

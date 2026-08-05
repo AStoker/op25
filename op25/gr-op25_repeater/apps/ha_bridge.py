@@ -51,6 +51,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections import deque
+from collections.abc import Sequence
 from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,41 @@ def peak_amplitude(pcm: bytes) -> int:
     """Largest absolute sample value in *pcm* (0 for empty/odd input)."""
     a = _samples(pcm)
     return max(max(a), -min(a)) if a else 0
+
+
+def mix_pcm16(chunks: Sequence[bytes]) -> bytes:
+    """Sum several 16-bit mono LE PCM buffers into one of the longest length.
+
+    This is what makes a multi-channel aggregate stream listenable.  Appending
+    the channels instead splices 20 ms fragments of separate conversations into
+    one serial stream — and delivers them at N times real time, so the consumer
+    falls behind and starts dropping.  Summing keeps one 20 ms slot of wall
+    clock carrying one 20 ms slot of audio.
+
+    Samples are summed and then clamped, not averaged: with a single channel
+    active — the overwhelmingly common case even on a multi-SDR setup, since
+    the decoder only emits while a call is up — the output is bit-identical to
+    that channel's own bytes.  Dividing by the channel count would instead make
+    ordinary single-channel traffic quieter as SDRs are added.  Clamping can
+    distort only while several channels are simultaneously loud.
+    """
+    real = [c for c in chunks if c]
+    if not real:
+        return b''
+    if len(real) == 1:
+        return real[0]
+
+    longest = max(len(c) for c in real)
+    acc = [0] * (longest // SAMPLE_WIDTH)
+    for c in real:
+        for i, v in enumerate(_samples(c)):
+            acc[i] += v
+
+    out = array.array('h', [-32768 if v < -32768 else 32767 if v > 32767 else v
+                            for v in acc])
+    if sys.byteorder != 'little':
+        out.byteswap()
+    return out.tobytes()
 
 
 def speech_rms(pcm: bytes, sample_rate: int = 8_000, frame_ms: int = 20) -> float:

@@ -45,8 +45,8 @@ export interface OP25ServiceContextType {
 
   /** Latest plot snapshot per `${chan}:${mode}`. */
   plots: Record<string, PlotPayload>;
-  /** Modes the UI has requested for the selected channel. */
-  activePlotModes: Set<PlotMode>;
+  /** Modes enabled on the selected channel (plot sinks are per channel). */
+  activePlotModes: ReadonlySet<PlotMode>;
   /** Toggle a plot mode on/off for the selected channel. */
   togglePlotMode: (mode: PlotMode) => void;
 
@@ -106,7 +106,7 @@ const OP25ServiceContext = createContext<OP25ServiceContextType>({
   callLog:            [],
   callClips:          [],
   plots:              {},
-  activePlotModes:    new Set(),
+  activePlotModes:    new Set<PlotMode>(),
   togglePlotMode:     noop,
   decoderRunning:     false,
   selectedChannelId:  null,
@@ -147,6 +147,9 @@ const CALL_CLIP_MAX = 100;
  *  gr_gnuplot may emit several frames per second; this keeps React happy. */
 const PLOT_THROTTLE_MS = 100;
 
+/** Stable identity for "no plots enabled on this channel". */
+const EMPTY_PLOT_MODES: ReadonlySet<PlotMode> = new Set<PlotMode>();
+
 const PLOT_TYPE_BY_MODE: Record<PlotMode, number> = {
   fft:           1,
   constellation: 2,
@@ -172,7 +175,14 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [decoderRunning, setDecoderRunning] = useState(false);
   const [plots, setPlots] = useState<Record<string, PlotPayload>>({});
-  const [activePlotModes, setActivePlotModes] = useState<Set<PlotMode>>(new Set());
+  // Plot sinks live in the decoder *per channel*, so the enabled set has to be
+  // tracked per channel too. A single global set makes the toggle lie as soon
+  // as there is more than one channel: enable FFT on rx0, switch to rx1, and
+  // the button stays lit while no data can arrive, because rx1's sink was
+  // never turned on. Worse, the next click would then read as "disable" and
+  // switch rx1's sink on while darkening the display.
+  const [plotModesByChan, setPlotModesByChan] =
+    useState<Record<number, Set<PlotMode>>>({});
   const [terminalConfig, setTerminalConfig] = useState<TerminalConfig | null>(null);
   const [logLevel, setLogLevelState] = useState<number | null>(null);
 
@@ -284,9 +294,13 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
           // Adopt any mode it is actually sending so the toggle reflects
           // reality — otherwise a reload leaves the button dark while data
           // streams, and the next click would switch the decoder off while
-          // switching the display on.
-          setActivePlotModes((prev) =>
-            prev.has(plot.mode) ? prev : new Set(prev).add(plot.mode));
+          // switching the display on. Adopt against the channel that sent it,
+          // not globally, or rx0's plot lights the button for every channel.
+          setPlotModesByChan((prev) => {
+            const cur = prev[plot.chan];
+            if (cur?.has(plot.mode)) return prev;
+            return { ...prev, [plot.chan]: new Set(cur ?? []).add(plot.mode) };
+          });
           const now  = Date.now();
           const last = plotLastFlushRef.current[key] ?? 0;
           if (now - last >= PLOT_THROTTLE_MS) {
@@ -404,10 +418,11 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
 
   const togglePlotMode = useCallback((mode: PlotMode) => {
     const msgqid = resolveMsgqid();
-    // Toggle the decoder-side sink. The same command both enables and disables.
+    // Toggle the decoder-side sink. The same command both enables and disables,
+    // and it applies only to the channel named in the command.
     sendCommand('toggle_plot', PLOT_TYPE_BY_MODE[mode], msgqid);
-    setActivePlotModes((prev) => {
-      const next = new Set(prev);
+    setPlotModesByChan((prev) => {
+      const next = new Set(prev[msgqid] ?? []);
       if (next.has(mode)) {
         next.delete(mode);
         // Drop the stale snapshot so the card hides immediately on disable.
@@ -420,9 +435,17 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
       } else {
         next.add(mode);
       }
-      return next;
+      return { ...prev, [msgqid]: next };
     });
   }, [sendCommand, resolveMsgqid]);
+
+  // What the card renders: the modes enabled on the channel now selected.
+  // Memoised on a shared empty set so an unselected channel does not hand out
+  // a fresh Set identity on every render.
+  const activePlotModes = useMemo(
+    () => plotModesByChan[resolveMsgqid()] ?? EMPTY_PLOT_MODES,
+    [plotModesByChan, resolveMsgqid],
+  );
 
   const value = useMemo<OP25ServiceContextType>(() => ({
     config,
