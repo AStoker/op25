@@ -4,6 +4,9 @@ import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
 import CardShell from '../CardShell/CardShell';
+import InfoRow from '../common/InfoRow';
+import InsetPanel from '../common/InsetPanel';
+import SectionHeading from '../common/SectionHeading';
 import { useSelectedSystem } from '../../services/op25Service';
 import type { FrequencyDataEntry } from '../../types/op25';
 import {
@@ -12,27 +15,6 @@ import {
 
 function formatFreq(hz: number): string {
   return `${(hz / 1e6).toFixed(4)} MHz`;
-}
-
-function InfoRow({ label, value, tooltip }: { label: string; value: React.ReactNode; tooltip?: string }) {
-  const content = (
-    <Box>
-      <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
-        {label}
-      </Typography>
-      <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere' }}>
-        {value}
-      </Typography>
-    </Box>
-  );
-
-  if (!tooltip) return content;
-
-  return (
-    <Tooltip title={tooltip} placement="top" arrow enterDelay={400}>
-      {content}
-    </Tooltip>
-  );
 }
 
 const FREQ_TYPE_COLOR: Record<string, 'primary' | 'success' | 'info' | 'default'> = {
@@ -126,13 +108,12 @@ export default function SiteInfoCard() {
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             {system.network_active === 0 && (
               <Tooltip title="The site has cleared the RFSS_STS_BCST 'A' bit: it is running failsoft, isolated from the wider network. Local traffic only.">
-                <Chip size="small" color="warning" variant="outlined" label="failsoft" />
+                <Chip color="warning" variant="outlined" label="failsoft" />
               </Tooltip>
             )}
             {(system.encryption_algid ?? null) !== null && (
               <Tooltip title="The control channel itself is encrypted (P_PARM_BCST reported an algorithm id), so trunking messages may not decode.">
                 <Chip
-                  size="small"
                   color="error"
                   variant="outlined"
                   label={`CC encrypted (alg ${hexOrDash(system.encryption_algid)})`}
@@ -153,26 +134,21 @@ export default function SiteInfoCard() {
         )}
 
         <Box>
-          <Typography variant="subtitle2" gutterBottom>Frequencies</Typography>
+          <SectionHeading title="Frequencies" meta={`${freqEntries.length} known`} />
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(220px, 100%), 1fr))', gap: 0.75 }}>
             {freqEntries.map(([hz, data]) => (
-              <Box
+              <InsetPanel
                 key={hz}
-                sx={{
-                  border: 1, borderColor: 'divider', borderRadius: 1, p: 0.75,
-                  display: 'flex', flexDirection: 'column', gap: 0.25,
-                }}
+                sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}
               >
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 0.5 }}>
                   <Typography variant="body2" fontFamily="monospace" fontWeight="medium">
                     {formatFreq(hz)}
                   </Typography>
                   <Chip
-                    size="small"
                     label={data.type}
                     color={FREQ_TYPE_COLOR[data.type] ?? 'default'}
                     variant={data.type === 'control' ? 'filled' : 'outlined'}
-                    sx={{ height: 18, fontSize: '0.65rem' }}
                   />
                 </Box>
                 <Typography variant="caption" color="text.secondary">
@@ -184,7 +160,7 @@ export default function SiteInfoCard() {
                       || Array.from(new Set(data.tgids)).slice(0, 3).join(', ')}
                   </Typography>
                 )}
-              </Box>
+              </InsetPanel>
             ))}
           </Box>
         </Box>

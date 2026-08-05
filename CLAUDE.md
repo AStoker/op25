@@ -243,6 +243,15 @@ numbers.
 
 The React app is expected to work on a phone as well as a desktop.
 
+- **Control sizing is a theme token, not a per-component prop.**
+  `CONTROL_HEIGHT` (32px) in `themeService.tsx` is the height of every button,
+  input, select and toggle, and `size="small"` is the default for all of them.
+  Inputs carry no floating labels — `components/common/Field` puts the caption
+  above the control instead, which is what lets the TGID box sit inline with
+  Hold/Whitelist/Lockout. The shared primitives (`Field`, `InfoRow`,
+  `ControlRow`, `SectionHeading`, `Hint`, `InsetPanel`, `SearchField`) are
+  documented in `www/app/AGENTS.md`; reach for one before hand-rolling a flex
+  row or an outlined `Box`.
 - Below `md` the layout switches to tabs (Live / Audio / System / Signal) in
   `App.tsx`; at `md` and above it keeps the two-column dashboard. A phone
   cannot usefully show ten cards at once.

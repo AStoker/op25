@@ -13,6 +13,21 @@ export interface PrimaryColor {
   main: string;
 }
 
+/**
+ * Height of every interactive control — button, input, select, toggle, icon
+ * button. Mixing MUI's own sizes is what stopped the old TGID and filter boxes
+ * lining up with the buttons beside them: a `size="small"` outlined input is
+ * 40px tall against a 32px button, and a floating label plus reserved helper
+ * text added another 30px on top of that. One token, one height.
+ */
+export const CONTROL_HEIGHT = 32;
+
+/** Font size for control text (buttons, inputs, toggles) — MUI's own dense size. */
+const CONTROL_FONT = '0.8125rem';
+
+/** Chips are labels, not controls: deliberately smaller than CONTROL_HEIGHT. */
+const CHIP_HEIGHT = 22;
+
 export const PRESET_PRIMARY_COLORS: PrimaryColor[] = [
   { label: 'Blue', main: '#1976d2' },
   { label: 'Purple', main: '#9c27b0' },
@@ -132,6 +147,127 @@ export function ThemeServiceProvider({ children }: ThemeServiceProviderProps) {
               },
             }),
           },
+        },
+
+        // ---- Controls -----------------------------------------------------
+        // Everything below exists so a component never has to restate a size.
+        // If a control needs a different height, change CONTROL_HEIGHT, not the
+        // component.
+
+        MuiButton: {
+          defaultProps: { size: 'small', disableElevation: true },
+          styleOverrides: {
+            // Sentence case: the labels here are words like "Whitelist" and
+            // "Dump buffer", which read worse shouted.
+            root: { textTransform: 'none', fontWeight: 500 },
+            sizeSmall: ({ theme: t }) => ({
+              minHeight: CONTROL_HEIGHT,
+              paddingTop: 0,
+              paddingBottom: 0,
+              paddingLeft: t.spacing(1.25),
+              paddingRight: t.spacing(1.25),
+              fontSize: CONTROL_FONT,
+            }),
+          },
+        },
+        MuiButtonGroup: {
+          defaultProps: { size: 'small' },
+        },
+        MuiToggleButton: {
+          defaultProps: { size: 'small' },
+          styleOverrides: {
+            root: { textTransform: 'none' },
+            sizeSmall: ({ theme: t }) => ({
+              minHeight: CONTROL_HEIGHT,
+              paddingTop: 0,
+              paddingBottom: 0,
+              paddingLeft: t.spacing(1.25),
+              paddingRight: t.spacing(1.25),
+              fontSize: CONTROL_FONT,
+            }),
+          },
+        },
+        MuiToggleButtonGroup: {
+          defaultProps: { size: 'small' },
+        },
+        MuiIconButton: {
+          styleOverrides: {
+            // 6px around a `fontSize="small"` (20px) icon lands on exactly
+            // CONTROL_HEIGHT, so an icon button in a row of buttons or a table
+            // cell is as tall as they are. A medium icon inside a small button
+            // (the card-header chevron) is deliberately bigger.
+            sizeSmall: { padding: 6 },
+          },
+        },
+        MuiTab: {
+          styleOverrides: {
+            root: { textTransform: 'none' },
+          },
+        },
+
+        MuiTextField: {
+          defaultProps: { size: 'small', variant: 'outlined' },
+        },
+        MuiSelect: {
+          defaultProps: { size: 'small' },
+        },
+        MuiOutlinedInput: {
+          styleOverrides: {
+            root: { fontSize: CONTROL_FONT },
+            // The input keeps its intrinsic 1.4375em line box and the root
+            // centres it (InputBase is already a flex row), so the control is
+            // CONTROL_HEIGHT tall without hard-coding the inner text height —
+            // which a Select, whose "input" is a div, would not survive.
+            sizeSmall: ({ theme: t }) => ({
+              minHeight: CONTROL_HEIGHT,
+              '&.MuiInputBase-adornedStart': { paddingLeft: t.spacing(1) },
+              '&.MuiInputBase-adornedEnd': { paddingRight: t.spacing(0.5) },
+            }),
+            inputSizeSmall: ({ theme: t }) => ({
+              paddingTop: 0,
+              paddingBottom: 0,
+              paddingLeft: t.spacing(1.25),
+              paddingRight: t.spacing(1.25),
+            }),
+          },
+        },
+        MuiMenuItem: {
+          styleOverrides: {
+            // Match the closed control: a 16px dropdown over a 13px select
+            // looks like two different widgets.
+            root: { fontSize: CONTROL_FONT },
+          },
+        },
+        MuiFormHelperText: {
+          styleOverrides: {
+            // Helper text is a caption under a field, not an indented aside.
+            root: { marginLeft: 0, marginRight: 0 },
+          },
+        },
+        MuiFormControlLabel: {
+          styleOverrides: {
+            // Matches the caption/control type scale, so switch rows no longer
+            // each wrap their label in a <Typography> to get there.
+            label: { fontSize: CONTROL_FONT },
+          },
+        },
+
+        MuiChip: {
+          defaultProps: { size: 'small' },
+          styleOverrides: {
+            sizeSmall: { height: CHIP_HEIGHT, fontSize: '0.72rem' },
+            labelSmall: ({ theme: t }) => ({
+              paddingLeft: t.spacing(0.75),
+              paddingRight: t.spacing(0.75),
+            }),
+            // Icons inside a chip have to be scaled down explicitly; MUI's own
+            // default is sized for the medium chip.
+            iconSmall: { fontSize: '0.9rem', marginLeft: 4, marginRight: -3 },
+            deleteIconSmall: { fontSize: '0.9rem' },
+          },
+        },
+        MuiTooltip: {
+          defaultProps: { arrow: true, enterDelay: 400 },
         },
       },
     });

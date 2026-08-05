@@ -5,6 +5,7 @@ import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 import CardShell from '../CardShell/CardShell';
+import InsetPanel from '../common/InsetPanel';
 import { useOp25Service } from '../../services/op25Service';
 import type { PlotMode, PlotPayload } from '../../types/op25';
 
@@ -63,7 +64,7 @@ function PlotView({ plot }: PlotViewProps) {
   }, [data, style, xMin, xMax, yMin, yMax]);
 
   return (
-    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}>
+    <InsetPanel>
       <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
         {plot.title || mode}
       </Typography>
@@ -104,7 +105,7 @@ function PlotView({ plot }: PlotViewProps) {
       <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
         ch {plot.chan} · {data.length} pts
       </Typography>
-    </Box>
+    </InsetPanel>
   );
 }
 
@@ -129,7 +130,6 @@ export default function SignalPlotsCard() {
     <CardShell title="Signal Plots">
       <Stack spacing={1.5}>
         <ToggleButtonGroup
-          size="small"
           value={Array.from(activePlotModes)}
           onChange={(_, modes) => {
             // Diff the new selection against current and toggle each delta to
@@ -143,12 +143,7 @@ export default function SignalPlotsCard() {
           sx={{ flexWrap: 'wrap' }}
         >
           {PLOT_MODES.map(({ mode, label }) => (
-            <ToggleButton
-              key={mode}
-              value={mode}
-              aria-label={`toggle ${label}`}
-              sx={{ textTransform: 'none' }}
-            >
+            <ToggleButton key={mode} value={mode} aria-label={`toggle ${label}`}>
               {label}
             </ToggleButton>
           ))}

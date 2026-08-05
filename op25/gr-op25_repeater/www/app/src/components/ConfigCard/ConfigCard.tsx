@@ -9,6 +9,9 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import CardShell from '../CardShell/CardShell';
+import Hint from '../common/Hint';
+import InsetPanel from '../common/InsetPanel';
+import SectionHeading from '../common/SectionHeading';
 import { useOp25Service } from '../../services/op25Service';
 
 /**
@@ -42,30 +45,27 @@ export default function ConfigCard() {
     <CardShell title="Configuration">
       <Stack spacing={1.5}>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip size="small" variant="outlined" label={`${devices.length} device${devices.length === 1 ? '' : 's'}`} />
-          <Chip size="small" variant="outlined" label={`${channels.length} channel${channels.length === 1 ? '' : 's'}`} />
-          <Chip size="small" variant="outlined" label={`${trunkChans.length} trunked system${trunkChans.length === 1 ? '' : 's'}`} />
+          <Chip variant="outlined" label={`${devices.length} device${devices.length === 1 ? '' : 's'}`} />
+          <Chip variant="outlined" label={`${channels.length} channel${channels.length === 1 ? '' : 's'}`} />
+          <Chip variant="outlined" label={`${trunkChans.length} trunked system${trunkChans.length === 1 ? '' : 's'}`} />
           {config.trunking?.module && (
             <Tooltip title="Trunking module handling these systems">
-              <Chip size="small" variant="outlined" label={config.trunking.module} />
+              <Chip variant="outlined" label={config.trunking.module} />
             </Tooltip>
           )}
           {terminalConfig?.terminal_type && (
             <Tooltip title="Terminal type from the config's terminal block">
-              <Chip size="small" variant="outlined" label={terminalConfig.terminal_type} />
+              <Chip variant="outlined" label={terminalConfig.terminal_type} />
             </Tooltip>
           )}
         </Stack>
 
         {trunkChans.length > 0 && (
           <Box>
-            <Typography variant="subtitle2" gutterBottom>Trunked systems</Typography>
+            <SectionHeading title="Trunked systems" />
             <Stack spacing={0.5}>
               {trunkChans.map((c, i) => (
-                <Box
-                  key={`${c.sysname || 'system'}-${i}`}
-                  sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 0.75 }}
-                >
+                <InsetPanel key={`${c.sysname || 'system'}-${i}`}>
                   <Typography variant="body2" fontWeight="medium">{c.sysname || `system ${i}`}</Typography>
                   <Typography variant="caption" color="text.secondary" display="block" sx={{ overflowWrap: 'anywhere' }}>
                     CC list: {c.control_channel_list || '—'}
@@ -82,7 +82,7 @@ export default function ConfigCard() {
                       {c.blacklist ? `blacklist: ${c.blacklist}` : ''}
                     </Typography>
                   )}
-                </Box>
+                </InsetPanel>
               ))}
             </Stack>
           </Box>
@@ -110,10 +110,10 @@ export default function ConfigCard() {
             >
               {JSON.stringify(config, null, 2)}
             </Box>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            <Hint>
               Read-only. Edit the JSON file on the server and restart —
               the decoder does not accept configuration changes over the socket.
-            </Typography>
+            </Hint>
           </AccordionDetails>
         </Accordion>
       </Stack>

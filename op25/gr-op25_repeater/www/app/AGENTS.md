@@ -29,6 +29,7 @@ app/                        ← this directory
       useSystemState.ts     the SYSTEM_STATE health payload
       useIsPhone.ts         drop low-value table columns below sm
     components/<Name>Card/  one card per panel, all wrapped in CardShell
+    components/common/      the design-system primitives (see below)
     utils/systemKind.ts     P25 / SmartNet / Connect+ branching + safe formatters
     types/op25.ts           decoder payload shapes
     types/websocket.ts      envelope + upstream/downstream unions
@@ -47,6 +48,45 @@ yarn dev         # Vite dev server
 `../dist` is a **committed build artifact**. It can drift from `src/` — rebuild
 before testing, or you will be looking at old code and drawing wrong
 conclusions.
+
+---
+
+## Design system
+
+Sizing lives in the **theme** (`services/themeService.tsx`), not in components.
+A component that restates a size is a bug waiting to drift.
+
+- `CONTROL_HEIGHT` (32px) is the height of every interactive control — button,
+  input, select, toggle, and a small icon button holding a `fontSize="small"`
+  icon. MUI's own `size="small"` disagrees with itself (a 40px outlined input
+  against a 32px button), which is why the TGID and filter boxes used to sit a
+  head taller than the buttons next to them. Change the token, not a component.
+- `size="small"` is the **default** for Button, ButtonGroup, ToggleButton(Group),
+  TextField, Select and Chip. Don't pass it.
+- Buttons and toggles are sentence case (`textTransform: none`), so are Tabs.
+- Chips are 22px — deliberately smaller than a control, because they are labels,
+  not things you click. Chip icons are scaled by the theme; don't set
+  `sx={{ fontSize }}` on them.
+- Tooltips default to `arrow` with a 400ms delay.
+
+**No floating input labels anywhere.** A label inside the box has to grow the
+box, and it disagrees with the caption-above-value pattern every read-only field
+already uses. Instead:
+
+| Need | Use |
+|---|---|
+| Labelled control | `common/Field` — caption above, optional one-line `hint`/`error` below |
+| Read-only labelled value | `common/InfoRow` — same shape, plus `tooltip` for radio jargon |
+| A row of controls | `common/ControlRow` — one gap, one wrap rule, one alignment |
+| Heading inside a card | `common/SectionHeading` — `title` + muted `meta` + right-aligned `action` |
+| Note under a control | `common/Hint` (what `Field` renders internally) |
+| Repeated outlined tile | `common/InsetPanel` — `highlight` for a keyword hit |
+| Filter box in a heading | `common/SearchField` — magnifier, placeholder, clear button |
+
+Never use `helperText=" "` to reserve a line: that is what made the TGID field
+taller than its buttons whether or not it had anything to say. Put the message
+in a `Hint` under the whole row, where appearing and disappearing costs the row
+nothing.
 
 ---
 

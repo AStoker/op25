@@ -13,6 +13,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import CircularProgress from '@mui/material/CircularProgress';
 import CardShell from '../CardShell/CardShell';
+import InsetPanel from '../common/InsetPanel';
 import { useOp25Service } from '../../services/op25Service';
 import { highlight } from '../../utils/callTranscripts';
 import type { CallClip } from '../../types/op25';
@@ -126,19 +127,9 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
   const source = clip.source_tag || (clip.source ? String(clip.source) : '');
 
   return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: alert ? 'warning.main' : 'divider',
-        borderRadius: 1,
-        p: { xs: 1, sm: 1.25 },
-        display: 'flex',
-        gap: 1,
-        alignItems: 'flex-start',
-        // A tinted background rather than a solid warning colour, so the
-        // transcript stays legible in both light and dark mode.
-        bgcolor: alert ? 'action.hover' : 'transparent',
-      }}
+    <InsetPanel
+      highlight={alert}
+      sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}
     >
       <Tooltip title={playing ? 'Stop' : 'Play this call'}>
         <IconButton
@@ -162,11 +153,9 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
           </Typography>
           {alert && (
             <Chip
-              size="small"
               color="warning"
-              icon={<NotificationsActiveIcon sx={{ fontSize: '0.9rem' }} />}
+              icon={<NotificationsActiveIcon />}
               label={clip.keywords.join(', ')}
-              sx={{ height: 20, fontSize: '0.7rem' }}
             />
           )}
         </Box>
@@ -221,7 +210,7 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
           <DownloadIcon fontSize="small" />
         </IconButton>
       </Tooltip>
-    </Box>
+    </InsetPanel>
   );
 }
 
@@ -284,13 +273,13 @@ export default function TranscriptsCard() {
                 surface it here instead of making the user curl it. */}
             {ha && (
               <Tooltip title={ha.detail}>
-                <Chip size="small" variant="outlined" color={ha.color} label={ha.label} />
+                <Chip variant="outlined" color={ha.color} label={ha.label} />
               </Tooltip>
             )}
           </Stack>
           <FormControlLabel
             control={<Switch size="small" checked={alertsOnly} onChange={(e) => setAlertsOnly(e.target.checked)} />}
-            label={<Typography variant="caption">Keyword hits only</Typography>}
+            label="Keyword hits only"
             sx={{ mr: 0 }}
           />
         </Box>

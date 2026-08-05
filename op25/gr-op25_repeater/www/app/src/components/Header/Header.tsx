@@ -177,7 +177,6 @@ export default function Header({ navItems }: HeaderProps) {
                 || `${health.site_name || 'decoder'}${health.trunk_id ? ` · ${health.trunk_id}` : ''} · up ${formatUptime(health.uptime)}`}
             >
               <Chip
-                size="small"
                 variant="outlined"
                 label={health.status === 'running'
                   ? `decoder · ${formatUptime(health.uptime)}`
@@ -195,7 +194,6 @@ export default function Header({ navItems }: HeaderProps) {
           {/* Connection state — a dot on phones, a labelled chip elsewhere,
               so the most important status is never the thing that wraps. */}
           <Chip
-            size="small"
             variant="outlined"
             label={CONNECTION_LABEL[status]}
             sx={{
@@ -243,7 +241,7 @@ export default function Header({ navItems }: HeaderProps) {
                     onChange={(e) => setSmartColors(e.target.checked)}
                   />
                 }
-                label={<Typography variant="body2">Smart colours</Typography>}
+                label="Smart colours"
               />
               <Typography variant="caption" color="text.secondary" display="block">
                 Tint talkgroup tags by keyword, using the{' '}

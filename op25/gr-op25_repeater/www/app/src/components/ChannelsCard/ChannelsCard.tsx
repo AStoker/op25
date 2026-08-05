@@ -64,6 +64,12 @@ import LockOpenIcon from '@mui/icons-material/LockOpen';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck';
 import CardShell from '../CardShell/CardShell';
+import ControlRow from '../common/ControlRow';
+import Field from '../common/Field';
+import Hint from '../common/Hint';
+import InsetPanel from '../common/InsetPanel';
+import SearchField from '../common/SearchField';
+import SectionHeading from '../common/SectionHeading';
 import { useIsPhone } from '../../hooks/useIsPhone';
 import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
@@ -266,14 +272,14 @@ export default function ChannelsCard() {
         {!phone && <TableCell>{row.lastActivity?.trim() ?? ''}</TableCell>}
         <TableCell>
           <Stack direction="row" spacing={0.5}>
-            {row.configured && 
+            {row.configured &&
             <Tooltip title="This talk-group is configured in tgid_tags_file on the server">
-              <Chip size="small" label="cfg" variant="outlined" />
+              <Chip label="cfg" variant="outlined" />
             </Tooltip>
             }
-            {row.seen       && 
+            {row.seen &&
             <Tooltip title="This talk-group has been seen active on the air (from frequency_data updates)">
-              <Chip size="small" label="seen" color="success" variant="outlined" />
+              <Chip label="seen" color="success" variant="outlined" />
             </Tooltip>
             }
           </Stack>
@@ -302,13 +308,9 @@ export default function ChannelsCard() {
     <CardShell title="Channels / Talkgroups">
       <Stack spacing={2}>
         {/* Channel selector */}
-        <Box>
-          <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
-            Active channel
-          </Typography>
+        <Field label="Active channel" sx={{ maxWidth: { sm: 360 } }}>
           {channelIds.length > 0 ? (
             <Select
-              size="small"
               value={selectedChannelId ?? ''}
               onChange={(e) => selectChannel(String(e.target.value))}
               fullWidth
@@ -329,33 +331,32 @@ export default function ChannelsCard() {
               No channels reported yet
             </Typography>
           )}
-        </Box>
+        </Field>
 
         {/* Configured channels (from richland-single.json style config) */}
         {config?.channels?.length ? (
           <Box>
-            <Typography variant="subtitle2" gutterBottom>Configured channels</Typography>
+            <SectionHeading title="Configured channels" />
             <Stack spacing={0.5}>
               {config.channels.map((c) => (
-                <Box
+                <InsetPanel
                   key={c.name}
                   sx={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    border: 1, borderColor: 'divider', borderRadius: 1, p: 0.75, gap: 1,
+                    display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'center', gap: 1,
                   }}
                 >
-                  <Box>
+                  <Box sx={{ minWidth: 0 }}>
                     <Typography variant="body2" fontWeight="medium">{c.name}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {c.trunking_sysname} · {c.demod_type} · {c.device}
                     </Typography>
                   </Box>
                   <Chip
-                    size="small"
                     label={c.enable_analog === 'on' ? 'analog' : 'digital'}
                     variant="outlined"
                   />
-                </Box>
+                </InsetPanel>
               ))}
             </Stack>
           </Box>
@@ -365,79 +366,84 @@ export default function ChannelsCard() {
 
         {/* Talkgroup table */}
         <Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75, gap: 1, flexWrap: 'wrap' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography variant="subtitle2">Talk Groups</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {rows.length} known
-              </Typography>
-              {heldTgid > 0 && (
-                <Chip
-                  size="small"
-                  color="warning"
-                  icon={<LockIcon sx={{ fontSize: '0.9rem' }} />}
-                  label={`Hold ${heldTgid}`}
-                  onDelete={releaseHold}
-                  deleteIcon={<LockOpenIcon />}
-                />
-              )}
-            </Box>
-            <TextField
-              size="small"
-              label="Filter tag"
-              value={tagFilter}
-              onChange={(e) => setTagFilter(e.target.value)}
-              placeholder="Type to filter..."
-              sx={{ width: { xs: '100%', sm: 240 } }}
-            />
-          </Box>
+          <SectionHeading
+            title="Talk Groups"
+            meta={
+              <>
+                <span>{rows.length} known</span>
+                {heldTgid > 0 && (
+                  <Chip
+                    color="warning"
+                    icon={<LockIcon />}
+                    label={`Hold ${heldTgid}`}
+                    onDelete={releaseHold}
+                    deleteIcon={<LockOpenIcon />}
+                  />
+                )}
+              </>
+            }
+            action={
+              <SearchField
+                value={tagFilter}
+                onChange={setTagFilter}
+                placeholder="Filter tag"
+                ariaLabel="filter talkgroups by tag"
+              />
+            }
+          />
 
           {/* Act on a TGID that is not in the table yet — the curses terminal's
-              H / W / B prompts, which had no browser equivalent. */}
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            flexWrap="wrap"
-            useFlexGap
-            sx={{ mb: 1 }}
-          >
-            <TextField
-              size="small"
-              label="TGID"
-              value={manualTgid}
-              onChange={(e) => setManualTgid(e.target.value.replace(/[^0-9]/g, ''))}
-              error={manualTgid !== '' && !manualTgidValid}
-              helperText={manualTgid !== '' && !manualTgidValid ? '1–65534' : ' '}
-              inputProps={{ inputMode: 'numeric', 'aria-label': 'talkgroup id' }}
-              sx={{ width: 120 }}
-            />
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={!manualTgidValid}
-              onClick={() => { holdTalkGroup(manualTgidValue); setManualTgid(''); }}
-            >
-              Hold
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={!manualTgidValid}
-              onClick={() => { whitelistTalkGroup(manualTgidValue); setManualTgid(''); }}
-            >
-              Whitelist
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              color="error"
-              disabled={!manualTgidValid}
-              onClick={() => { lockoutTalkGroup(manualTgidValue); setManualTgid(''); }}
-            >
-              Lockout
-            </Button>
-          </Stack>
+              H / W / B prompts, which had no browser equivalent. The input is
+              unlabelled and exactly as tall as the buttons, so the whole action
+              reads as one row. */}
+          <Box sx={{ mb: 1 }}>
+            <ControlRow>
+              <TextField
+                value={manualTgid}
+                onChange={(e) => setManualTgid(e.target.value.replace(/[^0-9]/g, ''))}
+                error={manualTgid !== '' && !manualTgidValid}
+                placeholder="TGID"
+                slotProps={{
+                  htmlInput: {
+                    inputMode: 'numeric',
+                    maxLength: 5,
+                    'aria-label': 'talkgroup id',
+                  },
+                }}
+                sx={{ width: 92 }}
+              />
+              <Button
+                variant="outlined"
+                disabled={!manualTgidValid}
+                onClick={() => { holdTalkGroup(manualTgidValue); setManualTgid(''); }}
+              >
+                Hold
+              </Button>
+              <Button
+                variant="outlined"
+                disabled={!manualTgidValid}
+                onClick={() => { whitelistTalkGroup(manualTgidValue); setManualTgid(''); }}
+              >
+                Whitelist
+              </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                disabled={!manualTgidValid}
+                onClick={() => { lockoutTalkGroup(manualTgidValue); setManualTgid(''); }}
+              >
+                Lockout
+              </Button>
+            </ControlRow>
+            {/* Under the row, not inside the field: helper text on the input
+                would make it taller than the buttons whether or not it says
+                anything. */}
+            <Hint error={manualTgid !== '' && !manualTgidValid}>
+              {manualTgid !== '' && !manualTgidValid
+                ? 'TGID must be between 1 and 65534.'
+                : 'Act on a talkgroup before it appears in the table.'}
+            </Hint>
+          </Box>
           {rows.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
               No talk-groups seen yet.

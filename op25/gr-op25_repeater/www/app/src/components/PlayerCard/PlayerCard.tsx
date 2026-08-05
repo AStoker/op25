@@ -13,6 +13,8 @@ import StopIcon from '@mui/icons-material/Stop';
 import SkipNextIcon from '@mui/icons-material/SkipNext';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import CardShell from '../CardShell/CardShell';
+import Field from '../common/Field';
+import InfoRow from '../common/InfoRow';
 import { useWebSocketService } from '../../services/websocketService';
 import { useAudioStream } from '../../hooks/useAudioStream';
 import { audioSourceLabel, useAudioSources, AGGREGATE_AUDIO_URL } from '../../hooks/useAudioSources';
@@ -20,26 +22,6 @@ import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedChannel, useSelectedSystem } from '../../services/op25Service';
 
 const AUDIO_STREAM_URL = AGGREGATE_AUDIO_URL;
-
-interface InfoRowProps {
-  label: string;
-  value: string;
-  /** Smart-colour tint, when the value is a talkgroup tag. */
-  color?: string;
-}
-
-function InfoRow({ label, value, color }: InfoRowProps) {
-  return (
-    <Box>
-      <Typography variant="caption" color="text.secondary" display="block" lineHeight={1.3}>
-        {label}
-      </Typography>
-      <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere', color }}>
-        {value}
-      </Typography>
-    </Box>
-  );
-}
 
 function formatFreq(hz: number | null | undefined): string {
   if (!hz || !Number.isFinite(hz)) return '—';
@@ -112,7 +94,7 @@ export default function PlayerCard() {
         ? 'Call is encrypted — audio may not decode'
         : 'Call is unencrypted',
       color: channel.encrypted ? 'error' : 'success',
-      icon:  <LockIcon sx={{ fontSize: '0.9rem' }} />,
+      icon:  <LockIcon />,
     });
     if (channel.emergency) {
       chips.push({
@@ -120,7 +102,7 @@ export default function PlayerCard() {
         label:   'Emergency',
         tooltip: 'Emergency call in progress',
         color:   'error',
-        icon:    <WarningAmberIcon sx={{ fontSize: '0.9rem' }} />,
+        icon:    <WarningAmberIcon />,
       });
     }
     if (channel.hold_tgid) {
@@ -167,7 +149,6 @@ export default function PlayerCard() {
             <Chip
               label={decoderStatusLabel}
               color={decoderStatusColor}
-              size="small"
               sx={{ textTransform: 'capitalize' }}
             />
           </Tooltip>
@@ -186,7 +167,7 @@ export default function PlayerCard() {
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
             {chips.map(({ key, label, tooltip, color, icon }) => (
               <Tooltip key={key} title={tooltip}>
-                <Chip label={label} color={color} size="small" icon={icon} />
+                <Chip label={label} color={color} icon={icon} />
               </Tooltip>
             ))}
           </Box>
@@ -252,24 +233,27 @@ export default function PlayerCard() {
             with more than one there is a real choice to make — a single mixed
             stream means hearing two conversations at once. */}
         {showSourcePicker && (
-          <TextField
-            select
-            size="small"
+          <Field
             label="Audio source"
-            value={sourceUrl}
-            onChange={(e) => setSourceUrl(e.target.value)}
-            helperText={sourceUrl === AGGREGATE_AUDIO_URL
+            hint={sourceUrl === AGGREGATE_AUDIO_URL
               ? 'All channels mixed together'
               : 'One channel only'}
             sx={{ maxWidth: { sm: 320 } }}
           >
-            <MenuItem value={AGGREGATE_AUDIO_URL}>All channels (mix)</MenuItem>
-            {selectableSources.map((src) => (
-              <MenuItem key={src.port} value={src.url}>
-                {audioSourceLabel(src)}
-              </MenuItem>
-            ))}
-          </TextField>
+            <TextField
+              select
+              value={sourceUrl}
+              onChange={(e) => setSourceUrl(e.target.value)}
+              slotProps={{ htmlInput: { 'aria-label': 'audio source' } }}
+            >
+              <MenuItem value={AGGREGATE_AUDIO_URL}>All channels (mix)</MenuItem>
+              {selectableSources.map((src) => (
+                <MenuItem key={src.port} value={src.url}>
+                  {audioSourceLabel(src)}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Field>
         )}
       </Box>
     </CardShell>
