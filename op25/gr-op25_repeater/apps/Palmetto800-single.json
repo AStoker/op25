@@ -2,7 +2,7 @@
     "devices": [
         {
             "name": "sdr0",
-            "args": "rtl=00000001",
+            "args": "rtl=00000101",
             "frequency": 859262500,
             "gains": "LNA:39",
             "gain_mode": false,
