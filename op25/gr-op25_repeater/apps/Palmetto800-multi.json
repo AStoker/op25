@@ -1,9 +1,10 @@
 {
+  "#note": "Three RTL-SDRs following ONE system (Palmetto800, RFSS 2 / Site 32). All three channels share trunking_sysname, so tk_p25 parks one receiver on the control channel and lets the other two follow simultaneous voice calls. The CC role floats: tune_voice() calls release_cc(), so any receiver may end up holding the CC. Set the 'args' serials to your real dongles (rtl_test -t / rtl_eeprom).",
   "devices": [
     {
       "name": "sdr0",
-      "args": "rtl=00000101",
-      "frequency": 860337500,
+      "args": "rtl=00000001",
+      "frequency": 859262500,
       "gains": "LNA:39",
       "gain_mode": false,
       "offset": 0,
@@ -15,7 +16,7 @@
     {
       "name": "sdr1",
       "args": "rtl=00000102",
-      "frequency": 853000000,
+      "frequency": 859262500,
       "gains": "LNA:39",
       "gain_mode": false,
       "offset": 0,
@@ -27,7 +28,7 @@
     {
       "name": "sdr2",
       "args": "rtl=00000103",
-      "frequency": 852000000,
+      "frequency": 859262500,
       "gains": "LNA:39",
       "gain_mode": false,
       "offset": 0,
@@ -39,14 +40,37 @@
   ],
   "channels": [
     {
-      "name": "Richland Palmetto 800",
+      "name": "Palmetto800 rx0",
       "device": "sdr0",
       "trunking_sysname": "Palmetto800",
       "demod_type": "cqpsk",
       "filter_type": "rc",
       "excess_bw": 0.2,
       "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458",
-      "meta_endpoint": "meta.json",
+      "if_rate": 24000,
+      "symbol_rate": 4800,
+      "enable_analog": "off"
+    },
+    {
+      "name": "Palmetto800 rx1",
+      "device": "sdr1",
+      "trunking_sysname": "Palmetto800",
+      "demod_type": "cqpsk",
+      "filter_type": "rc",
+      "excess_bw": 0.2,
+      "destination": "udp://127.0.0.1:23460, udp://127.0.0.1:23462",
+      "if_rate": 24000,
+      "symbol_rate": 4800,
+      "enable_analog": "off"
+    },
+    {
+      "name": "Palmetto800 rx2",
+      "device": "sdr2",
+      "trunking_sysname": "Palmetto800",
+      "demod_type": "cqpsk",
+      "filter_type": "rc",
+      "excess_bw": 0.2,
+      "destination": "udp://127.0.0.1:23464, udp://127.0.0.1:23466",
       "if_rate": 24000,
       "symbol_rate": 4800,
       "enable_analog": "off"
@@ -57,13 +81,15 @@
     "chans": [
       {
         "sysname": "Palmetto800",
-        "control_channel_list": "860.33750,853.53750,853.03750,852.53750",
+        "control_channel_list": "859.26250,853.50000,855.46250,860.88750",
         "tgid_tags_file": "palmetto_tgs.tsv",
         "nac": "0x1D1",
+        "#site": "RFSS 2 / Site 32 (0x20); primary CC 859.2625, secondaries per sccb",
         "#sysid": "0x1D9",
         "#wacn": "0xBEE00",
         "whitelist": "",
-        "blacklist": ""
+        "blacklist": "",
+        "crypt_behavior": 2
       }
     ]
   },
@@ -76,6 +102,20 @@
         "udp_port": 23456,
         "audio_gain": 1.0,
         "number_channels": 1
+      },
+      {
+        "instance_name": "audio1",
+        "device_name": "default",
+        "udp_port": 23460,
+        "audio_gain": 1.0,
+        "number_channels": 1
+      },
+      {
+        "instance_name": "audio2",
+        "device_name": "default",
+        "udp_port": 23464,
+        "audio_gain": 1.0,
+        "number_channels": 1
       }
     ]
   },
@@ -84,7 +124,9 @@
     "terminal_type": "ws:0.0.0.0:8080",
     "http_plot_interval": 1.0,
     "audio_ports": [
-      23458
+      23458,
+      23462,
+      23466
     ],
     "home_assistant": {
       "enabled": true,
