@@ -1,15 +1,16 @@
 ########################################################################
 # Project setup
 ########################################################################
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.10)
 project(gr-op25 CXX C)
 enable_testing()
 
 #policy setup
 cmake_policy(SET CMP0011 NEW)
 cmake_policy(SET CMP0012 NEW)
-cmake_policy(SET CMP0026 OLD)
-cmake_policy(SET CMP0045 OLD)
+# CMP0026 (LOCATION target property) and CMP0045 (non-existent targets in
+# get_target_property) were both deprecated in CMake 3.0 and their OLD
+# behaviour has been removed. The codebase does not rely on either.
 
 set_property(GLOBAL PROPERTY ALLOW_DUPLICATE_CUSTOM_TARGETS 1)
 
@@ -123,41 +124,36 @@ endif()
 # Find gnuradio build dependencies
 ########################################################################
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+# CMAKE_CXX_STANDARD 17 is already set above; the explicit -std= flag is
+# redundant and can conflict with some toolchain wrappers.
 find_package(CppUnit)
 if(NOT CPPUNIT_FOUND)
     message(FATAL_ERROR "CppUnit required to compile op25")
 endif()
-set(GR_REQUIRED_COMPONENTS RUNTIME BLOCKS FILTER PMT)
-find_package(GnuradioRuntime)
-find_package(Gnuradio REQUIRED)
+# GnuradioRuntime was the pre-3.8 find module; GNURadio 3.10+ uses only
+# find_package(Gnuradio).
+find_package(Gnuradio "3.10" REQUIRED)
 MESSAGE(STATUS "GnuRadio version ${Gnuradio_VERSION}")
-if ("${Gnuradio_VERSION}" VERSION_LESS "2.7.0")
-    MESSAGE(FATAL_ERROR "OP25 Required Gnuradio minimum version 2.7.0")
-elseif ("${Gnuradio_VERSION}" VERSION_LESS "3.8.0")
-    set(OP25_PYTHON_VER 2)
-else()
-    set(OP25_PYTHON_VER 3)
-endif()
+# Python 2 and GNURadio < 3.8 are no longer supported; the sub-projects
+# both require GNURadio 3.10 which always uses Python 3.
+set(OP25_PYTHON_VER 3)
 MESSAGE(STATUS "Configuring for Python ${OP25_PYTHON_VER}")
-if(NOT EXISTS /usr/include/spdlog/fmt/bundled)
-  ADD_DEFINITIONS(-DSPDLOG_FMT_EXTERNAL=1)
+
+# Use cmake's cross-platform path search instead of a hardcoded Linux path.
+# Modern spdlog installations (Homebrew, Ubuntu 22+) ship fmt separately.
+find_path(SPDLOG_FMT_BUNDLED_INCLUDE "spdlog/fmt/bundled/core.h")
+if(NOT SPDLOG_FMT_BUNDLED_INCLUDE)
+    ADD_DEFINITIONS(-DSPDLOG_FMT_EXTERNAL=1)
 endif()
 
-execute_process(COMMAND python${OP25_PYTHON_VER} -c "
-import os
-import sys
-from distutils import sysconfig
-pfx = '/usr/local'
-m1 = os.path.join('lib', 'python' + '.'.join(sys.version.split('.')[:2]), 'dist-packages')
-m2 = sysconfig.get_python_lib(plat_specific=True, prefix='')
-f1 = os.path.join(pfx, m1)
-f2 = os.path.join(pfx, m2)
-ok2 = f2 in sys.path
-if ok2:
-	print(m2)
-else:
-	print(m1)
+# Determine the Python site-packages directory relative to the install prefix.
+# distutils.sysconfig was deprecated in Python 3.10 and removed in Python 3.12;
+# the stdlib sysconfig module is the correct replacement.
+execute_process(COMMAND python3 -c "
+import sys, sysconfig
+# get_path with empty base/platbase returns the path relative to a prefix.
+rel = sysconfig.get_path('platlib', vars={'platbase': '', 'base': ''}).lstrip('/')
+print(rel)
 " OUTPUT_VARIABLE OP25_PYTHON_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 MESSAGE(STATUS "OP25_PYTHON_DIR has been set to \"${OP25_PYTHON_DIR}\".")

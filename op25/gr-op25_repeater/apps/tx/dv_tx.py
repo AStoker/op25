@@ -27,9 +27,8 @@ import os
 import math
 from gnuradio import gr, audio, eng_notation
 from gnuradio import filter, blocks, analog, digital
-from gnuradio.eng_option import eng_option
 from gnuradio.fft import window
-from optparse import OptionParser
+import argparse
 
 import gnuradio.op25 as op25
 import gnuradio.op25_repeater as op25_repeater
@@ -77,31 +76,31 @@ class my_top_block(gr.top_block):
     def __init__(self):
         global output_gains, gain_adjust, gain_adjust_fullrate, mod_adjust
         gr.top_block.__init__(self)
-        parser = OptionParser(option_class=eng_option)
+        parser = argparse.ArgumentParser()
 
-        parser.add_option("-a", "--args", type="string", default="", help="device args")
-        parser.add_option("-A", "--alt-modulator-rate", type="int", default=50000, help="when mod rate is not a submutiple of IF rate")
-        parser.add_option("-b", "--bt", type="float", default=0.5, help="specify bt value")
-        parser.add_option("-c", "--config-file", type="string", default=None, help="specify the config file name")
-        parser.add_option("-f", "--file1", type="string", default=None, help="specify the input file slot 1")
-        parser.add_option("-F", "--file2", type="string", default=None, help="specify the input file slot 2 (DMR)")
-        parser.add_option("-g", "--gain", type="float", default=1.0, help="input gain")
-        parser.add_option("-i", "--if-rate", type="int", default=480000, help="output rate to sdr")
-        parser.add_option("-I", "--audio-input", type="string", default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
-        parser.add_option("-k", "--symbol-sink", type="string", default=None, help="write symbols to file (optional)")
-        parser.add_option("-N", "--gains", type="string", default=None, help="gain settings")
-        parser.add_option("-O", "--audio-output", type="string", default="default", help="pcm output device name.  E.g., hw:0,0 or /dev/dsp")
-        parser.add_option("-o", "--output-file", type="string", default=None, help="specify the output file")
-        parser.add_option("-p", "--protocol", type="choice", default=None, choices=('dmr', 'dstar', 'p25', 'ysf'), help="specify protocol: dmr, dstar, p25, ysf")
-        parser.add_option("-q", "--frequency-correction", type="float", default=0.0, help="ppm")
-        parser.add_option("-Q", "--frequency", type="float", default=0.0, help="Hz")
-        parser.add_option("-r", "--repeat", action="store_true", default=False, help="input file repeat")
-        parser.add_option("-R", "--fullrate-mode", action="store_true", default=False, help="ysf fullrate")
-        parser.add_option("-s", "--modulator-rate", type="int", default=48000, help="must be submultiple of IF rate - see also -A")
-        parser.add_option("-S", "--alsa-rate", type="int", default=48000, help="sound source/sink sample rate")
-        parser.add_option("-t", "--test", type="string", default=None, help="test pattern symbol file")
-        parser.add_option("-v", "--verbose", type="int", default=0, help="additional output")
-        (options, args) = parser.parse_args()
+        parser.add_argument("-a", "--args", type=str, default="", help="device args")
+        parser.add_argument("-A", "--alt-modulator-rate", type=int, default=50000, help="when mod rate is not a submutiple of IF rate")
+        parser.add_argument("-b", "--bt", type=float, default=0.5, help="specify bt value")
+        parser.add_argument("-c", "--config-file", type=str, default=None, help="specify the config file name")
+        parser.add_argument("-f", "--file1", type=str, default=None, help="specify the input file slot 1")
+        parser.add_argument("-F", "--file2", type=str, default=None, help="specify the input file slot 2 (DMR)")
+        parser.add_argument("-g", "--gain", type=float, default=1.0, help="input gain")
+        parser.add_argument("-i", "--if-rate", type=int, default=480000, help="output rate to sdr")
+        parser.add_argument("-I", "--audio-input", type=str, default="", help="pcm input device name.  E.g., hw:0,0 or /dev/dsp")
+        parser.add_argument("-k", "--symbol-sink", type=str, default=None, help="write symbols to file (optional)")
+        parser.add_argument("-N", "--gains", type=str, default=None, help="gain settings")
+        parser.add_argument("-O", "--audio-output", type=str, default="default", help="pcm output device name.  E.g., hw:0,0 or /dev/dsp")
+        parser.add_argument("-o", "--output-file", type=str, default=None, help="specify the output file")
+        parser.add_argument("-p", "--protocol", type=str, default=None, choices=['dmr', 'dstar', 'p25', 'ysf'], help="specify protocol: dmr, dstar, p25, ysf")
+        parser.add_argument("-q", "--frequency-correction", type=float, default=0.0, help="ppm")
+        parser.add_argument("-Q", "--frequency", type=float, default=0.0, help="Hz")
+        parser.add_argument("-r", "--repeat", action="store_true", default=False, help="input file repeat")
+        parser.add_argument("-R", "--fullrate-mode", action="store_true", default=False, help="ysf fullrate")
+        parser.add_argument("-s", "--modulator-rate", type=int, default=48000, help="must be submultiple of IF rate - see also -A")
+        parser.add_argument("-S", "--alsa-rate", type=int, default=48000, help="sound source/sink sample rate")
+        parser.add_argument("-t", "--test", type=str, default=None, help="test pattern symbol file")
+        parser.add_argument("-v", "--verbose", type=int, default=0, help="additional output")
+        options = parser.parse_args()
 
         max_inputs = 1
 

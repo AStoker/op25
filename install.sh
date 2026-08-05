@@ -33,7 +33,12 @@ if [ ${GR_VER} = "3.10" ]; then
     sudo apt-get update
     echo "Installing dependencies"
     sudo apt-get build-dep gnuradio $([ "$FORCE" = true ] && echo "-y")
-    sudo apt-get install gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev libhackrf-dev liborc-dev cmake git build-essential pkg-config doxygen clang-format python3-pybind11 python3-numpy python3-waitress python3-requests gnuplot-x11 libsndfile1-dev libspdlog-dev $([ "$FORCE" = true ] && echo "-y")
+    sudo apt-get install gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev libhackrf-dev liborc-dev cmake git build-essential pkg-config doxygen clang-format python3-pybind11 python3-numpy python3-waitress python3-requests python3-websockets gnuplot-x11 libsndfile1-dev libspdlog-dev libportaudio2 python3-sounddevice $([ "$FORCE" = true ] && echo "-y")
+
+    echo "Installing Python web server dependencies"
+    # --break-system-packages is required on Debian/Ubuntu 23+ with PEP 668
+    pip3 install fastapi "uvicorn[standard]" --break-system-packages 2>/dev/null \
+        || pip3 install fastapi "uvicorn[standard]"
 
     # Tell op25 to use python3
     echo "/usr/bin/python3" > op25/gr-op25_repeater/apps/op25_python
@@ -64,4 +69,16 @@ cmake ../         2>&1 | tee cmake.log
 make              2>&1 | tee make.log
 sudo make install 2>&1 | tee install.log
 sudo ldconfig
+cd ..
+
+# Build the web GUI.  www/dist is committed, so this is not strictly required —
+# but a checkout can be newer than the artifact, and serving stale assets is
+# extremely confusing to debug.  Skipped (with a warning) when yarn is absent.
+if command -v yarn >/dev/null 2>&1; then
+    echo ====== building web GUI
+    ( cd op25/gr-op25_repeater/www/app && yarn install --frozen-lockfile && yarn build )
+else
+    echo "====== yarn not found: skipping web GUI build, using the committed www/dist"
+    echo "====== (install yarn and run 'yarn build' in op25/gr-op25_repeater/www/app to refresh it)"
+fi
 

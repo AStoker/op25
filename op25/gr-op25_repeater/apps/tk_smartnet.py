@@ -324,6 +324,7 @@ class osw_receiver(object):
                             self.add_default_tgid(tgid)
                         self.talkgroups[tgid]['tag'] = tag
                         self.talkgroups[tgid]['prio'] = prio
+                        self.talkgroups[tgid]['configured'] = True  # from tgid_tags_file, not seen on air
                     if self.debug > 1:
                         sys.stderr.write("%s [%d] setting tgid(%d), prio(%d), tag(%s)\n" % (log_ts.get(), self.msgq_id, tgid, prio, tag))
         except IOError as ex:
@@ -1847,6 +1848,7 @@ class osw_receiver(object):
             self.talkgroups[tgid]['mode'] = -1
             self.talkgroups[tgid]['receiver'] = None
             self.talkgroups[tgid]['status'] = 0
+            self.talkgroups[tgid]['configured'] = False
 
     def expire_talkgroups(self, curr_time):
         rc = False
@@ -1969,6 +1971,27 @@ class osw_receiver(object):
         d['patch_data']     = {}
         d['adjacent_data']  = {}
         d['last_tsbk']      = self.last_osw
+
+        # Site identity for the GUI.  NAC/WACN/RFSS and the band plan are P25
+        # concepts with no SmartNet equivalent, so they are deliberately absent
+        # rather than sent as zeros — the display hides what a system type does
+        # not have.
+        d['sysid_smartnet'] = self.rx_sys_id
+        d['siteid']         = self.rx_site_id
+        d['rxchan']         = int(self.rx_cc_freq) if self.rx_cc_freq is not None else None
+
+        # Talkgroup tags: every TG seen or loaded from tgid_tags_file, with the
+        # trunk priority.  Same shape tk_p25 publishes, so the UI needs no
+        # per-system-type special case for the talkgroup table.
+        tgid_tags = {}
+        with self.talkgroups_mutex:
+            for tgid, tg in self.talkgroups.items():
+                tgid_tags[str(tgid)] = {
+                    'tag':        tg.get('tag', ''),
+                    'configured': tg.get('configured', False),
+                    'prio':       tg.get('prio', TGID_DEFAULT_PRIO),
+                }
+        d['tgid_tags'] = tgid_tags
 
         t = time.time()
 

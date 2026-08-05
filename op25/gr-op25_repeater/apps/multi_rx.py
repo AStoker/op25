@@ -20,25 +20,21 @@
 # 02110-1301, USA.
 
 "true" '''\'
-DEFAULT_PYTHON2=/usr/bin/python
-DEFAULT_PYTHON3=/usr/bin/python3
+DEFAULT_PYTHON3=$(command -v python3 2>/dev/null || echo /usr/bin/python3)
 if [ -f op25_python ]; then
     OP25_PYTHON=$(cat op25_python)
 else
-    OP25_PYTHON="/usr/bin/python"
+    OP25_PYTHON="${DEFAULT_PYTHON3}"
 fi
 
-if [ -x $OP25_PYTHON ]; then
-    echo Using Python $OP25_PYTHON >&2
-    exec $OP25_PYTHON "$0" "$@"
-elif [ -x $DEFAULT_PYTHON2 ]; then
-    echo Using Python $DEFAULT_PYTHON2 >&2
-    exec $DEFAULT_PYTHON2 "$0" "$@"
-elif [ -x $DEFAULT_PYTHON3 ]; then
-    echo Using Python $DEFAULT_PYTHON3 >&2
-    exec $DEFAULT_PYTHON3 "$0" "$@"
+if [ -x "${OP25_PYTHON}" ]; then
+    echo Using Python ${OP25_PYTHON} >&2
+    exec "${OP25_PYTHON}" "$0" "$@"
+elif [ -x "${DEFAULT_PYTHON3}" ]; then
+    echo Using Python ${DEFAULT_PYTHON3} >&2
+    exec "${DEFAULT_PYTHON3}" "$0" "$@"
 else
-    echo Unable to find Python >&2
+    echo Unable to find Python 3 >&2
 fi
 exit 127
 '''
@@ -51,11 +47,14 @@ import json
 import traceback
 import osmosdr
 import importlib
+import inspect
 
 from gnuradio import audio, eng_notation, gr, filter, blocks, fft, analog, digital
-from gnuradio.eng_option import eng_option
+# eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
+# 3.10 and is not used by any option defined in this file; all radio parameters
+# (frequencies, sample rates, gains) come from the JSON config file, not CLI flags.
 from math import pi
-from optparse import OptionParser
+import argparse
 
 import gnuradio.op25 as op25
 import gnuradio.op25_repeater as op25_repeater
@@ -148,7 +147,10 @@ class device(object):
 
             for tup in config['gains'].split(','):
                 name, gain = tup.split(':')
-                self.src.set_gain(int(gain), str(name))
+                # Accept fractional gains ("LNA:49.6") — osmosdr rounds to the
+                # nearest supported step anyway, and int() alone raised
+                # ValueError at startup on a perfectly reasonable config.
+                self.src.set_gain(int(round(float(gain))), str(name))
 
             self.ppm = float(from_dict(config, 'ppm', "0.0"))
             self.src.set_freq_corr(int(round(self.ppm)))
@@ -182,6 +184,7 @@ class channel(object):
         self.tb = tb
         self.raw_sink = None
         self.raw_file = None
+        self.raw_sink_file = None
         self.throttle = None
         self.nbfm = None
         self.nbfm_mode = 0
@@ -310,19 +313,26 @@ class channel(object):
             self.raw_sink = blocks.file_sink(gr.sizeof_char, sink_file)
             self.tb.connect(self.demod, self.raw_sink)
             self.tb.unlock()
+            self.raw_sink_file = sink_file   # reported in channel_update for the UI
         else:                       # turn off raw symbol capture
             sys.stderr.write("%s Ending raw symbol capture\n" % log_ts.get())
             self.tb.lock()
             self.tb.disconnect(self.demod, self.raw_sink)
             self.tb.unlock()
             self.raw_sink = None
+            self.raw_sink_file = None
 
-    def set_plot_destination(self, plot): # only required for http terminal
+    def set_plot_destination(self, plot): # match plot rate/output to the terminal in use
         if plot is None or plot not in self.sinks or self.tb.terminal_type is None:
             return
         if self.tb.terminal_type == "http":
             self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
             self.sinks[plot][0].gnuplot.set_output_dir(self.tb.http_plot_directory)
+        elif self.tb.terminal_type == "ws":
+            # The browser renders these from the data stream, so no image
+            # directory is needed — but throttle to the same rate the http
+            # terminal uses for its images rather than sending every buffer.
+            self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
         else:
             self.sinks[plot][0].gnuplot.set_interval(self.tb.curses_plot_interval)
 
@@ -615,7 +625,10 @@ class rx_block (gr.top_block):
         return self.interactive
 
     def configure_audio(self, config):
-        audio_mod = config['module']
+        audio_mod = str(from_dict(config, 'module', ""))
+        if audio_mod == "":    # tolerate empty/missing module: audio disabled
+            sys.stderr.write("Audio module not specified; audio output disabled\n")
+            return
         if audio_mod.endswith('.py'):
             audio_mod = audio_mod[:-3]
         try:
@@ -647,7 +660,10 @@ class rx_block (gr.top_block):
             idx += 1
 
     def configure_terminal(self, config):
-        term_mod = config['module']
+        term_mod = str(from_dict(config, 'module', ""))
+        if term_mod == "":     # tolerate empty/missing module: no terminal
+            sys.stderr.write("Terminal module not specified; terminal disabled\n")
+            return
         if term_mod.endswith('.py'):
             term_mod = term_mod[:-3]
         try:
@@ -657,12 +673,28 @@ class rx_block (gr.top_block):
             sys.stderr.write("Error: unable to import terminal module: %s\n%s\n" % (config['module'], e))
             return
         term_type = str(from_dict(config,'terminal_type', "curses"))
-        self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type)
+        # Hand the terminal module the whole config.  websocket_server.py needs
+        # it to serve /api/config, to report system identity before the decoder
+        # produces its first update, and to discover the UDP audio ports it must
+        # bind.  Passed by keyword and only when accepted, so a third-party
+        # terminal module written against the original three-argument signature
+        # keeps working.
+        term_kwargs = {}
+        try:
+            if 'config' in inspect.signature(terminal.op25_terminal).parameters:
+                term_kwargs['config'] = self.config
+        except (TypeError, ValueError):
+            pass
+        self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type, **term_kwargs)
         self.terminal_type = self.terminal.get_terminal_type()
         self.terminal_config = config
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))
         self.http_plot_interval = float(from_dict(config, 'http_plot_interval', 1.0))
         self.http_plot_directory = str(from_dict(config, 'http_plot_directory', "../www/images"))
+        try:
+            os.makedirs(self.http_plot_directory, exist_ok=True)
+        except OSError as e:
+            sys.stderr.write("Warning: unable to create plot directory %s: %s\n" % (self.http_plot_directory, e))
         self.ui_timeout = float(from_dict(config, 'terminal_timeout', 5.0))
 
     def configure_trunking(self, config):
@@ -682,7 +714,10 @@ class rx_block (gr.top_block):
             sys.stderr.write("Enabled trunking module: %s\n" % config['module'])
 
     def configure_metadata(self, config):
-        meta_mod = config['module']
+        meta_mod = str(from_dict(config, 'module', ""))
+        if meta_mod == "":     # tolerate empty/missing module: metadata disabled
+            sys.stderr.write("Metadata module not specified; metadata streaming disabled\n")
+            return
         if meta_mod.endswith('.py'):
             meta_mod = meta_mod[:-3]
         try:
@@ -869,6 +904,30 @@ class rx_block (gr.top_block):
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).adj_tune(freq)
             ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+        elif s == 'set_freq':
+            # The curses terminal's 'f' key has always sent this; only rx.py
+            # implemented it, so under multi_rx the keystroke did nothing.
+            freq = msg.arg1()
+            msgq_id = int(msg.arg2())
+            chan = self.find_channel(msgq_id)
+            if chan is None:
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid, 'detail': "no such channel"})
+            elif chan.set_freq(freq):
+                sys.stderr.write("%s [%d] tuned to %f\n" % (log_ts.get(), msgq_id, (freq/1e6)))
+                ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+            else:
+                # Out of the device's usable span, and the device is not tunable.
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                               'detail': "cannot tune %f on this device" % (freq/1e6)})
+        elif s == 'add_default_config':
+            # rx.py builds a trunking config on the fly for a newly seen NAC
+            # (trunking.py:add_default_config).  multi_rx takes its systems from
+            # the JSON config and the tk_* modules have no equivalent, so say so
+            # rather than silently dropping the request.
+            sys.stderr.write("%s add_default_config is not supported by multi_rx "
+                             "(define the system in the config file instead)\n" % log_ts.get())
+            ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                           'detail': "add_default_config is not supported by multi_rx"})
         elif s == 'set_debug':
             dbglvl = int(msg.arg1())
             self.set_debug(dbglvl)
@@ -887,8 +946,13 @@ class rx_block (gr.top_block):
             js['uuid'] = m_uuid
             ui_rsp.append(js)
         elif s == 'set_full_config':
-            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
-            pass
+            # Never implemented: this replied 'ok' and did nothing, so the
+            # legacy UI's "save config" silently failed.  Writing the user's
+            # JSON from an unauthenticated browser is a deliberate non-goal —
+            # say so rather than pretending it worked.
+            sys.stderr.write("%s set_full_config is not supported; edit the config file instead\n" % log_ts.get())
+            ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                           'detail': "set_full_config is not supported; edit the config file instead"})
         elif s == 'get_ws_instances':
             js = {}
             js['json_type'] = "ws_instances"
@@ -946,6 +1010,7 @@ class rx_block (gr.top_block):
         for rx_id in params['channels']:                       # iterate and convert stream name to url
             params[rx_id]['ppm'] = self.find_channel(int(rx_id)).device.get_ppm()
             params[rx_id]['capture'] = False if self.find_channel(int(rx_id)).raw_sink is None else True
+            params[rx_id]['capture_file'] = self.find_channel(int(rx_id)).raw_sink_file
             params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error()
             s_name = params[rx_id]['stream']
             if s_name not in self.meta_streams:
@@ -988,6 +1053,7 @@ class rx_block (gr.top_block):
         self.kill()
         time.sleep(0.5) # allow a little time for processes and ports to end gracefully
         gr.top_block.stop(self)
+        gr.top_block.wait(self) # wait for all GNURadio block threads to finish before Python GC runs
 
 # data unit receive queue
 #
@@ -1020,28 +1086,15 @@ class du_queue_watcher(threading.Thread):
 
 class rx_main(object):
     def __init__(self):
-        def byteify(input):    # thx so
-            if sys.version[0] != '2':
-                return input
-            if isinstance(input, dict):
-                return {byteify(key): byteify(value)
-                        for key, value in list(input.items())}
-            elif isinstance(input, list):
-                return [byteify(element) for element in input]
-            elif isinstance(input, str):
-                return input.encode('utf-8')
-            else:
-                return input
-
         self.keep_running = True
 
         # command line argument parsing
-        parser = OptionParser(option_class=eng_option)
-        parser.add_option("-c", "--config-file", type="string", default=None, help="specify config file name")
-        parser.add_option("-v", "--verbosity", type="int", default=0, help="message debug level")
-        parser.add_option("-p", "--pause", action="store_true", default=False, help="block on startup")
-        parser.add_option("-d", "--dev-mode", action="store_true", default=False, help="enable developer mode")
-        (options, args) = parser.parse_args()
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-c", "--config-file", type=str, default=None, help="specify config file name")
+        parser.add_argument("-v", "--verbosity", type=int, default=0, help="message debug level")
+        parser.add_argument("-p", "--pause", action="store_true", default=False, help="block on startup")
+        parser.add_argument("-d", "--dev-mode", action="store_true", default=False, help="enable developer mode")
+        options = parser.parse_args()
 
         #if options.dev_mode:
         #    globals()["p25_demodulator"] = importlib.import_module("p25_demodulator_dev")
@@ -1052,10 +1105,7 @@ class rx_main(object):
         sys.stderr.write("Starting OP25 (pid = %d)\n" % (os.getpid()))
         if options.pause:
             sys.stdout.write("Ready for GDB to attach (pid = %d)\n" % (os.getpid(),))
-            if sys.version[0] > '2':
-                input("Press 'Enter' to continue...")
-            else:
-                raw_input("Press 'Enter' to continue...")
+            input("Press 'Enter' to continue...")
 
         if options.config_file == '-':
             config = json.loads(sys.stdin.read())
@@ -1063,11 +1113,8 @@ class rx_main(object):
             if options.config_file is None:
                 parser.print_help()
                 exit(1)
-            if sys.version[0] == '2':
-                config = json.loads(open(options.config_file).read())
-            else:
-                config = json.loads(open(options.config_file, encoding="utf-8-sig").read())
-        self.tb = rx_block(options.verbosity, config = byteify(config))
+            config = json.loads(open(options.config_file, encoding="utf-8-sig").read())
+        self.tb = rx_block(options.verbosity, config = config)
         self.q_watcher = du_queue_watcher(self.tb.ui_out_q, self.process_qmsg)
         sys.stderr.write('python version detected: %s\n' % sys.version)
 
@@ -1091,18 +1138,13 @@ class rx_main(object):
         except (KeyboardInterrupt):
             sys.stderr.write("Ctrl-C detected\n")
             self.tb.stop()
-            self.tb.kill()
             self.keep_running = False
         except Exception:
             sys.stderr.write('main: exception occurred\n')
             sys.stderr.write('main: exception:\n%s\n' % traceback.format_exc())
             self.tb.stop()
-            self.tb.kill()
             self.keep_running = False
 
 if __name__ == "__main__":
-    if sys.version[0] > '2':
-        pass
-        #sys.stderr = io.TextIOWrapper(sys.stderr.detach().detach(), write_through=True) # disable stderr buffering
     rx = rx_main()
     rx.run()

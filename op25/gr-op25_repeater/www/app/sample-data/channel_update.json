@@ -1,0 +1,29 @@
+{
+  "type": "SYSTEM_STATE",
+  "payload": {
+    "json_type": "channel_update",
+    "0": {
+      "freq": 857237500,
+      "tdma": null,
+      "tgid": 24681,
+      "system": "Palmetto800",
+      "tag": "Mid Tech Sec Dsp",
+      "srcaddr": 2324929,
+      "svcopts": 4,
+      "srctag": "",
+      "encrypted": 0,
+      "emergency": 0,
+      "hold_tgid": 0,
+      "mode": null,
+      "stream": "",
+      "msgqid": 0,
+      "name": "Richland Palmetto 800",
+      "ppm": 0.0,
+      "capture": false,
+      "error": -514
+    },
+    "channels": [
+      "0"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "type": "CALL_ACTIVITY",
+  "payload": {
+    "json_type": "call_log",
+    "log": []
+  }
+}

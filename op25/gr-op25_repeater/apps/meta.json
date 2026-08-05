@@ -1,7 +1,7 @@
 {
-    "icecastPass": "password",
-    "icecastMountpoint": "mountpoint",
-    "icecastServerAddress": "server.name:port",
+    "icecastPass": "RadioGoogoo",
+    "icecastMountpoint": "op25",
+    "icecastServerAddress": "sdrpi-test.local:8000",
     "delay": "0.0", "icecastMountExt": ".m3u",
     "meta_format_idle": "[idle]",
     "meta_format_tgid": "[%TGID%]",

@@ -1,0 +1,931 @@
+{
+  "type": "SYSTEM_STATE",
+  "payload": {
+    "json_type": "trunk_update",
+    "0": {
+      "type": "p25",
+      "system": "Palmetto800",
+      "top_line": "P25 WQDB301  System BEE00.1D9  Site 2.40  NAC 1D1  CC 860.337500  tsbks 1947",
+      "callsign": "WQDB301",
+      "nac": 465,
+      "syid": 473,
+      "rfid": 2,
+      "stid": 40,
+      "sysid": 473,
+      "rxchan": 860337500,
+      "txchan": 815337500,
+      "wacn": 781824,
+      "secondary": [
+        852537500,
+        853037500,
+        853537500
+      ],
+      "frequencies": {
+        "851537500": "- 851.537500  voice  [     25667     ]    Now      count 105",
+        "852537500": "- 852.537500  alt-cc [               ]  13.6s ago  count 77",
+        "853037500": "- 853.037500  alt-cc [               ]   4.1s ago  count 41",
+        "856237500": "- 856.237500  voice  [     25520     ]    Now      count 148",
+        "857237500": "- 857.237500  voice  [     27603     ]    Now      count 79",
+        "858237500": "- 858.237500  voice  [               ]   4.1s ago  count 61",
+        "858737500": "- 858.737500  voice  [               ]   6.1s ago  count 102",
+        "859337500": "- 859.337500  voice  [               ]   7.8s ago  count 74",
+        "853537500": "- 853.537500  alt-cc [               ]  Never      count 0",
+        "860337500": "- 860.337500  pri-cc [               ]    Now      count 1947"
+      },
+      "frequency_data": {
+        "851537500": {
+          "type": "voice",
+          "tgids": [
+            "25667",
+            "25667"
+          ],
+          "last_activity": "  Now",
+          "counter": 105,
+          "tags": [
+            "Cola PD North",
+            "Cola PD North"
+          ],
+          "srcaddrs": [
+            2407998,
+            2407998
+          ],
+          "srctags": [
+            "",
+            ""
+          ]
+        },
+        "852537500": {
+          "type": "alternate",
+          "tgids": [],
+          "last_activity": "13.6s",
+          "counter": 77,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "853037500": {
+          "type": "alternate",
+          "tgids": [],
+          "last_activity": " 4.1s",
+          "counter": 41,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "856237500": {
+          "type": "voice",
+          "tgids": [
+            "25520",
+            "25520"
+          ],
+          "last_activity": "  Now",
+          "counter": 148,
+          "tags": [
+            "RCSD Desk Sgt",
+            "RCSD Desk Sgt"
+          ],
+          "srcaddrs": [
+            2400881,
+            2400881
+          ],
+          "srctags": [
+            "",
+            ""
+          ]
+        },
+        "857237500": {
+          "type": "voice",
+          "tgids": [
+            "27603",
+            "27603"
+          ],
+          "last_activity": "  Now",
+          "counter": 79,
+          "tags": [
+            "SC DJJ Pub Safe",
+            "SC DJJ Pub Safe"
+          ],
+          "srcaddrs": [
+            2534213,
+            2534213
+          ],
+          "srctags": [
+            "",
+            ""
+          ]
+        },
+        "858237500": {
+          "type": "voice",
+          "tgids": [],
+          "last_activity": " 4.1s",
+          "counter": 61,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "858737500": {
+          "type": "voice",
+          "tgids": [],
+          "last_activity": " 6.1s",
+          "counter": 102,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "859337500": {
+          "type": "voice",
+          "tgids": [],
+          "last_activity": " 7.8s",
+          "counter": 74,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "853537500": {
+          "type": "alternate",
+          "tgids": [],
+          "last_activity": "Never",
+          "counter": 0,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        },
+        "860337500": {
+          "type": "control",
+          "tgids": [],
+          "last_activity": "  Now",
+          "counter": 1947,
+          "tags": [],
+          "srcaddrs": [],
+          "srctags": []
+        }
+      },
+      "patch_data": {
+        "27101": {
+          "27103": {
+            "sg": "27101",
+            "sgtag": "SCHP Smtr/Clrd",
+            "ga": "27103",
+            "gatag": "SCHP Lee/Krshw"
+          }
+        },
+        "27104": {
+          "27108": {
+            "sg": "27104",
+            "sgtag": "SCHP Lexington",
+            "ga": "27108",
+            "gatag": "DPS 1"
+          }
+        },
+        "27118": {
+          "27113": {
+            "sg": "27118",
+            "sgtag": "SCHP BmbBrn Disp",
+            "ga": "27113",
+            "gatag": "SCHP Oburg Disp"
+          }
+        },
+        "50223": {
+          "50231": {
+            "sg": "50223",
+            "sgtag": "SCHP York",
+            "ga": "50231",
+            "gatag": "SCHP Chst/Frfd"
+          }
+        }
+      },
+      "wuid_data": {
+        "006e97": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9006e97",
+          "srcaddr": 28311,
+          "tag": "",
+          "aff_ga": 27423,
+          "aff_ga_tag": "SC DNR Reg 4",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892036.721421
+        },
+        "007c61": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9007c61",
+          "srcaddr": 31841,
+          "tag": "",
+          "aff_ga": 25502,
+          "aff_ga_tag": "RCSD Reg 2",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892040.90757
+        },
+        "007c65": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9007c65",
+          "srcaddr": 31845,
+          "tag": "",
+          "aff_ga": 25667,
+          "aff_ga_tag": "Cola PD North",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892047.459025
+        },
+        "007c67": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9007c67",
+          "srcaddr": 31847,
+          "tag": "",
+          "aff_ga": 25668,
+          "aff_ga_tag": "Cola PD South",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892041.3005571
+        },
+        "007c9a": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9007c9a",
+          "srcaddr": 31898,
+          "tag": "",
+          "aff_ga": 27106,
+          "aff_ga_tag": "SCHP Richland",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892007.6225321
+        },
+        "22ca92": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d922ca92",
+          "srcaddr": 2280082,
+          "tag": "",
+          "aff_ga": 23501,
+          "aff_ga_tag": "Krsh Co SD Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892040.90814
+        },
+        "22cadc": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d922cadc",
+          "srcaddr": 2280156,
+          "tag": "",
+          "aff_ga": 23501,
+          "aff_ga_tag": "Krsh Co SD Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892031.6086788
+        },
+        "22e284": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d922e284",
+          "srcaddr": 2286212,
+          "tag": "",
+          "aff_ga": 23501,
+          "aff_ga_tag": "Krsh Co SD Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892046.154491
+        },
+        "22e47a": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d922e47a",
+          "srcaddr": 2286714,
+          "tag": "",
+          "aff_ga": 23541,
+          "aff_ga_tag": "Krsh Co FD Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892027.275713
+        },
+        "22f0ef": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d922f0ef",
+          "srcaddr": 2289903,
+          "tag": "",
+          "aff_ga": 23501,
+          "aff_ga_tag": "Krsh Co SD Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892036.063734
+        },
+        "2379d2": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d92379d2",
+          "srcaddr": 2324946,
+          "tag": "",
+          "aff_ga": 24681,
+          "aff_ga_tag": "Mid Tech Sec Dsp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892046.408978
+        },
+        "249f0d": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9249f0d",
+          "srcaddr": 2400013,
+          "tag": "",
+          "aff_ga": 25501,
+          "aff_ga_tag": "RCSD Reg 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892035.00436
+        },
+        "249f77": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9249f77",
+          "srcaddr": 2400119,
+          "tag": "",
+          "aff_ga": 25502,
+          "aff_ga_tag": "RCSD Reg 2",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892037.893192
+        },
+        "249fab": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9249fab",
+          "srcaddr": 2400171,
+          "tag": "",
+          "aff_ga": 25502,
+          "aff_ga_tag": "RCSD Reg 2",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892044.9681458
+        },
+        "24a0b5": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a0b5",
+          "srcaddr": 2400437,
+          "tag": "",
+          "aff_ga": 25506,
+          "aff_ga_tag": "RCSD Reg 6/7",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892028.460939
+        },
+        "24a0dd": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a0dd",
+          "srcaddr": 2400477,
+          "tag": "",
+          "aff_ga": 25501,
+          "aff_ga_tag": "RCSD Reg 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892020.1972852
+        },
+        "24a190": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a190",
+          "srcaddr": 2400656,
+          "tag": "",
+          "aff_ga": 25520,
+          "aff_ga_tag": "RCSD Desk Sgt",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892042.872405
+        },
+        "24a271": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a271",
+          "srcaddr": 2400881,
+          "tag": "",
+          "aff_ga": 25520,
+          "aff_ga_tag": "RCSD Desk Sgt",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892048.1186619
+        },
+        "24a32e": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a32e",
+          "srcaddr": 2401070,
+          "tag": "",
+          "aff_ga": 25504,
+          "aff_ga_tag": "RCSD Reg 4/5",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892017.1849668
+        },
+        "24a3f0": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a3f0",
+          "srcaddr": 2401264,
+          "tag": "",
+          "aff_ga": 25503,
+          "aff_ga_tag": "RCSD Reg 3",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892025.438069
+        },
+        "24a45d": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a45d",
+          "srcaddr": 2401373,
+          "tag": "",
+          "aff_ga": 25505,
+          "aff_ga_tag": "RCSD Ch 5",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892005.9078
+        },
+        "24a661": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a661",
+          "srcaddr": 2401889,
+          "tag": "",
+          "aff_ga": 25565,
+          "aff_ga_tag": "RC EMS 1 Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892034.616652
+        },
+        "24a6bf": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a6bf",
+          "srcaddr": 2401983,
+          "tag": "",
+          "aff_ga": 25552,
+          "aff_ga_tag": "CFD DISP",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892004.210579
+        },
+        "24a8c3": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a8c3",
+          "srcaddr": 2402499,
+          "tag": "",
+          "aff_ga": 25565,
+          "aff_ga_tag": "RC EMS 1 Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892042.6075861
+        },
+        "24a8f5": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924a8f5",
+          "srcaddr": 2402549,
+          "tag": "",
+          "aff_ga": 20020,
+          "aff_ga_tag": "SC Mut Aid 10",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892048.904694
+        },
+        "24aa18": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924aa18",
+          "srcaddr": 2402840,
+          "tag": "",
+          "aff_ga": 25565,
+          "aff_ga_tag": "RC EMS 1 Disp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892013.247543
+        },
+        "24b2d8": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924b2d8",
+          "srcaddr": 2405080,
+          "tag": "",
+          "aff_ga": 25668,
+          "aff_ga_tag": "Cola PD South",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892028.461049
+        },
+        "24b65d": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924b65d",
+          "srcaddr": 2405981,
+          "tag": "",
+          "aff_ga": 25668,
+          "aff_ga_tag": "Cola PD South",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892004.077854
+        },
+        "24b691": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924b691",
+          "srcaddr": 2406033,
+          "tag": "",
+          "aff_ga": 25552,
+          "aff_ga_tag": "CFD DISP",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892045.8861089
+        },
+        "24b764": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924b764",
+          "srcaddr": 2406244,
+          "tag": "",
+          "aff_ga": 25552,
+          "aff_ga_tag": "CFD DISP",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892031.469256
+        },
+        "24b792": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924b792",
+          "srcaddr": 2406290,
+          "tag": "",
+          "aff_ga": 25552,
+          "aff_ga_tag": "CFD DISP",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892008.6595469
+        },
+        "24bcbe": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924bcbe",
+          "srcaddr": 2407614,
+          "tag": "",
+          "aff_ga": 25669,
+          "aff_ga_tag": "Cola PD West",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892026.6243148
+        },
+        "24bd17": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924bd17",
+          "srcaddr": 2407703,
+          "tag": "",
+          "aff_ga": 25667,
+          "aff_ga_tag": "Cola PD North",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892040.7779
+        },
+        "24bdc7": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924bdc7",
+          "srcaddr": 2407879,
+          "tag": "",
+          "aff_ga": 25668,
+          "aff_ga_tag": "Cola PD South",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892045.097195
+        },
+        "24be18": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924be18",
+          "srcaddr": 2407960,
+          "tag": "",
+          "aff_ga": 25666,
+          "aff_ga_tag": "Cola PD Metro",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892016.921233
+        },
+        "24be3e": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924be3e",
+          "srcaddr": 2407998,
+          "tag": "",
+          "aff_ga": 25667,
+          "aff_ga_tag": "Cola PD North",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892051.268445
+        },
+        "24be74": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924be74",
+          "srcaddr": 2408052,
+          "tag": "",
+          "aff_ga": 25667,
+          "aff_ga_tag": "Cola PD North",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892014.297367
+        },
+        "24c519": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d924c519",
+          "srcaddr": 2409753,
+          "tag": "",
+          "aff_ga": 27882,
+          "aff_ga_tag": "USC PD 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892018.626704
+        },
+        "251549": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9251549",
+          "srcaddr": 2430281,
+          "tag": "",
+          "aff_ga": 26052,
+          "aff_ga_tag": "Sumter SD 2",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892007.228129
+        },
+        "2523f8": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d92523f8",
+          "srcaddr": 2434040,
+          "tag": "",
+          "aff_ga": 26052,
+          "aff_ga_tag": "Sumter SD 2",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892012.477247
+        },
+        "261497": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9261497",
+          "srcaddr": 2495639,
+          "tag": "",
+          "aff_ga": 27061,
+          "aff_ga_tag": "Moto Svc 27061",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892006.1706822
+        },
+        "262850": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9262850",
+          "srcaddr": 2500688,
+          "tag": "",
+          "aff_ga": 27104,
+          "aff_ga_tag": "SCHP Lexington",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892042.745833
+        },
+        "2629bc": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d92629bc",
+          "srcaddr": 2501052,
+          "tag": "",
+          "aff_ga": 27121,
+          "aff_ga_tag": "SCHP 113 BPS Dsp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892014.557365
+        },
+        "262a94": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9262a94",
+          "srcaddr": 2501268,
+          "tag": "",
+          "aff_ga": 27121,
+          "aff_ga_tag": "SCHP 113 BPS Dsp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892035.137354
+        },
+        "262d54": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9262d54",
+          "srcaddr": 2501972,
+          "tag": "",
+          "aff_ga": 27121,
+          "aff_ga_tag": "SCHP 113 BPS Dsp",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892032.262471
+        },
+        "2632d0": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d92632d0",
+          "srcaddr": 2503376,
+          "tag": "",
+          "aff_ga": 27106,
+          "aff_ga_tag": "SCHP Richland",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892028.7244291
+        },
+        "267a21": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9267a21",
+          "srcaddr": 2521633,
+          "tag": "",
+          "aff_ga": 27419,
+          "aff_ga_tag": "SC DNR Reg 3",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892020.988064
+        },
+        "267b59": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9267b59",
+          "srcaddr": 2521945,
+          "tag": "",
+          "aff_ga": 27419,
+          "aff_ga_tag": "SC DNR Reg 3",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892023.088871
+        },
+        "267c66": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d9267c66",
+          "srcaddr": 2522214,
+          "tag": "",
+          "aff_ga": 27423,
+          "aff_ga_tag": "SC DNR Reg 4",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892029.770012
+        },
+        "26ab45": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926ab45",
+          "srcaddr": 2534213,
+          "tag": "",
+          "aff_ga": 27603,
+          "aff_ga_tag": "SC DJJ Pub Safe",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892051.790635
+        },
+        "26d378": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926d378",
+          "srcaddr": 2544504,
+          "tag": "",
+          "aff_ga": 27801,
+          "aff_ga_tag": "SC DOR",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892048.120799
+        },
+        "26e20a": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926e20a",
+          "srcaddr": 2548234,
+          "tag": "",
+          "aff_ga": 27882,
+          "aff_ga_tag": "USC PD 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892033.828398
+        },
+        "26e235": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926e235",
+          "srcaddr": 2548277,
+          "tag": "",
+          "aff_ga": 20020,
+          "aff_ga_tag": "SC Mut Aid 10",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892043.0017412
+        },
+        "26e280": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926e280",
+          "srcaddr": 2548352,
+          "tag": "",
+          "aff_ga": 27882,
+          "aff_ga_tag": "USC PD 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892043.789304
+        },
+        "26e28e": {
+          "rfss": 2,
+          "site": 40,
+          "suid": "bee001d926e28e",
+          "srcaddr": 2548366,
+          "tag": "",
+          "aff_ga": 27882,
+          "aff_ga_tag": "USC PD 1",
+          "aff_aga": 0,
+          "aff_aga_tag": null,
+          "time": 1779892014.9573839
+        }
+      },
+      "last_tsbk": 1779892052.5689678,
+      "adjacent_data": {
+        "859262500": {
+          "rfid": 2,
+          "stid": 32,
+          "uplink": 814262500,
+          "table": 0
+        },
+        "853362500": {
+          "rfid": 2,
+          "stid": 80,
+          "uplink": 808362500,
+          "table": 0
+        },
+        "859462500": {
+          "rfid": 1,
+          "stid": 43,
+          "uplink": 814462500,
+          "table": 0
+        },
+        "853750000": {
+          "rfid": 1,
+          "stid": 65,
+          "uplink": 808750000,
+          "table": 0
+        },
+        "853662500": {
+          "rfid": 2,
+          "stid": 20,
+          "uplink": 808662500,
+          "table": 0
+        },
+        "856487500": {
+          "rfid": 2,
+          "stid": 81,
+          "uplink": 811487500,
+          "table": 0
+        },
+        "853150000": {
+          "rfid": 2,
+          "stid": 71,
+          "uplink": 808150000,
+          "table": 0
+        }
+      },
+      "band_plan": {
+        "0": {
+          "offset": -45000000,
+          "step": 6250,
+          "frequency": 851006250
+        },
+        "1": {
+          "offset": 30000000,
+          "step": 6250,
+          "frequency": 762006250
+        },
+        "2": {
+          "offset": -45000000,
+          "step": 12500,
+          "frequency": 851012500,
+          "tdma": 2
+        },
+        "3": {
+          "offset": 30000000,
+          "step": 12500,
+          "frequency": 762006250,
+          "tdma": 2
+        }
+      }
+    },
+    "nac": 0
+  }
+}

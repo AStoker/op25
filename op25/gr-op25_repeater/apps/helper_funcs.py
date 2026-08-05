@@ -31,10 +31,7 @@ from log_ts import log_ts
 #################
 # Helper functions
 def utf_ascii(ustr):
-    if sys.version[0] == '2':
-        return (ustr.decode("utf-8")).encode("ascii", "ignore")
-    else:
-        return ustr
+    return ustr
 
 def get_ordinals(s):
     t = 0
@@ -64,10 +61,7 @@ def add_unique_freq(freq_list, freq):
 def get_key_dict(keys_file, _id = 0):      # used to read crypt keys files
     #TODO: error handling for borked .json files
     keys_config = {}
-    if sys.version[0] == '2':
-        raw_config = json.loads(open(keys_file).read())
-    else:
-        raw_config = json.loads(open(keys_file, encoding="utf-8-sig").read())
+    raw_config = json.loads(open(keys_file, encoding="utf-8-sig").read())
     for dict_key in raw_config.keys():     # iterate through dict and convert strings to integers
         keyid = int(ast.literal_eval(str(dict_key)))
         algid = int(ast.literal_eval(str(from_dict(raw_config[dict_key], "algid", "0"))))

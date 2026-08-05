@@ -18,9 +18,14 @@ import os
 import math
 from gnuradio import gr, audio, eng_notation
 from gnuradio import filter, blocks, analog, digital
-from gnuradio.eng_option import eng_option
 from gnuradio.fft import window
-from optparse import OptionParser
+import argparse
+
+def eng_float(v):
+    try:
+        return eng_notation.str_to_num(str(v))
+    except:
+        raise argparse.ArgumentTypeError(f"invalid value: {v}")
 
 import gnuradio.op25_repeater as op25_repeater
 
@@ -29,25 +34,25 @@ from math import pi
 class my_top_block(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self)
-        parser = OptionParser(option_class=eng_option)
+        parser = argparse.ArgumentParser()
 
-        parser.add_option("-1", "--one-channel", action="store_true", default=False, help="software synthesized Q channel")
-        parser.add_option("-a", "--agc", action="store_true", default=False, help="automatic gain control (overrides --gain)")
-        parser.add_option("-c", "--calibration", type="eng_float", default=0, help="freq offset")
-        parser.add_option("-d", "--debug", action="store_true", default=False, help="allow time at init to attach gdb")
-        parser.add_option("-C", "--costas-alpha", type="eng_float", default=0.125, help="Costas alpha")
-        parser.add_option("-g", "--gain", type="eng_float", default=1.0)
-        parser.add_option("-i", "--input-file", type="string", default="in.dat", help="specify the input file")
-        parser.add_option("-I", "--imbe", action="store_true", default=False, help="output IMBE codewords")
-        parser.add_option("-L", "--low-pass", type="eng_float", default=6.5e3, help="low pass cut-off", metavar="Hz")
-        parser.add_option("-o", "--output-file", type="string", default="out.dat", help="specify the output file")
-        parser.add_option("-p", "--polarity", action="store_true", default=False, help="use reversed polarity")
-        parser.add_option("-r", "--raw-symbols", type="string", default=None, help="dump decoded symbols to file")
-        parser.add_option("-s", "--sample-rate", type="int", default=96000, help="input sample rate")
-        parser.add_option("-t", "--tone-detect", action="store_true", default=False, help="use experimental tone detect algorithm")
-        parser.add_option("-v", "--verbose", action="store_true", default=False, help="additional output")
-        parser.add_option("-6", "--k6k", action="store_true", default=False, help="use 6K symbol rate")
-        (options, args) = parser.parse_args()
+        parser.add_argument("-1", "--one-channel", action="store_true", default=False, help="software synthesized Q channel")
+        parser.add_argument("-a", "--agc", action="store_true", default=False, help="automatic gain control (overrides --gain)")
+        parser.add_argument("-c", "--calibration", type=eng_float, default=0, help="freq offset")
+        parser.add_argument("-d", "--debug", action="store_true", default=False, help="allow time at init to attach gdb")
+        parser.add_argument("-C", "--costas-alpha", type=eng_float, default=0.125, help="Costas alpha")
+        parser.add_argument("-g", "--gain", type=eng_float, default=1.0)
+        parser.add_argument("-i", "--input-file", type=str, default="in.dat", help="specify the input file")
+        parser.add_argument("-I", "--imbe", action="store_true", default=False, help="output IMBE codewords")
+        parser.add_argument("-L", "--low-pass", type=eng_float, default=6.5e3, help="low pass cut-off", metavar="Hz")
+        parser.add_argument("-o", "--output-file", type=str, default="out.dat", help="specify the output file")
+        parser.add_argument("-p", "--polarity", action="store_true", default=False, help="use reversed polarity")
+        parser.add_argument("-r", "--raw-symbols", type=str, default=None, help="dump decoded symbols to file")
+        parser.add_argument("-s", "--sample-rate", type=int, default=96000, help="input sample rate")
+        parser.add_argument("-t", "--tone-detect", action="store_true", default=False, help="use experimental tone detect algorithm")
+        parser.add_argument("-v", "--verbose", action="store_true", default=False, help="additional output")
+        parser.add_argument("-6", "--k6k", action="store_true", default=False, help="use 6K symbol rate")
+        options = parser.parse_args()
  
         sample_rate = options.sample_rate
         if options.k6k:

@@ -6,12 +6,12 @@
 
 set("log.stdout", true)
 set("log.file", false)
-set("log.level", 1)
+set("log.level", 3)
 
 # Make the native sample rate compatible with op25
 set("frame.audio.samplerate", 8000)
 
-input = mksafe(input.external(buffer=0.25, channels=2, samplerate=8000, restart_on_error=false, "./audio.py -x 1.5 -s"))
+input = mksafe(input.external.rawaudio(buffer=0.25, channels=2, samplerate=8000, restart_on_error=false, "./audio.py -x 1.5 -s -u 23456"))
 # Consider increasing the buffer value on slow systems such as RPi3. e.g. buffer=0.25
 # Longer buffer results in less choppy audio but at the expense of increased latency.
 
@@ -38,7 +38,7 @@ input = normalize(input, gain_max = 6.0, gain_min = -6.0, target = -16.0, thresh
 # Uncomment the appropriate line below to enable local sound
 #
 # Default audio subsystem
-out (input)
+#out (input)
 #
 # PulseAudio
 #output.pulseaudio(input)
@@ -53,5 +53,5 @@ out (input)
 # Change the "host", "password", and "mount" strings appropriately first!
 # For metadata to work properly, the host address given here MUST MATCH the address in op25's meta.json file
 #
-#output.icecast(%mp3(bitrate=16, samplerate=22050, stereo=false), description="op25", genre="Public Safety", url="", fallible=false, host="localhost", port=8000, mount="mountpoint", password="hackme", mean(input))
+output.icecast(%mp3(bitrate=16, samplerate=22050, stereo=false), description="Richland P25", genre="Public Safety", url="", fallible=false, host="localhost", port=8000, mount="op25", password="RadioGoogoo", mean(input))
 

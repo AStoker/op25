@@ -10,7 +10,7 @@ fi
 #
 # Install required packages
 #
-sudo pacman -S --needed --noconfirm gnuradio gnuradio-osmosdr rtl-sdr libuhd cmake cppunit doxygen boost orc base-devel clang pkgconf python-thrift pybind11 python-numpy python-waitress python-setuptools gnuplot libsndfile spdlog hackrf
+sudo pacman -S --needed --noconfirm gnuradio gnuradio-osmosdr rtl-sdr libuhd cmake cppunit doxygen boost orc base-devel clang pkgconf python-thrift pybind11 python-numpy python-waitress python-setuptools python-websockets python-fastapi python-uvicorn gnuplot libsndfile spdlog hackrf
 yay -S --noconfirm castxml python-pygccxml
 
 #

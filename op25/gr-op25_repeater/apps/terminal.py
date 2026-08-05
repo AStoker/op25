@@ -533,9 +533,8 @@ class curses_terminal(threading.Thread):
     def send_command(self, command, arg1 = 0, arg2 = 0):
         if self.sock:
             js = json.dumps({'command': command, 'arg1': arg1, 'arg2': arg2})
-            if sys.version[0] > '2':
-                if type(js) is str:
-                    js = js.encode()
+            if type(js) is str:
+                js = js.encode()
             self.sock.send(js)
         else:
             msg = gr.message().make_from_string(command, -2, arg1, arg2)
@@ -628,7 +627,10 @@ class udp_terminal(threading.Thread):
             self.remote_port = addr[1]
             self.keepalive_until = time.time() + KEEPALIVE_TIME
 
-def op25_terminal(input_q,  output_q, terminal_type):
+def op25_terminal(input_q,  output_q, terminal_type, config = None):
+        # 'config' is accepted for interface parity with websocket_server.py,
+        # which needs the full config; the terminals here get everything they
+        # need from the decoder's message stream.
         if terminal_type == 'curses':
             return curses_terminal(input_q, output_q)
         elif terminal_type[0].isdigit():

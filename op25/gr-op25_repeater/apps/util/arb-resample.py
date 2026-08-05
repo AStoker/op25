@@ -4,21 +4,26 @@ import sys
 import math
 from gnuradio import gr, audio, eng_notation, filter, blocks
 from gnuradio import analog, digital
-from gnuradio.eng_option import eng_option
-from optparse import OptionParser
+import argparse
+
+def eng_float(v):
+    try:
+        return eng_notation.str_to_num(str(v))
+    except:
+        raise argparse.ArgumentTypeError(f"invalid value: {v}")
 
 class my_top_block(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self)
-        parser = OptionParser(option_class=eng_option)
+        parser = argparse.ArgumentParser()
 
-        parser.add_option("-c", "--calibration", type="eng_float", default=0, help="freq offset")
-        parser.add_option("-g", "--gain", type="eng_float", default=1)
-        parser.add_option("-i", "--input-file", type="string", default="in.dat", help="specify the input file")
-        parser.add_option("-o", "--output-file", type="string", default="out.dat", help="specify the output file")
-        parser.add_option("-r", "--new-sample-rate", type="int", default=96000, help="output sample rate")
-        parser.add_option("-s", "--sample-rate", type="int", default=48000, help="input sample rate")
-        (options, args) = parser.parse_args()
+        parser.add_argument("-c", "--calibration", type=eng_float, default=0, help="freq offset")
+        parser.add_argument("-g", "--gain", type=eng_float, default=1)
+        parser.add_argument("-i", "--input-file", type=str, default="in.dat", help="specify the input file")
+        parser.add_argument("-o", "--output-file", type=str, default="out.dat", help="specify the output file")
+        parser.add_argument("-r", "--new-sample-rate", type=int, default=96000, help="output sample rate")
+        parser.add_argument("-s", "--sample-rate", type=int, default=48000, help="input sample rate")
+        options = parser.parse_args()
  
         sample_rate = options.sample_rate
         new_sample_rate = options.new_sample_rate

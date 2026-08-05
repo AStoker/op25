@@ -1,0 +1,146 @@
+{
+  "#note": "Three RTL-SDRs following ONE system (Palmetto800, RFSS 2 / Site 32). All three channels share trunking_sysname, so tk_p25 parks one receiver on the control channel and lets the other two follow simultaneous voice calls. The CC role floats: tune_voice() calls release_cc(), so any receiver may end up holding the CC. Set the 'args' serials to your real dongles (rtl_test -t / rtl_eeprom).",
+  "devices": [
+    {
+      "name": "sdr0",
+      "args": "rtl=00000101",
+      "frequency": 859262500,
+      "gains": "LNA:39",
+      "gain_mode": false,
+      "offset": 0,
+      "ppm": 0.0,
+      "rate": 1000000,
+      "usable_bw_pct": 0.85,
+      "tunable": true
+    },
+    {
+      "name": "sdr1",
+      "args": "rtl=00000102",
+      "frequency": 859262500,
+      "gains": "LNA:39",
+      "gain_mode": false,
+      "offset": 0,
+      "ppm": 0.0,
+      "rate": 1000000,
+      "usable_bw_pct": 0.85,
+      "tunable": true
+    },
+    {
+      "name": "sdr2",
+      "args": "rtl=00000103",
+      "frequency": 859262500,
+      "gains": "LNA:39",
+      "gain_mode": false,
+      "offset": 0,
+      "ppm": 0.0,
+      "rate": 1000000,
+      "usable_bw_pct": 0.85,
+      "tunable": true
+    }
+  ],
+  "channels": [
+    {
+      "name": "Palmetto800 rx0",
+      "device": "sdr0",
+      "trunking_sysname": "Palmetto800",
+      "demod_type": "cqpsk",
+      "filter_type": "rc",
+      "excess_bw": 0.2,
+      "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458",
+      "if_rate": 24000,
+      "symbol_rate": 4800,
+      "enable_analog": "off"
+    },
+    {
+      "name": "Palmetto800 rx1",
+      "device": "sdr1",
+      "trunking_sysname": "Palmetto800",
+      "demod_type": "cqpsk",
+      "filter_type": "rc",
+      "excess_bw": 0.2,
+      "destination": "udp://127.0.0.1:23460, udp://127.0.0.1:23462",
+      "if_rate": 24000,
+      "symbol_rate": 4800,
+      "enable_analog": "off"
+    },
+    {
+      "name": "Palmetto800 rx2",
+      "device": "sdr2",
+      "trunking_sysname": "Palmetto800",
+      "demod_type": "cqpsk",
+      "filter_type": "rc",
+      "excess_bw": 0.2,
+      "destination": "udp://127.0.0.1:23464, udp://127.0.0.1:23466",
+      "if_rate": 24000,
+      "symbol_rate": 4800,
+      "enable_analog": "off"
+    }
+  ],
+  "trunking": {
+    "module": "tk_p25.py",
+    "chans": [
+      {
+        "sysname": "Palmetto800",
+        "control_channel_list": "859.26250,853.50000,855.46250,860.88750",
+        "tgid_tags_file": "palmetto_tgs.tsv",
+        "nac": "0x1D1",
+        "#site": "RFSS 2 / Site 32 (0x20); primary CC 859.2625, secondaries per sccb",
+        "#sysid": "0x1D9",
+        "#wacn": "0xBEE00",
+        "whitelist": "",
+        "blacklist": "",
+        "crypt_behavior": 2
+      }
+    ]
+  },
+  "audio": {
+    "module": "sockaudio.py",
+    "instances": [
+      {
+        "instance_name": "audio0",
+        "device_name": "default",
+        "udp_port": 23456,
+        "audio_gain": 1.0,
+        "number_channels": 1
+      },
+      {
+        "instance_name": "audio1",
+        "device_name": "default",
+        "udp_port": 23460,
+        "audio_gain": 1.0,
+        "number_channels": 1
+      },
+      {
+        "instance_name": "audio2",
+        "device_name": "default",
+        "udp_port": 23464,
+        "audio_gain": 1.0,
+        "number_channels": 1
+      }
+    ]
+  },
+  "terminal": {
+    "module": "websocket_server.py",
+    "terminal_type": "ws:0.0.0.0:8080",
+    "http_plot_interval": 1.0,
+    "#audio_ports": "Deliberately absent. An explicit audio_ports list wins outright over discovery, and cannot say which channel a port belongs to - every stream then reports channel=null and the player's source picker shows three identical 'audio_ports override' entries. Letting discovery read the channel destinations instead attributes 23458/23462/23466 to rx0/rx1/rx2 by name, which is what makes /api/stream?channel=N work. The sockaudio ports are excluded automatically.",
+    "home_assistant": {
+      "enabled": true,
+      "url": "http://192.168.0.217:8123",
+      "token_file": "~/.config/op25/ha_token",
+      "stt_engine": "stt.faster_whisper",
+      "language": "en",
+      "webhook_id": "op25_call_a7f3c1d9e2b4",
+      "public_url": "http://localhost:8080",
+      "keywords": [
+        "structure fire",
+        "working fire",
+        "second alarm",
+        "officer down",
+        "signal 63",
+        "10-33"
+      ],
+      "keywords_only": false
+    }
+  }
+}
