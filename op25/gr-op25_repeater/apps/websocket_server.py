@@ -557,6 +557,32 @@ def _call_capture_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _routable_address_for(target_url: str) -> str:
+    """Our own IP on the interface that reaches *target_url*, or ''.
+
+    ``localhost`` is the wrong answer to "where can Home Assistant fetch this
+    clip from" — it points HA back at itself — and so is any address picked by
+    ``gethostname()``, which on a multi-homed box may be a VPN or Docker
+    interface.  Connecting a UDP socket sends no packets; it only asks the
+    kernel to pick a source address for that destination, which is exactly the
+    address Home Assistant will see our webhook arrive from.
+    """
+    if not target_url:
+        return ''
+    try:
+        parsed = urlparse(target_url)
+        host = parsed.hostname
+        if not host:
+            return ''
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(1.0)
+            s.connect((host, parsed.port or 8123))
+            addr = s.getsockname()[0]
+        return '' if addr.startswith('127.') else addr
+    except Exception:
+        return ''
+
+
 def start_call_capture(config: dict[str, Any] | None,
                        endpoint: str | None = None) -> None:
     """Start the call recorder, plus the Home Assistant bridge when configured.
@@ -578,12 +604,18 @@ def start_call_capture(config: dict[str, Any] | None,
 
     ha_cfg = HomeAssistantConfig(terminal.get('home_assistant'))
     if not ha_cfg.public_url and endpoint:
-        # 0.0.0.0 is a bind address, not a reachable one — leave the URL
-        # relative in that case rather than sending Home Assistant somewhere
-        # it cannot connect.  Set public_url explicitly to fix it.
         host, _, port = endpoint.partition(':')
+        port = port or '8080'
         if host not in ('', '0.0.0.0', '::'):
-            ha_cfg.public_url = 'http://%s:%s' % (host, port or '8080')
+            ha_cfg.public_url = 'http://%s:%s' % (host, port)
+        else:
+            # 0.0.0.0 is a bind address, not a reachable one.  Ask the routing
+            # table which of our addresses reaches Home Assistant and publish
+            # that, because the whole point of the URL is for Home Assistant
+            # to fetch from it.
+            addr = _routable_address_for(ha_cfg.url)
+            if addr:
+                ha_cfg.public_url = 'http://%s:%s' % (addr, port)
     if ha_cfg.enabled and _ha_bridge is None:
         _ha_bridge = HomeAssistantBridge(ha_cfg, on_transcript=_on_transcript)
         _ha_bridge.start()

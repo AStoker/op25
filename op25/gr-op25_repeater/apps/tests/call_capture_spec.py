@@ -726,10 +726,19 @@ class _StubHA(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    upload_status = 200
+
     def do_POST(self) -> None:                       # noqa: N802 (BaseHTTPRequestHandler API)
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         type(self).requests.append((self.path, dict(self.headers), body))
-        if self.path.startswith('/api/stt/'):
+        if self.path == '/api/media_source/local_source/upload':
+            payload = json.dumps({'media_content_id': 'x'}).encode()
+            self.send_response(type(self).upload_status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif self.path.startswith('/api/stt/'):
             payload = json.dumps(type(self).stt_body).encode()
             self.send_response(type(self).stt_status)
             self.send_header('Content-Type', 'application/json')
@@ -774,6 +783,7 @@ def _stub_ha_server():
 def stub_ha(_stub_ha_server: Any):
     _StubHA.requests = []
     _StubHA.stt_status = 200
+    _StubHA.upload_status = 200
     _StubHA.stt_body = {'result': 'success', 'text': 'engine twelve structure fire'}
     _StubHA.stt_caps = {
         'languages': ['en', 'es', 'fr', 'de'],
@@ -793,6 +803,113 @@ def bridge_for(url: str, **extra: Any) -> ha_bridge.HomeAssistantBridge:
         **extra,
     ))
     return ha_bridge.HomeAssistantBridge(cfg)
+
+
+class TestMediaUpload:
+    """Push the audio to Home Assistant instead of waiting to be asked for it."""
+
+    def _upload(self, url: str, **extra: Any):
+        bridge = bridge_for(url, media_upload=True, **extra)
+        clip = make_clip('ffa24f1fcd21')
+        clip.started = 1785961055.15
+        path = bridge._upload_media(clip)
+        req = next((r for r in _StubHA.requests
+                    if r[0] == '/api/media_source/local_source/upload'), None)
+        return bridge, path, req
+
+    def test_off_by_default(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        assert bridge_for(url)._upload_media(make_clip('a')) == ''
+        assert _StubHA.requests == []
+
+    def test_returns_the_path_home_assistant_will_serve(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, path, _req = self._upload(url)
+        assert path.startswith('/media/local/scanner/')
+        assert path.endswith('_ffa24f1fcd21.wav')
+
+    def test_the_filename_carries_the_call_time(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, path, _req = self._upload(url)
+        stamp = time.strftime('%Y-%m-%d_%H%M%S', time.localtime(1785961055.15))
+        assert path.endswith('%s_ffa24f1fcd21.wav' % stamp)
+
+    def test_target_folder_is_configurable(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, path, req = self._upload(url, media_dir='op25')
+        assert path.startswith('/media/local/op25/')
+        assert b'media-source://media_source/local/op25' in req[2]
+
+    def test_posts_multipart_with_both_fields(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, _path, req = self._upload(url)
+        headers, body = req[1], req[2]
+        assert headers['Content-Type'].startswith('multipart/form-data; boundary=')
+        assert b'name="media_content_id"' in body
+        assert b'name="file"; filename="' in body
+
+    def test_declares_an_audio_content_type(self, stub_ha: Any) -> None:
+        """The endpoint rejects anything not image/video/audio."""
+        _srv, url = stub_ha
+        _bridge, _path, req = self._upload(url)
+        assert b'Content-Type: audio/wav' in req[2]
+
+    def test_body_is_a_real_riff_container_not_bare_pcm(self, stub_ha: Any) -> None:
+        """It has to play in a browser, unlike what the STT endpoint gets."""
+        _srv, url = stub_ha
+        _bridge, _path, req = self._upload(url)
+        body = req[2]
+        assert b'RIFF' in body and b'WAVE' in body
+
+    def test_multipart_is_well_formed(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, _path, req = self._upload(url)
+        boundary = req[1]['Content-Type'].split('boundary=')[1]
+        body = req[2]
+        assert body.startswith(('--' + boundary).encode())
+        assert body.endswith(('--' + boundary + '--\r\n').encode())
+        assert body.count(('--' + boundary).encode()) == 3   # 2 parts + closer
+
+    def test_sends_the_bearer_token(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, _path, req = self._upload(url)
+        assert req[1]['Authorization'] == 'Bearer tok'
+
+    def test_counts_a_success(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        bridge, _path, _req = self._upload(url)
+        assert bridge.stats()['media_uploaded'] == 1
+        assert bridge.stats()['media_errors'] == 0
+
+    def test_a_rejected_upload_is_reported_not_raised(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.upload_status = 401                   # non-admin token
+        bridge, path, _req = self._upload(url)
+        assert path == ''
+        assert bridge.stats()['media_errors'] == 1
+
+    def test_a_failed_upload_leaves_the_clip_without_a_path(self, stub_ha: Any) -> None:
+        """The hit is still logged and still notified — just without audio."""
+        _srv, url = stub_ha
+        _StubHA.upload_status = 500
+        bridge = bridge_for(url, media_upload=True)
+        clip = make_clip('a')
+        bridge._process(clip)
+        assert clip.media_path == ''
+        assert 'media_path' not in clip.to_dict()
+
+    def test_the_webhook_names_the_uploaded_file(self, stub_ha: Any) -> None:
+        """Upload must land before the webhook, or the automation has no path."""
+        _srv, url = stub_ha
+        bridge = bridge_for(url, media_upload=True)
+        bridge._process(make_clip('ffa24f1fcd21'))
+        hook = next(r for r in _StubHA.requests if r[0].startswith('/api/webhook/'))
+        payload = json.loads(hook[2])
+        assert payload['media_path'].startswith('/media/local/scanner/')
+        # ...and the ordering that guarantees it.
+        paths = [r[0] for r in _StubHA.requests]
+        assert (paths.index('/api/media_source/local_source/upload')
+                < paths.index(hook[0]))
 
 
 class TestCapabilityNegotiation:
@@ -858,6 +975,28 @@ class TestCapabilityNegotiation:
         bridge = bridge_for(url, language='en')
         _text, err = bridge._transcribe(make_clip('a'))
         assert 'advertises all of those as supported' in err
+
+
+class TestRoutableAddress:
+    """public_url has to be somewhere Home Assistant can actually fetch from."""
+
+    def test_returns_a_non_loopback_address_for_a_real_host(self) -> None:
+        import websocket_server as ws
+        addr = ws._routable_address_for('http://192.0.2.1:8123')   # TEST-NET-1
+        # No packets are sent, so this works without a route to the host on
+        # any machine with a default route; on a fully isolated one it is ''.
+        assert addr == '' or not addr.startswith('127.')
+
+    def test_loopback_target_is_rejected(self) -> None:
+        """Resolving to 127.0.0.1 is the bug, not the fix."""
+        import websocket_server as ws
+        assert ws._routable_address_for('http://127.0.0.1:8123') == ''
+
+    def test_garbage_and_empty_are_safe(self) -> None:
+        import websocket_server as ws
+        assert ws._routable_address_for('') == ''
+        assert ws._routable_address_for('not a url') == ''
+        assert ws._routable_address_for('http://') == ''
 
 
 class TestSpeechToTextRequest:

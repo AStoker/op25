@@ -335,7 +335,7 @@ class CallClip:
 
     __slots__ = ('id', 'started', 'ended', 'pcm', 'sample_rate', 'metadata',
                  'transcript', 'keywords', 'stt_error', 'discarded_transcript',
-                 'transcript_pending')
+                 'transcript_pending', 'media_path')
 
     def __init__(self, clip_id: str, started: float, ended: float,
                  pcm: bytes, sample_rate: int, metadata: dict[str, Any]) -> None:
@@ -357,6 +357,10 @@ class CallClip:
         # "no transcript" — two states that look identical on the wire
         # otherwise, because both carry an empty ``transcript``.
         self.transcript_pending: bool = False
+        # Where Home Assistant is serving this clip once it has been pushed
+        # there, e.g. /media/local/scanner/2026-08-05_161735_ffa24f.wav.
+        # Empty when media_upload is off or the upload failed.
+        self.media_path: str = ''
 
     @property
     def duration(self) -> float:
@@ -379,6 +383,8 @@ class CallClip:
             d['discarded_transcript'] = self.discarded_transcript
         if self.transcript_pending:
             d['transcript_pending'] = True
+        if self.media_path:
+            d['media_path'] = self.media_path
         d.update(self.metadata)
         return d
 
@@ -665,6 +671,15 @@ class HomeAssistantConfig:
         self.language    = str(raw.get('language', 'en-US') or 'en-US')
         self.stt_rate    = int(raw.get('stt_sample_rate', 16_000) or 16_000)
         self.stt_audio   = str(raw.get('stt_audio', 'raw') or 'raw').lower()   # 'raw' | 'wav'
+
+        # Push the clip into Home Assistant's media library rather than leaving
+        # it in this process for Home Assistant to come back and fetch. Off by
+        # default: it writes a file per call on the Home Assistant host.
+        self.media_upload = bool(raw.get('media_upload', False))
+        self.media_dir    = str(raw.get('media_dir', 'scanner') or 'scanner').strip('/')
+        # media_dirs is keyed 'local' on a default install; the media browser
+        # shows it as "My media" and serves it at /media/local/...
+        self.media_source = str(raw.get('media_source', 'local') or 'local').strip('/')
         self.public_url  = str(raw.get('public_url', '') or '').rstrip('/')
         self.timeout     = float(raw.get('timeout_secs', 30.0) or 30.0)
 
@@ -686,6 +701,12 @@ class HomeAssistantConfig:
     def webhook_configured(self) -> bool:
         return bool(self.enabled and self.url and self.webhook_id)
 
+    @property
+    def media_configured(self) -> bool:
+        # The upload view is @require_admin, so this needs a token belonging to
+        # an administrator — not merely a valid one.
+        return bool(self.enabled and self.url and self.token and self.media_upload)
+
     def describe(self) -> str:
         if not self.enabled:
             return 'home assistant: disabled'
@@ -693,6 +714,8 @@ class HomeAssistantConfig:
         bits.append('stt=%s' % (self.stt_engine if self.stt_configured else 'off'))
         bits.append('webhook=%s' % (self.webhook_id if self.webhook_configured else 'off'))
         bits.append('keywords=%d' % len(self.keywords))
+        bits.append('media=%s' % ('%s/%s' % (self.media_source, self.media_dir)
+                                  if self.media_configured else 'off'))
         if self.talkgroups:
             bits.append('talkgroups=%d' % len(self.talkgroups))
         return 'home assistant: ' + ' '.join(bits)
@@ -756,6 +779,8 @@ class HomeAssistantBridge(threading.Thread):
         self._caps: dict[str, Any] | None = None
 
         # Diagnostics
+        self.media_uploaded = 0
+        self.media_errors   = 0
         self.submitted   = 0
         self.dropped     = 0
         self.transcribed = 0
@@ -936,6 +961,12 @@ class HomeAssistantBridge(threading.Thread):
 
         if self.cfg.keywords_only and not clip.keywords:
             return
+
+        # Upload before the webhook, so the payload can name the file that is
+        # already there. The other order would have the automation racing an
+        # upload it has no way to wait for.
+        clip.media_path = self._upload_media(clip)
+
         if self.cfg.webhook_configured:
             self._post_webhook(clip)
 
@@ -997,6 +1028,77 @@ class HomeAssistantBridge(threading.Thread):
             return '', 'stt result=%s' % data.get('result')
         return str(data.get('text', '') or '').strip(), ''
 
+    def _upload_media(self, clip: CallClip) -> str:
+        """Push the clip into Home Assistant's media library.
+
+        Returns the path Home Assistant will serve it at
+        (``/media/local/<dir>/<file>.wav``), or '' if the upload did not
+        happen.
+
+        This is a *push*: Home Assistant never connects back here, so nothing
+        depends on this host being reachable, on ``public_url`` being right, or
+        on the clip still being in the in-memory ring by the time somebody
+        clicks a link. The bytes land on the Home Assistant host and are its
+        problem from then on.
+
+        The endpoint is ``@require_admin``, caps uploads at 20 MB, insists the
+        content type be image/video/audio, and creates the target folder
+        itself.
+        """
+        if not self.cfg.media_configured:
+            return ''
+
+        # raise_if_invalid_filename rejects anything with a path separator, so
+        # keep this to the characters we generate ourselves.
+        stamp = time.strftime('%Y-%m-%d_%H%M%S', time.localtime(clip.started))
+        safe_id = re.sub(r'[^A-Za-z0-9]', '', clip.id) or 'clip'
+        filename = '%s_%s.wav' % (stamp, safe_id)
+
+        # A real RIFF container, not the headerless PCM the STT endpoint takes:
+        # this one has to be playable by a browser and a phone.
+        audio = wav_bytes(clip.pcm, clip.sample_rate)
+        content_id = 'media-source://media_source/%s/%s' % (
+            self.cfg.media_source, self.cfg.media_dir)
+
+        boundary = '----op25%s' % os.urandom(16).hex()
+        pre = (
+            '--%s\r\n'
+            'Content-Disposition: form-data; name="media_content_id"\r\n\r\n'
+            '%s\r\n'
+            '--%s\r\n'
+            'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
+            'Content-Type: audio/wav\r\n\r\n' % (
+                boundary, content_id, boundary, filename)
+        ).encode('utf-8')
+        post = ('\r\n--%s--\r\n' % boundary).encode('utf-8')
+
+        url = '%s/api/media_source/local_source/upload' % self.cfg.url
+        req = urllib.request.Request(url, data=pre + audio + post, method='POST')
+        req.add_header('Authorization', 'Bearer %s' % self.cfg.token)
+        req.add_header('Content-Type', 'multipart/form-data; boundary=%s' % boundary)
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', 'replace')[:200] if exc.fp else ''
+            hint = ''
+            if exc.code in (401, 403):
+                hint = (' — the upload endpoint requires an *administrator* '
+                        'token, not merely a valid one')
+            sys.stderr.write('ha_bridge: media upload failed: HTTP %s%s %s\n'
+                             % (exc.code, hint, detail))
+            self.media_errors += 1
+            return ''
+        except Exception as exc:
+            sys.stderr.write('ha_bridge: media upload failed: %s: %s\n'
+                             % (type(exc).__name__, exc))
+            self.media_errors += 1
+            return ''
+
+        self.media_uploaded += 1
+        return '/media/%s/%s/%s' % (self.cfg.media_source, self.cfg.media_dir, filename)
+
     def _describe_mismatch(self) -> str:
         """Name the field an HTTP 415 is most likely complaining about."""
         sent = 'sent language=%s sample_rate=%d bit_rate=%d channel=%d format=wav codec=pcm' % (
@@ -1053,4 +1155,6 @@ class HomeAssistantBridge(threading.Thread):
             'webhooks':       self.webhooks,
             'webhook_errors': self.webhook_errors,
             'alerts':         self.alerts,
+            'media_uploaded': self.media_uploaded,
+            'media_errors':   self.media_errors,
         }

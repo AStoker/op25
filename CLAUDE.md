@@ -224,7 +224,14 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   token should come from `token_file` or `$OP25_HA_TOKEN` rather than the
   config in the first place — redaction is a backstop, not the mechanism.
 - Clips live in a bounded in-memory ring (`ClipStore`, 60 clips / 24 MB).
-  Nothing is written to disk.
+  Nothing is written to disk *here* — but `media_upload` pushes each clip to
+  HA's `/api/media_source/local_source/upload`, which inverts the transfer:
+  HA never connects back, so `public_url` and this host's reachability stop
+  mattering, and clips outlive the ring. The upload runs **before**
+  `_post_webhook` so the payload can carry `media_path`; an automation cannot
+  wait on an upload it did not start. That endpoint is `@require_admin`, so a
+  merely-valid token gets a bare 401 — `_upload_media` adds that hint itself.
+  Multipart is hand-rolled because this module stays stdlib-only.
 - Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
   against a stub HA. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s

@@ -299,6 +299,62 @@ Transcription is the expensive step. Two options narrow it:
 
 ---
 
+### 3.6 Pushing the audio into Home Assistant
+
+By default a clip stays in this process and `audio_url` points back here, so
+anything that wants the audio has to reach OP25 over the network — and the
+clip has to still be in the ring when it does. Both are avoidable:
+
+```json
+"media_upload": true,
+"media_dir": "scanner"
+```
+
+Each clip is then POSTed to Home Assistant's
+`/api/media_source/local_source/upload` as it completes, and the webhook that
+follows carries a `media_path` field naming where it landed
+(`/media/local/scanner/2026-08-05_161735_ffa24f1fcd21.wav`). The upload happens
+*before* the webhook precisely so that field can be populated — an automation
+has no way to wait for an upload it did not start.
+
+This is the arrangement to prefer if Home Assistant is the more capable
+machine. It means:
+
+- Home Assistant never connects back to the scanner box, so nothing depends on
+  `public_url`, on this host being reachable, or on NAT/firewall between them.
+- Clips outlive OP25. The in-memory ring holds ~25 minutes; the media library
+  holds whatever you choose to keep.
+- The files are ordinary media — browsable under **Media → My media**, playable
+  by any media player entity, and openable straight from a notification.
+
+Retention becomes Home Assistant's problem, and it will not prune by itself.
+A `shell_command` on a schedule is enough:
+
+```yaml
+shell_command:
+  scanner_prune_clips: >-
+    /bin/sh -c 'find /media/scanner -type f -name "*.wav"
+    -mmin +2880 -exec rm -f {} +'
+```
+
+Notes:
+
+- **The endpoint requires an administrator's token**, not merely a valid one
+  (`@require_admin`). A non-admin token gets an HTTP 401 that says nothing
+  else; OP25 adds that hint to the log line.
+- Uploads are capped at 20 MB and must declare an image, video or audio
+  content type. Clips are sent as real RIFF/WAVE, unlike the headerless PCM
+  the STT endpoint receives.
+- Every captured clip is uploaded, not just ones matching `keywords` — which
+  is usually what you want, since it lets you go back to a call nothing
+  flagged. Narrow it with `talkgroups` if the volume is too high. At roughly
+  two calls a minute and two seconds a call, expect on the order of 100 MB a
+  day.
+- A failed upload is logged and counted in `media_errors` at `/api/ha/status`;
+  the webhook still fires, just with no `media_path`.
+
+---
+
 ## 4. Style B — pull (Home Assistant consumes the live stream)
 
 `GET /api/stream` serves continuous 16-bit mono PCM and takes two query
@@ -374,7 +430,10 @@ All keys live under `terminal.home_assistant`.
 | `keywords` | `[]` | Terms to match in the transcript |
 | `keywords_only` | false | Only fire the webhook when a keyword matched |
 | `talkgroups` | `[]` (all) | Restrict transcription to these TGIDs |
-| `public_url` | bound address | Base URL Home Assistant should use to fetch clip audio |
+| `public_url` | inferred | Base URL Home Assistant should use to fetch clip audio. Only needed when `media_upload` is off |
+| `media_upload` | false | Push each clip into Home Assistant's media library (see §4.1) |
+| `media_dir` | `scanner` | Folder within the media source to upload into |
+| `media_source` | `local` | Which entry of HA's `media_dirs` to upload into |
 | `hang_time_secs` | 1.5 | Silence that ends a call |
 | `min_call_secs` | 0.8 | Shorter transmissions are discarded |
 | `max_call_secs` | 120 | A longer transmission is split at this point |
