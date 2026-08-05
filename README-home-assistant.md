@@ -353,6 +353,50 @@ Notes:
 - A failed upload is logged and counted in `media_errors` at `/api/ha/status`;
   the webhook still fires, just with no `media_path`.
 
+**`/media/...` is not linkable, which is not obvious until it bites.** The
+default `media_path` points into `/media/<source>/<dir>`, and that URL is
+served by `LocalMediaView`, which inherits `requires_auth = True` from
+`HomeAssistantView`. Two consequences:
+
+- A notification whose `url` is `/media/local/…` opens with a plain GET
+  carrying no token, and gets **HTTP 401**.
+- A dashboard link to the same path is same-origin, so the frontend router
+  intercepts the click, finds no panel named `media`, and lands you on the
+  default dashboard instead.
+
+Home Assistant registers `<config>/www` as a *static* path at `/local`, and
+static paths never reach the auth handler. Uploading there instead makes the
+clips linkable from anywhere:
+
+```yaml
+# Home Assistant configuration.yaml — media_dirs REPLACES the default,
+# so keep `local` or the Media panel loses its folder.
+homeassistant:
+  media_dirs:
+    local: /media
+    www: /config/www
+```
+
+```json
+"media_source": "www",
+"media_dir": "scanner",
+"media_url_base": "/local/scanner"
+```
+
+`media_url_base` exists precisely because the upload target and the public URL
+stop agreeing at that point: the POST still addresses
+`media-source://media_source/www/scanner`, while `media_path` comes back as
+`/local/scanner/<file>.wav`.
+
+**Understand what that exposes.** Everything under `/local` is readable
+without authentication by anything that can reach Home Assistant, including
+over a Nabu Casa remote URL. There is no directory listing and each filename
+ends in a random clip id, so the files are not practically guessable — but
+they are not protected either. This is traffic that was already broadcast
+unencrypted; that is the argument for it, and it is worth making consciously.
+Leave `media_url_base` unset to keep clips behind authentication, at the cost
+of playback only working from Home Assistant's Media panel.
+
 ---
 
 ## 4. Style B — pull (Home Assistant consumes the live stream)
@@ -434,6 +478,7 @@ All keys live under `terminal.home_assistant`.
 | `media_upload` | false | Push each clip into Home Assistant's media library (see §4.1) |
 | `media_dir` | `scanner` | Folder within the media source to upload into |
 | `media_source` | `local` | Which entry of HA's `media_dirs` to upload into |
+| `media_url_base` | `/media/<source>/<dir>` | Where the clip is *reachable*, when that differs from where it was uploaded |
 | `hang_time_secs` | 1.5 | Silence that ends a call |
 | `min_call_secs` | 0.8 | Shorter transmissions are discarded |
 | `max_call_secs` | 120 | A longer transmission is split at this point |

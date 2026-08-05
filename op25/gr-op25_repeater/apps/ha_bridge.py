@@ -680,6 +680,14 @@ class HomeAssistantConfig:
         # media_dirs is keyed 'local' on a default install; the media browser
         # shows it as "My media" and serves it at /media/local/...
         self.media_source = str(raw.get('media_source', 'local') or 'local').strip('/')
+        # Where the uploaded clip is *reachable*, which is not always where it
+        # was *uploaded to*.  /media/<source>/<dir> is served by a view with
+        # requires_auth = True, so a bare link to it 401s outside the
+        # frontend's authenticated fetches.  Pointing media_dirs at a folder
+        # under <config>/www instead makes the same file reachable at
+        # /local/..., which Home Assistant registers as an unauthenticated
+        # static path.  Set this to '/local/scanner' in that case.
+        self.media_url_base = str(raw.get('media_url_base', '') or '').rstrip('/')
         self.public_url  = str(raw.get('public_url', '') or '').rstrip('/')
         self.timeout     = float(raw.get('timeout_secs', 30.0) or 30.0)
 
@@ -1028,6 +1036,34 @@ class HomeAssistantBridge(threading.Thread):
             return '', 'stt result=%s' % data.get('result')
         return str(data.get('text', '') or '').strip(), ''
 
+    #: ``<date>_<time>_<tgid>_<talkgroup-slug>_<clip id>.wav``
+    #:
+    #: The filename is the only metadata that travels with the audio. Home
+    #: Assistant's media library stores bare files with no sidecar and no
+    #: database, so anything a dashboard wants to filter on — which talkgroup,
+    #: when — has to be recoverable from the name itself.
+    #:
+    #: Constraints that shape the format:
+    #:   * ``raise_if_invalid_filename`` rejects path separators outright.
+    #:   * The name ends up in a URL, so it stays within [A-Za-z0-9._-].
+    #:   * The slug is stripped of underscores so ``split('_')`` yields exactly
+    #:     five fields regardless of what the talkgroup tag contains.
+    #:   * Leading date-time keeps a plain lexicographic sort in newest-last
+    #:     order, which is what a directory listing gives you for free.
+    MEDIA_NAME_FIELDS = 5
+
+    def _media_filename(self, clip: CallClip) -> str:
+        stamp = time.strftime('%Y-%m-%d_%H%M%S', time.localtime(clip.started))
+        safe_id = re.sub(r'[^A-Za-z0-9]', '', clip.id) or 'clip'
+        tgid = clip.metadata.get('tgid') or 0
+        try:
+            tgid = int(tgid)
+        except (TypeError, ValueError):
+            tgid = 0
+        tag = str(clip.metadata.get('talkgroup') or '')
+        slug = re.sub(r'-{2,}', '-', re.sub(r'[^A-Za-z0-9]+', '-', tag)).strip('-')[:40]
+        return '%s_%d_%s_%s.wav' % (stamp, tgid, slug or 'unknown', safe_id)
+
     def _upload_media(self, clip: CallClip) -> str:
         """Push the clip into Home Assistant's media library.
 
@@ -1048,11 +1084,7 @@ class HomeAssistantBridge(threading.Thread):
         if not self.cfg.media_configured:
             return ''
 
-        # raise_if_invalid_filename rejects anything with a path separator, so
-        # keep this to the characters we generate ourselves.
-        stamp = time.strftime('%Y-%m-%d_%H%M%S', time.localtime(clip.started))
-        safe_id = re.sub(r'[^A-Za-z0-9]', '', clip.id) or 'clip'
-        filename = '%s_%s.wav' % (stamp, safe_id)
+        filename = self._media_filename(clip)
 
         # A real RIFF container, not the headerless PCM the STT endpoint takes:
         # this one has to be playable by a browser and a phone.
@@ -1097,7 +1129,9 @@ class HomeAssistantBridge(threading.Thread):
             return ''
 
         self.media_uploaded += 1
-        return '/media/%s/%s/%s' % (self.cfg.media_source, self.cfg.media_dir, filename)
+        base = self.cfg.media_url_base or '/media/%s/%s' % (
+            self.cfg.media_source, self.cfg.media_dir)
+        return '%s/%s' % (base.rstrip('/'), filename)
 
     def _describe_mismatch(self) -> str:
         """Name the field an HTTP 415 is most likely complaining about."""

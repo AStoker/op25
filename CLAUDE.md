@@ -232,6 +232,20 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   wait on an upload it did not start. That endpoint is `@require_admin`, so a
   merely-valid token gets a bare 401 — `_upload_media` adds that hint itself.
   Multipart is hand-rolled because this module stays stdlib-only.
+- **`/media/<source>/<dir>` is not linkable.** `LocalMediaView` inherits
+  `requires_auth = True`, so a notification tap 401s and a dashboard link is
+  swallowed by the frontend router (no panel named `media`). `<config>/www` is
+  registered as a *static* path at `/local` and bypasses auth entirely, so the
+  fix is to upload there and set `media_url_base` — the upload target and the
+  public URL stop agreeing at that point, which is the only reason that key
+  exists. It buys linkability at the cost of the clips being unauthenticated.
+- The media filename is the only metadata that travels with the audio (HA's
+  library is bare files, no sidecar, no DB), hence
+  `<date>_<time>_<tgid>_<slug>_<id>.wav` from `_media_filename()`. Underscores
+  are stripped from the slug so `split('_')` always yields exactly five
+  fields — one oddly-named talkgroup would otherwise break every consumer's
+  parsing — and the leading timestamp makes a plain directory listing sort
+  chronologically.
 - Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
   against a stub HA. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s

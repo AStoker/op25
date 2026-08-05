@@ -134,7 +134,9 @@
             "language": "en",
             "webhook_id": "op25_call_a7f3c1d9e2b4",
             "keywords": [],
-            "keywords_only": false
+            "keywords_only": false,
+            "media_source": "www",
+            "media_url_base": "/local/scanner"
         }
     }
 }

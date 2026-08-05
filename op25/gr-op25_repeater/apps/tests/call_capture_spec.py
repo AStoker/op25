@@ -16,6 +16,7 @@ Nothing here touches the network, a dongle, or Home Assistant itself.
 
 import json
 import math
+import re
 import socketserver
 import struct
 import threading
@@ -832,7 +833,27 @@ class TestMediaUpload:
         _srv, url = stub_ha
         _bridge, path, _req = self._upload(url)
         stamp = time.strftime('%Y-%m-%d_%H%M%S', time.localtime(1785961055.15))
-        assert path.endswith('%s_ffa24f1fcd21.wav' % stamp)
+        assert path.split('/')[-1].startswith(stamp)
+
+    def test_url_base_can_differ_from_the_upload_target(self, stub_ha: Any) -> None:
+        """Uploaded under <config>/www, but reachable at /local/... .
+
+        /media/<source>/<dir> is served by a view with requires_auth = True,
+        so a notification or a dashboard link to it gets a 401. The same file
+        under <config>/www is served as an unauthenticated static path.
+        """
+        _srv, url = stub_ha
+        _bridge, path, req = self._upload(
+            url, media_source='www', media_dir='scanner',
+            media_url_base='/local/scanner')
+        assert path.startswith('/local/scanner/')
+        # ...while the upload still addresses the media source, not the URL.
+        assert b'media-source://media_source/www/scanner' in req[2]
+
+    def test_url_base_tolerates_a_trailing_slash(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _bridge, path, _req = self._upload(url, media_url_base='/local/scanner/')
+        assert '//' not in path
 
     def test_target_folder_is_configurable(self, stub_ha: Any) -> None:
         _srv, url = stub_ha
@@ -910,6 +931,71 @@ class TestMediaUpload:
         paths = [r[0] for r in _StubHA.requests]
         assert (paths.index('/api/media_source/local_source/upload')
                 < paths.index(hook[0]))
+
+
+class TestMediaFilename:
+    """The filename is the only metadata that travels with the audio.
+
+    Home Assistant's media library is bare files — no sidecar, no database —
+    so a dashboard can only filter on what the name itself carries.
+    """
+
+    def _name(self, tgid: Any = 27104, tag: str = 'SCHP Lexington', **cfg: Any) -> str:
+        bridge = ha_bridge.HomeAssistantBridge(
+            ha_bridge.HomeAssistantConfig(dict({'url': 'http://x'}, **cfg)))
+        clip = make_clip('ffa24f1fcd21')
+        clip.started = 1785961055.15
+        clip.metadata.update({'tgid': tgid, 'talkgroup': tag})
+        return bridge._media_filename(clip)
+
+    def test_has_exactly_five_underscore_fields(self) -> None:
+        """The dashboard splits on '_' — the count must not vary."""
+        parts = self._name()[:-len('.wav')].split('_')
+        assert len(parts) == ha_bridge.HomeAssistantBridge.MEDIA_NAME_FIELDS
+
+    def test_carries_date_time_tgid_tag_and_id(self) -> None:
+        parts = self._name()[:-len('.wav')].split('_')
+        assert parts[0] == time.strftime('%Y-%m-%d', time.localtime(1785961055.15))
+        assert parts[2] == '27104'
+        assert parts[3] == 'SCHP-Lexington'
+        assert parts[4] == 'ffa24f1fcd21'
+
+    def test_spaces_and_punctuation_become_single_dashes(self) -> None:
+        assert self._name(tag='Lex Co EMS / LMC (North)').split('_')[3] \
+            == 'Lex-Co-EMS-LMC-North'
+
+    def test_underscores_in_the_tag_cannot_add_a_field(self) -> None:
+        """Otherwise one oddly-named talkgroup breaks every row's parsing."""
+        name = self._name(tag='RCSD_Reg_4/5')
+        assert len(name[:-4].split('_')) == 5
+        assert name.split('_')[3] == 'RCSD-Reg-4-5'
+
+    def test_an_unnamed_talkgroup_is_labelled_not_blank(self) -> None:
+        assert self._name(tag='').split('_')[3] == 'unknown'
+        assert self._name(tag='///').split('_')[3] == 'unknown'
+
+    def test_a_missing_tgid_becomes_zero(self) -> None:
+        assert self._name(tgid=None).split('_')[2] == '0'
+        assert self._name(tgid='rubbish').split('_')[2] == '0'
+
+    def test_a_long_tag_is_truncated(self) -> None:
+        name = self._name(tag='A' * 200)
+        assert len(name.split('_')[3]) == 40
+
+    def test_stays_url_and_filesystem_safe(self) -> None:
+        """It becomes both a filename and a path segment in a URL."""
+        name = self._name(tag='Weird/\\:*?"<>| tag')
+        assert re.fullmatch(r'[A-Za-z0-9._-]+', name), name
+
+    def test_names_sort_chronologically(self) -> None:
+        """A directory listing is then already in call order."""
+        early = self._name()
+        bridge = ha_bridge.HomeAssistantBridge(
+            ha_bridge.HomeAssistantConfig({'url': 'http://x'}))
+        clip = make_clip('bbbb')
+        clip.started = 1785961055.15 + 3600
+        clip.metadata.update({'tgid': 1, 'talkgroup': 'A'})
+        assert sorted([bridge._media_filename(clip), early])[0] == early
 
 
 class TestCapabilityNegotiation:
