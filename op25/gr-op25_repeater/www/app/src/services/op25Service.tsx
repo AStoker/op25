@@ -299,14 +299,19 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
         // with `transcript` filled in once speech-to-text has run. Match on
         // id so the second one updates the row rather than duplicating it.
         const { json_type: _jt, ...clip } = msg.payload as CallClipPayload;
+        // `transcript_pending` is the one field that goes true → false, and
+        // the server omits it when false. A plain spread would therefore
+        // never clear it, leaving the row spinning forever — so pin it
+        // explicitly from whatever this message says.
+        const merged = { ...clip, transcript_pending: clip.transcript_pending ?? false };
         setCallClips((prev) => {
-          const idx = prev.findIndex((c) => c.id === clip.id);
+          const idx = prev.findIndex((c) => c.id === merged.id);
           if (idx >= 0) {
             const next = prev.slice();
-            next[idx] = { ...next[idx], ...clip };
+            next[idx] = { ...next[idx], ...merged };
             return next;
           }
-          return [clip, ...prev].slice(0, CALL_CLIP_MAX);
+          return [merged, ...prev].slice(0, CALL_CLIP_MAX);
         });
       } else if (msg.type === 'CALL_ACTIVITY') {
         const p = msg.payload as Record<string, unknown> & { json_type?: string };

@@ -104,12 +104,49 @@ The startup log also prints a one-line summary:
 home assistant: url=http://homeassistant.local:8123 stt=stt.faster_whisper webhook=op25_call keywords=4
 ```
 
-**Keep the token out of the config file** by exporting it instead — the config
-value is optional and `$OP25_HA_TOKEN` is used when it is absent:
+### Where to put the token
+
+**Do not put it in the config file.** `GET /api/config` and the decoder's
+`get_full_config` both hand the loaded config to the browser, and neither is
+authenticated — a `token` value there is readable by anything that can reach
+port 8080. The server masks it on the way out, but the file itself is still the
+wrong home for a credential that grants full API access to Home Assistant.
+
+Three sources are consulted, in this order:
+
+| | Source | Set it once by |
+|---|---|---|
+| 1 | `token` in the config | *(avoid)* |
+| 2 | `token_file` in the config | writing the token to a file, `chmod 600` |
+| 3 | `$OP25_HA_TOKEN` | your shell profile, a systemd unit, or a wrapper script |
+
+`token_file` is the least fiddly of the three, because the config keeps working
+unchanged whichever machine it is on and nothing has to be exported first:
 
 ```bash
-export OP25_HA_TOKEN='eyJhbGciOi...'
+install -m 600 /dev/null ~/.config/op25/ha_token
+printf '%s' 'eyJhbGciOi...' > ~/.config/op25/ha_token
 ```
+
+```json
+"token_file": "~/.config/op25/ha_token"
+```
+
+`~` is expanded. A missing or unreadable file is logged and falls through to
+`$OP25_HA_TOKEN`, so it is safe to leave the key in place on a machine that
+uses the environment variable instead.
+
+Under systemd on the Pi, the environment variable is the idiomatic route:
+
+```ini
+# /etc/systemd/system/op25.service
+[Service]
+EnvironmentFile=/etc/op25/env     # chmod 600, contains OP25_HA_TOKEN=...
+```
+
+Note that Home Assistant's own `secrets.yaml` is **not** an option: it is read
+by Home Assistant's YAML loader for Home Assistant's own config. OP25 is a
+separate process on a different machine and cannot see it.
 
 ### 3.2 Receive the events in Home Assistant
 
@@ -182,23 +219,47 @@ capped at 255 characters, put the transcript in an attribute:
 
 ```yaml
 template:
-  - trigger:
-      - platform: webhook
+  - triggers:
+      - trigger: webhook
         webhook_id: op25_call
         allowed_methods: [POST]
         local_only: true
     sensor:
       - name: "Scanner Last Call"
         unique_id: op25_last_call
-        state: "{{ trigger.json.talkgroup | default('unknown') }}"
+        state: >-
+          {{ trigger.json.talkgroup
+             or ('TG ' ~ trigger.json.tgid if trigger.json.tgid else 'unknown') }}
         attributes:
-          transcript: "{{ trigger.json.transcript }}"
-          keywords: "{{ trigger.json.keywords }}"
+          transcript: "{{ trigger.json.transcript | default('', true) }}"
+          keywords: "{{ trigger.json.keywords | default([], true) }}"
           source: "{{ trigger.json.source_tag or trigger.json.source }}"
           tgid: "{{ trigger.json.tgid }}"
           duration: "{{ trigger.json.duration }}"
           audio_url: "{{ trigger.json.audio_url }}"
 ```
+
+> **This is not an automation.** It is a template *entity*, and it belongs in
+> `configuration.yaml` under the top-level `template:` key — not in the
+> automation editor, and not in `automations.yaml`. Pasting it into an
+> automation gets you
+> `Message malformed: extra keys not allowed @ data['template']`, because the
+> automation schema has no `template:` key. A trigger-based template sensor
+> carries its own trigger, so there is no separate automation to create.
+>
+> `triggers:` / `trigger: webhook` is the syntax from HA 2024.10 onward; the
+> older `trigger:` / `platform: webhook` spelling still works.
+>
+> `triggers:` and `sensor:` must be keys of the **same list item** — one block
+> means "on this trigger, build these entities". Splitting them produces a
+> matched pair of complaints that describe the same fault from both ends:
+> `Invalid template configuration found, trigger option is missing matching
+> domain` (a trigger with no entities) and `'sensor' is an invalid option for
+> 'template'` (entities with no trigger).
+>
+> If your `configuration.yaml` says `template: !include templates.yaml`, then
+> `templates.yaml` *is* the value of `template:` — paste the `- triggers:` list
+> item into it without a `template:` key.
 
 ### 3.4 Playing the call audio back
 
@@ -305,7 +366,8 @@ All keys live under `terminal.home_assistant`.
 |---|---|---|
 | `enabled` | true when `url` is set | Master switch |
 | `url` | — | Base URL of Home Assistant, e.g. `http://homeassistant.local:8123` |
-| `token` | `$OP25_HA_TOKEN` | Long-lived access token; needed for speech-to-text only |
+| `token` | — | Long-lived access token; needed for speech-to-text only. **Avoid** — see below |
+| `token_file` | — | Path to a file containing the token. Preferred: the config holds a path, not a secret |
 | `stt_engine` | `stt.faster_whisper` | Entity id of the HA speech-to-text provider |
 | `language` | `en-US` | Passed to the STT engine |
 | `webhook_id` | — | HA webhook to POST results to; omit to disable the push |
@@ -354,6 +416,20 @@ Clips also arrive over the existing WebSocket as `CALL_AUDIO` messages —
 `json_type: "call_transcript"` once speech-to-text completes. The React UI's
 **Call Audio & Transcripts** card is driven by these, and seeds itself from
 `/api/calls` on load so a reloaded page is not empty.
+
+The first of those two messages carries `"transcript_pending": true` when the
+clip has been accepted for transcription — which is what lets the UI show
+*awaiting transcript* rather than *no transcript* during the gap. The field is
+omitted when false, and is cleared on every terminal outcome: transcribed,
+failed, filtered as a hallucination, or shed from a full queue. So a row can
+never be left waiting on a transcript that is not coming.
+
+**Call History** shows transcripts too. The decoder's call log and the captured
+clips share no identifier — one is written when a voice grant is issued, the
+other when the transmission ends — so they are joined on talkgroup plus start
+time (`www/app/src/utils/callTranscripts.ts`). That is exact on a
+single-channel receiver and best-effort with several channels up at once, the
+same caveat that applies to clip metadata attribution generally.
 
 If you would rather poll from Home Assistant than receive a webhook:
 
@@ -509,6 +585,15 @@ status. Common causes:
   accepts only 16 kHz / 16-bit / mono; that is the default here. If a
   particular provider wants a container rather than bare PCM, set
   `"stt_audio": "wav"`.
+- `HTTP 415` — the engine refused the `X-Speech-Content` declaration. Home
+  Assistant sends a bare "Unsupported Media Type" naming none of the six
+  fields, so OP25 fetches the engine's capabilities and says which one differs.
+  **The usual cause is the language tag.** Home Assistant Cloud advertises
+  regional codes (`en-US`, `en-GB`); the Wyoming/Whisper add-on advertises bare
+  ISO-639-1 codes (`en`). A config that worked against one fails against the
+  other. OP25 reconciles this automatically at startup — `en-US` against a
+  Whisper engine becomes `en`, and the substitution is logged — but setting
+  `language` correctly avoids the round-trip.
 
 You can check what an engine accepts directly:
 

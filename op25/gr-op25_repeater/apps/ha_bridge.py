@@ -298,7 +298,8 @@ class CallClip:
     """One captured transmission: audio plus whatever metadata was live."""
 
     __slots__ = ('id', 'started', 'ended', 'pcm', 'sample_rate', 'metadata',
-                 'transcript', 'keywords', 'stt_error', 'discarded_transcript')
+                 'transcript', 'keywords', 'stt_error', 'discarded_transcript',
+                 'transcript_pending')
 
     def __init__(self, clip_id: str, started: float, ended: float,
                  pcm: bytes, sample_rate: int, metadata: dict[str, Any]) -> None:
@@ -314,6 +315,12 @@ class CallClip:
         # Text the model produced that was rejected as a hallucination. Kept
         # visible for tuning, but never matched against keywords.
         self.discarded_transcript: str = ''
+        # True between the moment the bridge accepts this clip for
+        # transcription and the moment speech-to-text returns (successfully or
+        # not). It is what lets the UI say "awaiting transcript" rather than
+        # "no transcript" — two states that look identical on the wire
+        # otherwise, because both carry an empty ``transcript``.
+        self.transcript_pending: bool = False
 
     @property
     def duration(self) -> float:
@@ -334,6 +341,8 @@ class CallClip:
             d['stt_error'] = self.stt_error
         if self.discarded_transcript:
             d['discarded_transcript'] = self.discarded_transcript
+        if self.transcript_pending:
+            d['transcript_pending'] = True
         d.update(self.metadata)
         return d
 
@@ -559,17 +568,62 @@ class CallRecorder:
 # Configuration
 # ---------------------------------------------------------------------------
 
+#: Config keys that must never leave this process. The loaded config is served
+#: verbatim by ``/api/config`` and by the decoder's ``get_full_config``, both
+#: of which are unauthenticated — so anything secret has to be stripped there.
+SECRET_KEYS = ('token',)
+
+
+def _read_token_file(path: str) -> str:
+    """Read a long-lived access token from *path*, or '' if unreadable.
+
+    Lets the config file name a **path** rather than carry the secret, which
+    keeps the config shareable and keeps the token out of ``/api/config``.
+    A missing file is not an error: the environment variable is the next
+    fallback, and ``describe()`` already reports whether STT ended up
+    configured.
+    """
+    if not path:
+        return ''
+    try:
+        with open(os.path.expanduser(path), 'r') as fp:
+            return fp.read().strip()
+    except OSError as exc:
+        sys.stderr.write('ha_bridge: cannot read token_file %s: %s\n' % (path, exc))
+        return ''
+
+
+def redact_config(config: Any) -> Any:
+    """Deep-copy *config* with every :data:`SECRET_KEYS` value masked.
+
+    Applied wherever the config is handed to a browser. The key is kept (so
+    the read-only config view still shows that a token is configured) but the
+    value is replaced.
+    """
+    if isinstance(config, dict):
+        return {k: ('***redacted***' if k in SECRET_KEYS and v else redact_config(v))
+                for k, v in config.items()}
+    if isinstance(config, list):
+        return [redact_config(v) for v in config]
+    return config
+
+
 class HomeAssistantConfig:
     """Parsed ``terminal.home_assistant`` block.
 
-    The access token may be supplied out-of-band via ``$OP25_HA_TOKEN`` so
-    a long-lived credential need not live in the config file.
+    The access token may be supplied three ways, in precedence order:
+    ``token`` in the config, a ``token_file`` path, then ``$OP25_HA_TOKEN``.
+    The latter two keep a long-lived credential out of the config file —
+    which matters because the config is served to the browser.
     """
 
     def __init__(self, raw: dict[str, Any] | None) -> None:
         raw = raw or {}
         self.url         = str(raw.get('url', '') or '').rstrip('/')
-        self.token       = str(raw.get('token', '') or '') or os.environ.get('OP25_HA_TOKEN', '')
+        self.token_file  = str(raw.get('token_file', '') or '')
+        self.token       = (str(raw.get('token', '') or '')
+                            or _read_token_file(self.token_file)
+                            or os.environ.get('OP25_HA_TOKEN', ''))
         self.webhook_id  = str(raw.get('webhook_id', '') or '')
         self.stt_engine  = str(raw.get('stt_engine', 'stt.faster_whisper') or '')
         self.language    = str(raw.get('language', 'en-US') or 'en-US')
@@ -662,6 +716,9 @@ class HomeAssistantBridge(threading.Thread):
         self._q: queue.Queue[CallClip | None] = queue.Queue(maxsize=queue_size)
         self.keep_running  = True
 
+        # Filled in by negotiate(); also reported by /api/ha/status.
+        self._caps: dict[str, Any] | None = None
+
         # Diagnostics
         self.submitted   = 0
         self.dropped     = 0
@@ -674,14 +731,34 @@ class HomeAssistantBridge(threading.Thread):
 
     # ------------------------------------------------------------------
 
-    def submit(self, clip: CallClip) -> None:
-        """Queue *clip* for processing.  Never blocks the audio thread."""
+    def accepts(self, clip: CallClip) -> bool:
+        """Would :meth:`submit` take this clip?
+
+        Split out from ``submit`` because the caller broadcasts the clip to
+        the UI *before* queueing it, and needs to stamp ``transcript_pending``
+        on that first message — the UI cannot retroactively learn that a clip
+        it already rendered was going to be transcribed after all.
+        """
         if not self.cfg.enabled:
-            return
+            return False
         if self.cfg.talkgroups:
             tgid = clip.metadata.get('tgid') or 0
             if int(tgid or 0) not in self.cfg.talkgroups:
-                return
+                return False
+        return True
+
+    def will_transcribe(self, clip: CallClip) -> bool:
+        """As :meth:`accepts`, but also requires speech-to-text to be usable.
+
+        A clip can be accepted for the webhook alone (no ``token``/``stt_engine``
+        configured), in which case there is no transcript to wait for.
+        """
+        return self.accepts(clip) and self.cfg.stt_configured
+
+    def submit(self, clip: CallClip) -> None:
+        """Queue *clip* for processing.  Never blocks the audio thread."""
+        if not self.accepts(clip):
+            return
         self.submitted += 1
         while True:
             try:
@@ -689,10 +766,16 @@ class HomeAssistantBridge(threading.Thread):
                 return
             except queue.Full:
                 try:
-                    self._q.get_nowait()
-                    self.dropped += 1
+                    evicted = self._q.get_nowait()
                 except queue.Empty:
                     return
+                if evicted is None:      # the stop sentinel — put it back
+                    self.stop()
+                    return
+                self.dropped += 1
+                # This clip will never be transcribed, so release the UI from
+                # "awaiting transcript" rather than leaving the row hanging.
+                self._settle(evicted)
 
     def stop(self) -> None:
         self.keep_running = False
@@ -703,8 +786,80 @@ class HomeAssistantBridge(threading.Thread):
 
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Capability negotiation
+    # ------------------------------------------------------------------
+
+    def fetch_stt_capabilities(self) -> dict[str, Any] | None:
+        """``GET /api/stt/<engine>`` — what the engine will actually accept.
+
+        Home Assistant answers with the provider's supported ``languages``,
+        ``formats``, ``codecs``, ``sample_rates``, ``bit_rates`` and
+        ``channels``. Returns None if the engine cannot be reached.
+        """
+        if not self.cfg.stt_configured:
+            return None
+        url = '%s/api/stt/%s' % (self.cfg.url, self.cfg.stt_engine)
+        req = urllib.request.Request(url, method='GET')
+        req.add_header('Authorization', 'Bearer %s' % self.cfg.token)
+        try:
+            with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
+                data = json.loads(resp.read().decode('utf-8', 'replace'))
+        except Exception as exc:
+            sys.stderr.write('ha_bridge: cannot read %s: %s\n' % (url, exc))
+            return None
+        return data if isinstance(data, dict) else None
+
+    def negotiate(self) -> None:
+        """Reconcile our request format against what the engine supports.
+
+        Home Assistant rejects a mismatch with a bare **HTTP 415**, naming
+        neither the offending field nor the acceptable values — so ask first.
+        The common trap is the language tag: Home Assistant Cloud advertises
+        regional codes like ``en-US``, while the Wyoming/Whisper add-on
+        advertises bare ISO-639-1 codes like ``en``, and the same config
+        pointed at the other engine then fails with nothing to go on.
+        """
+        caps = self.fetch_stt_capabilities()
+        if not caps:
+            return
+        self._caps = caps
+
+        langs = [str(x) for x in (caps.get('languages') or [])]
+        if langs and self.cfg.language not in langs:
+            base = self.cfg.language.split('-')[0].lower()
+            match = (next((x for x in langs if x.lower() == base), None)
+                     or next((x for x in langs if x.lower().split('-')[0] == base), None))
+            if match:
+                sys.stderr.write(
+                    'ha_bridge: %s does not accept language %r; using %r\n'
+                    % (self.cfg.stt_engine, self.cfg.language, match))
+                self.cfg.language = match
+            else:
+                sys.stderr.write(
+                    'ha_bridge: %s does not accept language %r and has no %r variant '
+                    '(it accepts: %s)\n'
+                    % (self.cfg.stt_engine, self.cfg.language, base, ', '.join(langs[:20])))
+
+        rates = [int(x) for x in (caps.get('sample_rates') or []) if str(x).isdigit()]
+        if rates and self.cfg.stt_rate not in rates:
+            # Prefer the lowest rate at or above ours: the source is 8 kHz, so
+            # upsampling further buys nothing and only costs bandwidth.
+            pick = min((r for r in rates if r >= self.cfg.stt_rate), default=max(rates))
+            sys.stderr.write(
+                'ha_bridge: %s does not accept sample_rate %d; using %d\n'
+                % (self.cfg.stt_engine, self.cfg.stt_rate, pick))
+            self.cfg.stt_rate = pick
+
+        fmts = [str(x).lower() for x in (caps.get('formats') or [])]
+        if fmts and 'wav' not in fmts:
+            sys.stderr.write(
+                'ha_bridge: %s does not accept wav (it accepts: %s) — transcription '
+                'will fail\n' % (self.cfg.stt_engine, ', '.join(fmts)))
+
     def run(self) -> None:
         sys.stderr.write('%s\n' % self.cfg.describe())
+        self.negotiate()
         while self.keep_running:
             try:
                 clip = self._q.get(timeout=1.0)
@@ -741,16 +896,26 @@ class HomeAssistantBridge(threading.Thread):
         if clip.keywords:
             self.alerts += 1
 
-        if self.on_transcript is not None:
-            try:
-                self.on_transcript(clip)
-            except Exception:
-                pass
+        self._settle(clip)
 
         if self.cfg.keywords_only and not clip.keywords:
             return
         if self.cfg.webhook_configured:
             self._post_webhook(clip)
+
+    def _settle(self, clip: CallClip) -> None:
+        """Mark *clip* as no longer awaiting transcription and notify the UI.
+
+        Called on every terminal outcome — transcribed, failed, filtered as a
+        hallucination, or shed from a full queue — so a row can never be left
+        showing "awaiting transcript" forever.
+        """
+        clip.transcript_pending = False
+        if self.on_transcript is not None:
+            try:
+                self.on_transcript(clip)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Home Assistant HTTP
@@ -782,6 +947,12 @@ class HomeAssistantBridge(threading.Thread):
                 data = json.loads(resp.read().decode('utf-8', 'replace'))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode('utf-8', 'replace')[:200] if exc.fp else ''
+            if exc.code == 415:
+                # HA returns a bare "Unsupported Media Type" with no indication
+                # of which of the six declared fields it disliked, so say what
+                # we sent and what the engine advertises.
+                return '', ('HTTP 415 from %s — the engine rejected our audio '
+                            'declaration. %s' % (url, self._describe_mismatch()))
             return '', 'HTTP %s from %s: %s' % (exc.code, url, detail)
         except Exception as exc:
             return '', '%s: %s' % (type(exc).__name__, exc)
@@ -789,6 +960,34 @@ class HomeAssistantBridge(threading.Thread):
         if str(data.get('result', '')).lower() != 'success':
             return '', 'stt result=%s' % data.get('result')
         return str(data.get('text', '') or '').strip(), ''
+
+    def _describe_mismatch(self) -> str:
+        """Name the field an HTTP 415 is most likely complaining about."""
+        sent = 'sent language=%s sample_rate=%d bit_rate=%d channel=%d format=wav codec=pcm' % (
+            self.cfg.language, self.cfg.stt_rate, SAMPLE_WIDTH * 8, CHANNELS)
+        caps = self._caps or self.fetch_stt_capabilities()
+        if not caps:
+            self._caps = None
+            return sent + '; could not read the engine capabilities to compare.'
+        self._caps = caps
+
+        bad = []
+        langs = [str(x) for x in (caps.get('languages') or [])]
+        if langs and self.cfg.language not in langs:
+            bad.append('language %r is not in the engine list (try %s)'
+                       % (self.cfg.language, ', '.join(langs[:8])))
+        rates = [int(x) for x in (caps.get('sample_rates') or []) if str(x).isdigit()]
+        if rates and self.cfg.stt_rate not in rates:
+            bad.append('sample_rate %d not in %s' % (self.cfg.stt_rate, rates))
+        fmts = [str(x).lower() for x in (caps.get('formats') or [])]
+        if fmts and 'wav' not in fmts:
+            bad.append('format wav not in %s' % fmts)
+        codecs = [str(x).lower() for x in (caps.get('codecs') or [])]
+        if codecs and 'pcm' not in codecs:
+            bad.append('codec pcm not in %s' % codecs)
+
+        return sent + ('; ' + '; '.join(bad) if bad else
+                       '; the engine advertises all of those as supported.')
 
     def _post_webhook(self, clip: CallClip) -> None:
         base = self.cfg.public_url or ''

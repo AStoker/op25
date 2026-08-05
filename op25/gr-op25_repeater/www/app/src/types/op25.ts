@@ -204,6 +204,11 @@ export interface CallClip {
   /** Text the model returned that was rejected as a probable hallucination.
    *  Shown for tuning; never matched against keywords. */
   discarded_transcript?: string;
+  /** True while the clip is queued for speech-to-text and the result has not
+   *  come back yet. Distinguishes "awaiting transcript" from "no transcript" —
+   *  both carry an empty `transcript`. Cleared on every terminal outcome,
+   *  including failure and a clip shed from a full queue. */
+  transcript_pending?: boolean;
 
   /** Peak sample value as received, before normalisation (0–32767). */
   peak?: number;

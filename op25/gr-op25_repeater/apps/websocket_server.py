@@ -60,6 +60,7 @@ from ha_bridge import (
     ClipStore,
     HomeAssistantBridge,
     HomeAssistantConfig,
+    redact_config,
     resample_pcm16,
     wav_bytes,
 )
@@ -489,7 +490,15 @@ def _current_call_metadata() -> dict[str, Any]:
 
 
 def _on_clip_complete(clip: CallClip) -> None:
-    """A call finished recording: tell the UI, then queue it for Home Assistant."""
+    """A call finished recording: tell the UI, then queue it for Home Assistant.
+
+    The pending flag is stamped *before* the broadcast, not by ``submit()``:
+    the clip goes out to the UI first (so a row appears the instant the
+    transmission ends), and the worker thread could otherwise transcribe and
+    re-broadcast it before this first message was even serialised.
+    """
+    if _ha_bridge is not None:
+        clip.transcript_pending = _ha_bridge.will_transcribe(clip)
     _broadcast_from_thread(MSG_CALL_AUDIO, dict(clip.to_dict(), json_type='call_clip'))
     if _ha_bridge is not None:
         _ha_bridge.submit(clip)
@@ -1015,14 +1024,20 @@ def register_upstream_handler(msg_type: str, handler: Any) -> None:
 
 @app.get("/api/config")
 async def get_config() -> Response:
-    """Return the loaded config JSON, or 404 when no config file was supplied."""
+    """Return the loaded config JSON, or 404 when no config file was supplied.
+
+    Secrets are stripped: this endpoint is unauthenticated, so a Home
+    Assistant token sitting in ``terminal.home_assistant.token`` would
+    otherwise be readable by anyone who can reach the port.
+    """
     if _config is None:
         return Response(
             content='{"error": "No config loaded. Start the server with --config-file."}',
             status_code=404,
             media_type="application/json",
         )
-    return Response(content=json.dumps(_config), media_type="application/json")
+    return Response(content=json.dumps(redact_config(_config)),
+                    media_type="application/json")
 
 
 # ---------------------------------------------------------------------------
@@ -1451,6 +1466,10 @@ class ws_terminal(threading.Thread):
                 _note_channel_state(entry)
             elif json_type == 'call_log':
                 _note_call_log(entry)
+            elif json_type == 'full_config':
+                # get_full_config hands the decoder's whole config file to the
+                # browser. Same exposure as /api/config, same treatment.
+                entry = redact_config(entry)
             ws_type = _JSON_TYPE_TO_MSG.get(json_type, MSG_SYSTEM_STATE)
             _broadcast_from_thread(ws_type, entry)
 

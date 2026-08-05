@@ -9,10 +9,14 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
+import CircularProgress from '@mui/material/CircularProgress';
+import Tooltip from '@mui/material/Tooltip';
 import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
 import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
+import { highlight, matchClipsToCalls, transcriptState } from '../../utils/callTranscripts';
+import type { TranscriptState } from '../../utils/callTranscripts';
 
 interface Row {
   key: string;
@@ -27,6 +31,8 @@ interface Row {
   slot?: number;
   /** Trunk priority (lower wins). */
   prio?: number;
+  /** What the transcript column should show for this call. */
+  transcript: TranscriptState;
 }
 
 function fmtFreq(hz: number): string {
@@ -53,9 +59,75 @@ const VirtuosoTableComponents: TableComponents<Row> = {
   )),
 };
 
+/**
+ * The transcript for one call.
+ *
+ * The distinction that matters here is "waiting" vs "nothing" — a clip queued
+ * behind a slow Whisper model and a clip that came back empty both carry an
+ * empty `transcript`, and a blank cell for the first one reads as a bug.
+ */
+function TranscriptCell({ state }: { state: TranscriptState }) {
+  if (state.kind === 'text') {
+    return (
+      <Typography variant="body2" component="span" sx={{ overflowWrap: 'anywhere' }}>
+        {highlight(state.text, state.keywords).map((part, i) =>
+          typeof part === 'string' ? (
+            <span key={i}>{part}</span>
+          ) : (
+            <Box
+              key={i}
+              component="mark"
+              sx={{ bgcolor: 'warning.light', color: 'warning.contrastText', px: 0.25, borderRadius: 0.5 }}
+            >
+              {part.hit}
+            </Box>
+          ),
+        )}
+      </Typography>
+    );
+  }
+
+  if (state.kind === 'pending') {
+    return (
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+        <CircularProgress size={11} thickness={6} />
+        <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+          awaiting transcript
+        </Typography>
+      </Box>
+    );
+  }
+
+  const muted = (label: string, title?: string) => {
+    const body = (
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}
+      >
+        {label}
+      </Typography>
+    );
+    return title ? <Tooltip title={title}><span>{body}</span></Tooltip> : body;
+  };
+
+  switch (state.kind) {
+    case 'error':
+      return muted('transcription failed', state.detail);
+    // Surfaced rather than hidden: if the hallucination filter is eating real
+    // traffic, this is how you would notice.
+    case 'discarded':
+      return muted('discarded as hallucination', state.text);
+    case 'empty':
+      return muted('no speech recognised');
+    default:
+      return <span>—</span>;
+  }
+}
+
 export default function CallHistoryCard() {
   const system    = useSelectedSystem();
-  const { callLog } = useOp25Service();
+  const { callLog, callClips } = useOp25Service();
   const phone     = useIsPhone();
   const tint      = useSmartColor();
 
@@ -63,11 +135,18 @@ export default function CallHistoryCard() {
   // Fallback: derive entries from per-frequency tgid/srcaddr history.
   const rows = useMemo<Row[]>(() => {
     if (callLog.length > 0) {
-      return callLog
+      const keyed = callLog.map((e, i) => ({ key: `${e.time}-${i}`, entry: e }));
+      // The call log and the captured clips share no id, so they are joined on
+      // talkgroup + time — see utils/callTranscripts.
+      const clipFor = matchClipsToCalls(
+        keyed.map(({ key, entry }) => ({ key, time: entry.time, tgid: entry.tgid })),
+        callClips,
+      );
+      return keyed
         .slice()
         .reverse()
-        .map((e, i) => ({
-          key:    `${e.time}-${i}`,
+        .map(({ key, entry: e }) => ({
+          key,
           time:   fmtTime(e.time),
           freq:   e.freq,
           tgid:   e.tgid,
@@ -76,6 +155,7 @@ export default function CallHistoryCard() {
           srcTag: e.rtag,
           slot:   e.slot,
           prio:   e.prio,
+          transcript: transcriptState(clipFor.get(key)),
         }));
     }
 
@@ -95,28 +175,34 @@ export default function CallHistoryCard() {
           tag:    data.tags[i] ?? '',
           src:    data.srcaddrs[i] ?? 0,
           srcTag: data.srctags[i] ?? '',
+          // This fallback path carries no usable timestamp — `last_activity`
+          // is preformatted text — so clips cannot be joined to it.
+          transcript: { kind: 'none' },
         });
       }
     }
     return out;
-  }, [callLog, system]);
+  }, [callLog, callClips, system]);
 
   // On a phone the frequency and the bare TGID are the least useful columns \u2014
   // the tag already names the talkgroup \u2014 so they make way for the two that
   // answer "who just talked, and when".
   const fixedHeaderContent = () => (
     <TableRow>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '24%' : '16%' }}>Time</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '22%' : '11%' }}>Time</TableCell>
       {!phone && (
         <>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '13%' }}>Freq</TableCell>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '9%' }}>TG</TableCell>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '7%' }}>Slot</TableCell>
-          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '7%' }}>Prio</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '11%' }}>Freq</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '7%' }}>TG</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '5%' }}>Slot</TableCell>
+          <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '5%' }}>Prio</TableCell>
         </>
       )}
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '40%' : '25%' }}>Tag</TableCell>
-      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '36%' : '24%' }}>Source</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '42%' : '17%' }}>Tag</TableCell>
+      <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: phone ? '36%' : '16%' }}>Source</TableCell>
+      {!phone && (
+        <TableCell variant="head" sx={{ backgroundColor: 'background.paper', width: '28%' }}>Transcript</TableCell>
+      )}
     </TableRow>
   );
 
@@ -133,10 +219,22 @@ export default function CallHistoryCard() {
       )}
       <TableCell sx={{ overflowWrap: 'anywhere', color: tint(r.tag) }}>
         {r.tag || (r.tgid ? `TG ${r.tgid}` : '\u2014')}
+        {/* No room for a column on a phone, so the transcript rides along
+            under the talkgroup it belongs to. */}
+        {phone && r.transcript.kind !== 'none' && (
+          <Box sx={{ mt: 0.25, color: 'text.primary' }}>
+            <TranscriptCell state={r.transcript} />
+          </Box>
+        )}
       </TableCell>
       <TableCell sx={{ overflowWrap: 'anywhere' }}>
         {r.src ? (r.srcTag ? `${r.srcTag} (${r.src})` : r.src) : '\u2014'}
       </TableCell>
+      {!phone && (
+        <TableCell sx={{ overflowWrap: 'anywhere' }}>
+          <TranscriptCell state={r.transcript} />
+        </TableCell>
+      )}
     </>
   );
 

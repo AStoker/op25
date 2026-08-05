@@ -11,8 +11,10 @@ import DownloadIcon from '@mui/icons-material/Download';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
+import CircularProgress from '@mui/material/CircularProgress';
 import CardShell from '../CardShell/CardShell';
 import { useOp25Service } from '../../services/op25Service';
+import { highlight } from '../../utils/callTranscripts';
 import type { CallClip } from '../../types/op25';
 
 /** Clips are short; keep the list light rather than virtualising it. */
@@ -112,20 +114,6 @@ function fmtDuration(secs: number): string {
   return `${secs.toFixed(1)}s`;
 }
 
-/**
- * Split *text* around every keyword occurrence so the matched terms can be
- * rendered highlighted. Terms are escaped before going into the RegExp —
- * they come from the user's config, which may legitimately contain
- * characters like `10-33` that would otherwise change the pattern's meaning.
- */
-function highlight(text: string, keywords: string[]): (string | { hit: string })[] {
-  if (!text || keywords.length === 0) return [text];
-  const escaped = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const parts = text.split(new RegExp(`(${escaped.join('|')})`, 'ig'));
-  const lower = new Set(keywords.map((k) => k.toLowerCase()));
-  return parts.map((p) => (lower.has(p.toLowerCase()) ? { hit: p } : p));
-}
-
 interface ClipRowProps {
   clip: CallClip;
   playing: boolean;
@@ -199,6 +187,16 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
               ),
             )}
           </Typography>
+        ) : clip.transcript_pending ? (
+          // A clip queued behind a slow model and a clip that came back empty
+          // both carry an empty transcript; saying "no transcript" for the
+          // first one reads as a failure that has not happened yet.
+          <Box sx={{ mt: 0.25, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <CircularProgress size={11} thickness={6} />
+            <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+              awaiting transcript…
+            </Typography>
+          </Box>
         ) : (
           <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>
             {clip.stt_error

@@ -555,6 +555,139 @@ class TestBridgeFiltering:
         assert bridge._q.qsize() == 2
 
 
+class TestTokenSources:
+    """Three ways to supply the token; the config file should be the last resort."""
+
+    def test_token_file_is_read(self, tmp_path: Any) -> None:
+        p = tmp_path / 'ha_token'
+        p.write_text('  file-token\n')
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token_file': str(p)})
+        assert cfg.token == 'file-token'
+
+    def test_explicit_token_wins_over_the_file(self, tmp_path: Any) -> None:
+        p = tmp_path / 'ha_token'
+        p.write_text('file-token')
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token': 'inline', 'token_file': str(p)})
+        assert cfg.token == 'inline'
+
+    def test_token_file_wins_over_the_environment(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv('OP25_HA_TOKEN', 'from-env')
+        p = tmp_path / 'ha_token'
+        p.write_text('file-token')
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token_file': str(p)})
+        assert cfg.token == 'file-token'
+
+    def test_a_missing_token_file_falls_back_to_the_environment(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv('OP25_HA_TOKEN', 'from-env')
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token_file': str(tmp_path / 'nope')})
+        assert cfg.token == 'from-env'
+
+
+class TestConfigRedaction:
+    """/api/config and get_full_config are both unauthenticated."""
+
+    def test_token_is_masked(self) -> None:
+        out = ha_bridge.redact_config(
+            {'terminal': {'home_assistant': {'token': 'secret', 'url': 'http://x'}}})
+        ha = out['terminal']['home_assistant']
+        assert ha['token'] == '***redacted***'
+        assert ha['url'] == 'http://x'
+
+    def test_an_empty_token_is_left_alone(self) -> None:
+        out = ha_bridge.redact_config({'token': ''})
+        assert out['token'] == ''
+
+    def test_lists_are_walked(self) -> None:
+        out = ha_bridge.redact_config({'a': [{'token': 'secret'}]})
+        assert out['a'][0]['token'] == '***redacted***'
+
+    def test_the_original_is_not_mutated(self) -> None:
+        original = {'token': 'secret'}
+        ha_bridge.redact_config(original)
+        assert original['token'] == 'secret'
+
+    def test_token_file_path_is_not_a_secret(self) -> None:
+        """The point of token_file is that the path can stay in the config."""
+        out = ha_bridge.redact_config({'token_file': '/etc/op25/ha_token'})
+        assert out['token_file'] == '/etc/op25/ha_token'
+
+
+class TestTranscriptPending:
+    """The UI must be able to tell "waiting" from "nothing came back"."""
+
+    def test_a_new_clip_is_not_pending(self) -> None:
+        assert make_clip('a').transcript_pending is False
+
+    def test_pending_is_omitted_from_the_payload_when_false(self) -> None:
+        assert 'transcript_pending' not in make_clip('a').to_dict()
+
+    def test_pending_is_published_when_set(self) -> None:
+        clip = make_clip('a')
+        clip.transcript_pending = True
+        assert clip.to_dict()['transcript_pending'] is True
+
+    def test_will_transcribe_needs_speech_to_text_configured(self) -> None:
+        """A webhook-only bridge has no transcript to wait for."""
+        cfg = ha_bridge.HomeAssistantConfig({'url': 'http://x', 'webhook_id': 'w'})
+        bridge = ha_bridge.HomeAssistantBridge(cfg)
+        assert bridge.accepts(make_clip('a')) is True
+        assert bridge.will_transcribe(make_clip('a')) is False
+
+    def test_will_transcribe_when_stt_is_configured(self) -> None:
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token': 't', 'stt_engine': 'stt.faster_whisper'})
+        bridge = ha_bridge.HomeAssistantBridge(cfg)
+        assert bridge.will_transcribe(make_clip('a')) is True
+
+    def test_a_filtered_talkgroup_is_never_pending(self) -> None:
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'token': 't', 'talkgroups': [101]})
+        bridge = ha_bridge.HomeAssistantBridge(cfg)
+        clip = make_clip('a')
+        clip.metadata['tgid'] = 999
+        assert bridge.will_transcribe(clip) is False
+
+    def test_a_disabled_bridge_is_never_pending(self) -> None:
+        bridge = ha_bridge.HomeAssistantBridge(ha_bridge.HomeAssistantConfig(None))
+        assert bridge.will_transcribe(make_clip('a')) is False
+
+    def test_a_shed_clip_stops_being_pending(self) -> None:
+        """Otherwise its row spins forever: it will never be transcribed."""
+        cfg = ha_bridge.HomeAssistantConfig({'url': 'http://x', 'token': 't'})
+        settled: list = []
+        bridge = ha_bridge.HomeAssistantBridge(
+            cfg, on_transcript=settled.append, queue_size=1)
+        clips = [make_clip('c%d' % i, samples=160) for i in range(3)]
+        for c in clips:
+            c.transcript_pending = True
+            bridge.submit(c)
+
+        assert bridge.dropped == 2
+        # The two evicted clips were released; the one still queued was not.
+        assert [c.id for c in settled] == ['c0', 'c1']
+        assert [c.transcript_pending for c in clips] == [False, False, True]
+
+    def test_processing_clears_pending_before_notifying(self, stub_ha: Any) -> None:
+        """The UI's row update and the flag clear must be the same message."""
+        _srv, url = stub_ha
+        seen: list = []
+        bridge = bridge_for(url)
+        bridge.on_transcript = lambda c: seen.append(c.transcript_pending)
+        clip = make_clip('a')
+        clip.transcript_pending = True
+        bridge._process(clip)
+        assert seen == [False]
+        assert clip.transcript_pending is False
+
+
 # ---------------------------------------------------------------------------
 # Home Assistant HTTP round-trips (against a stub HA)
 # ---------------------------------------------------------------------------
@@ -566,6 +699,32 @@ class _StubHA(BaseHTTPRequestHandler):
     requests: list = []          # class-level: (path, headers, body)
     stt_status = 200
     stt_body = {'result': 'success', 'text': 'engine twelve structure fire'}
+    # What GET /api/stt/<engine> advertises. Defaults mirror the Wyoming
+    # Whisper add-on, which is the engine that actually trips people up: bare
+    # ISO-639-1 language codes, not the regional tags HA Cloud uses.
+    stt_caps: Any = {
+        'languages': ['en', 'es', 'fr', 'de'],
+        'formats': ['wav'],
+        'codecs': ['pcm'],
+        'sample_rates': [16000],
+        'bit_rates': [16],
+        'channels': [1],
+    }
+
+    def do_GET(self) -> None:                        # noqa: N802 (BaseHTTPRequestHandler API)
+        type(self).requests.append((self.path, dict(self.headers), b''))
+        caps = type(self).stt_caps
+        if not self.path.startswith('/api/stt/') or caps is None:
+            self.send_response(404)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        payload = json.dumps(caps).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self) -> None:                       # noqa: N802 (BaseHTTPRequestHandler API)
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
@@ -616,6 +775,14 @@ def stub_ha(_stub_ha_server: Any):
     _StubHA.requests = []
     _StubHA.stt_status = 200
     _StubHA.stt_body = {'result': 'success', 'text': 'engine twelve structure fire'}
+    _StubHA.stt_caps = {
+        'languages': ['en', 'es', 'fr', 'de'],
+        'formats': ['wav'],
+        'codecs': ['pcm'],
+        'sample_rates': [16000],
+        'bit_rates': [16],
+        'channels': [1],
+    }
     return _stub_ha_server, 'http://127.0.0.1:%d' % _stub_ha_server.server_address[1]
 
 
@@ -626,6 +793,71 @@ def bridge_for(url: str, **extra: Any) -> ha_bridge.HomeAssistantBridge:
         **extra,
     ))
     return ha_bridge.HomeAssistantBridge(cfg)
+
+
+class TestCapabilityNegotiation:
+    """HA answers a format mismatch with a bare 415, so ask what it wants first."""
+
+    def test_reads_the_engine_capabilities(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        caps = bridge_for(url).fetch_stt_capabilities()
+        assert caps is not None and caps['sample_rates'] == [16000]
+
+    def test_regional_language_falls_back_to_the_base_code(self, stub_ha: Any) -> None:
+        """en-US is what HA Cloud advertises; Wyoming/Whisper offers only en."""
+        _srv, url = stub_ha
+        bridge = bridge_for(url, language='en-US')
+        bridge.negotiate()
+        assert bridge.cfg.language == 'en'
+
+    def test_a_supported_language_is_left_alone(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        bridge = bridge_for(url, language='es')
+        bridge.negotiate()
+        assert bridge.cfg.language == 'es'
+
+    def test_a_base_code_matches_a_regional_engine(self, stub_ha: Any) -> None:
+        """The mirror image: our 'en' against a cloud engine's en-US/en-GB."""
+        _srv, url = stub_ha
+        _StubHA.stt_caps = dict(_StubHA.stt_caps, languages=['en-US', 'en-GB', 'de-DE'])
+        bridge = bridge_for(url, language='en')
+        bridge.negotiate()
+        assert bridge.cfg.language == 'en-US'
+
+    def test_an_unmatchable_language_is_left_for_the_user(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        bridge = bridge_for(url, language='cy')
+        bridge.negotiate()
+        assert bridge.cfg.language == 'cy'
+
+    def test_sample_rate_is_raised_to_something_supported(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_caps = dict(_StubHA.stt_caps, sample_rates=[22050, 44100])
+        bridge = bridge_for(url, stt_sample_rate=16000)
+        bridge.negotiate()
+        assert bridge.cfg.stt_rate == 22050
+
+    def test_negotiation_survives_an_unreachable_engine(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_caps = None                       # 404 on the capability GET
+        bridge = bridge_for(url, language='en-US')
+        bridge.negotiate()
+        assert bridge.cfg.language == 'en-US'         # unchanged, and no raise
+
+    def test_a_415_names_the_offending_field(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_status = 415
+        bridge = bridge_for(url, language='en-US')    # deliberately not negotiated
+        _text, err = bridge._transcribe(make_clip('a'))
+        assert '415' in err
+        assert "language 'en-US' is not in the engine list" in err
+
+    def test_a_415_with_nothing_obviously_wrong_says_so(self, stub_ha: Any) -> None:
+        _srv, url = stub_ha
+        _StubHA.stt_status = 415
+        bridge = bridge_for(url, language='en')
+        _text, err = bridge._transcribe(make_clip('a'))
+        assert 'advertises all of those as supported' in err
 
 
 class TestSpeechToTextRequest:

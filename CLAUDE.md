@@ -188,9 +188,41 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   to the provider as raw PCM chunks, so clips are upsampled and sent
   headerless (`stt_audio: "wav"` switches to a container if a provider needs
   one).
+- **A mismatch in the `X-Speech-Content` header is an HTTP 415 that names
+  nothing.** HA's `check_metadata()` compares all six declared fields against
+  the provider's lists and returns a bare "Unsupported Media Type" on any
+  miss. `HomeAssistantBridge.negotiate()` therefore `GET`s
+  `/api/stt/<engine>` at thread start and reconciles language and sample rate;
+  `_describe_mismatch()` does the same lookup on a 415 so the error says which
+  field. The language tag is the usual offender — HA Cloud advertises `en-US`,
+  Wyoming/Whisper advertises `en`, and the same config fails when moved
+  between them.
 - Endpoints: `/api/calls`, `/api/calls/{id}/audio.wav?rate=`, `/api/ha/status`
   (start troubleshooting here), and `/api/stream?rate=&format=`. The stream
   defaults are unchanged — 8 kHz WAV — so the React player is unaffected.
+- **`transcript_pending` is stamped by `websocket_server._on_clip_complete`,
+  not by `HomeAssistantBridge.submit()`.** The clip is broadcast to the UI
+  before it is queued, and the worker thread can transcribe and re-broadcast
+  it before that first message is even serialised — so the flag has to be set
+  ahead of the broadcast, using `bridge.will_transcribe()` (the same predicate
+  `submit()` applies, plus `stt_configured`). `_settle()` clears it on *every*
+  terminal outcome including a clip shed from a full queue, so no row is left
+  waiting forever. The field is omitted from `to_dict()` when false, which
+  means the client cannot clear it by spreading the second message over the
+  first — `op25Service` pins it explicitly.
+- **Call History joins the call log to clips heuristically** (talkgroup +
+  start time, `www/app/src/utils/callTranscripts.ts`). The two feeds share no
+  id: `call_log` is written by the trunking layer at voice-grant time,
+  `call_clip` by the UDP segmenter at end-of-transmission. Exact on a single
+  channel, best-effort with several up. The `frequency_data` fallback path in
+  that card has no usable timestamp (`last_activity` is preformatted text), so
+  it never shows a transcript.
+- **The config is served to the browser, so it must not hold secrets.**
+  `/api/config` and the decoder's `get_full_config` both hand the loaded JSON
+  to an unauthenticated client; `ha_bridge.redact_config()` masks
+  `SECRET_KEYS` at both choke points (the REST handler and `_dispatch`). The
+  token should come from `token_file` or `$OP25_HA_TOKEN` rather than the
+  config in the first place — redaction is a backstop, not the mechanism.
 - Clips live in a bounded in-memory ring (`ClipStore`, 60 clips / 24 MB).
   Nothing is written to disk.
 - Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
