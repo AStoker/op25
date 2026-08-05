@@ -1,0 +1,82 @@
+{
+    "devices": [
+        {
+            "name": "sdr0",
+            "args": "rtl=00000001",
+            "frequency": 860337500,
+            "gains": "LNA:39",
+            "gain_mode": false,
+            "offset": 0,
+            "ppm": 0.0,
+            "rate": 1000000,
+            "usable_bw_pct": 0.85,
+            "tunable": true
+        }
+    ],
+    "channels": [
+        {
+            "name": "Richland Palmetto 800",
+            "device": "sdr0",
+            "trunking_sysname": "Palmetto800",
+            "demod_type": "cqpsk",
+            "filter_type": "rc",
+            "excess_bw": 0.2,
+            "destination": "udp://127.0.0.1:23456, udp://127.0.0.1:23458",
+            "if_rate": 24000,
+            "symbol_rate": 4800,
+            "enable_analog": "off"
+        }
+    ],
+    "trunking": {
+        "module": "tk_p25.py",
+        "chans": [
+            {
+                "sysname": "Palmetto800",
+                "control_channel_list": "860.33750,853.53750,853.03750,852.53750",
+                "tgid_tags_file": "palmetto_tgs.tsv",
+                "nac": "0x1D1",
+                "whitelist": "",
+                "blacklist": "",
+                "crypt_behavior": 2
+            }
+        ]
+    },
+    "audio": {
+        "module": "sockaudio.py",
+        "instances": [
+            {
+                "instance_name": "audio0",
+                "device_name": "default",
+                "udp_port": 23456,
+                "audio_gain": 1.0,
+                "number_channels": 1
+            }
+        ]
+    },
+    "terminal": {
+        "module": "websocket_server.py",
+        "terminal_type": "ws:0.0.0.0:8080",
+        "http_plot_interval": 1.0,
+        "audio_ports": [
+            23458
+        ],
+        "home_assistant": {
+            "enabled": true,
+            "url": "http://192.168.0.217:8123",
+            "token_file": "~/.config/op25/ha_token",
+            "stt_engine": "stt.faster_whisper",
+            "language": "en",
+            "webhook_id": "op25_call_a7f3c1d9e2b4",
+            "public_url": "http://localhost:8080",
+            "keywords": [
+                "structure fire",
+                "working fire",
+                "second alarm",
+                "officer down",
+                "signal 63",
+                "10-33"
+            ],
+            "keywords_only": false
+        }
+    }
+}
