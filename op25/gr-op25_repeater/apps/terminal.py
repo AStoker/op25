@@ -525,9 +525,21 @@ class curses_terminal(threading.Thread):
                 break
             msg = self.input_q.delete_head_nowait()
             if msg.type() == -4:
-                for m in json.loads(msg.to_string()):
-                    if m is not None and len(m) > 0:
-                        rc |= self.process_json(json.dumps(m))
+                payload = json.loads(msg.to_string())
+                # multi_rx sends a list of update dicts, but gr_gnuplot.send_plot
+                # puts a bare dict on the same queue with the same type.  Iterating
+                # that yields key *strings*, and process_json() then subscripts a
+                # str -- a TypeError that the bare except in run() turns into a
+                # 'quit', taking the whole receiver down.  Normalise instead.
+                if isinstance(payload, dict):
+                    payload = [payload]
+                elif not isinstance(payload, list):
+                    continue
+                for m in payload:
+                    if isinstance(m, dict) and len(m) > 0:
+                        # bool(): process_json() bare-returns None on a couple of
+                        # early-out paths, and "rc |= None" is a TypeError.
+                        rc |= bool(self.process_json(json.dumps(m)))
         return rc
 
     def send_command(self, command, arg1 = 0, arg2 = 0):
@@ -557,28 +569,6 @@ class curses_terminal(threading.Thread):
             self.end_terminal()
             self.keep_running = False
         self.send_command('quit', 0)
-
-class http_terminal(threading.Thread):
-    def __init__(self, input_q,  output_q, endpoint, **kwds):
-        from http_server import http_server
-
-        threading.Thread.__init__ (self, **kwds)
-        self.setDaemon(1)
-        self.input_q = input_q
-        self.output_q = output_q
-        self.endpoint = endpoint
-        self.keep_running = True
-        self.server = http_server(self.input_q, self.output_q, self.endpoint)
-        self.start()
-
-    def get_terminal_type(self):
-        return "http"
-
-    def end_terminal(self):
-        self.keep_running = False
-
-    def run(self):
-        self.server.run()
 
 class udp_terminal(threading.Thread):
     def __init__(self, input_q,  output_q, port, **kwds):
@@ -637,7 +627,14 @@ def op25_terminal(input_q,  output_q, terminal_type, config = None):
             port = int(terminal_type)
             return udp_terminal(input_q, output_q, port)
         elif terminal_type.startswith('http:'):
-            return http_terminal(input_q, output_q, terminal_type.replace('http:', ''))
+            sys.stderr.write(
+                'error: the "http:" terminal has been removed, along with the\n'
+                '       waitress server and the www-static UI it served.  Use the\n'
+                '       websocket terminal instead:\n'
+                '           "module": "websocket_server.py",\n'
+                '           "terminal_type": "ws:%s"\n'
+                % terminal_type.replace('http:', ''))
+            return None
         else:
             sys.stderr.write('warning: unsupported terminal type: %s\n' % terminal_type)
             return None

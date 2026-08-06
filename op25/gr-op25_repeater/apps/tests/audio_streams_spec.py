@@ -63,7 +63,10 @@ class TestEndpointDiscovery:
         assert slot_a[1]['name'] == 'ch two'
 
     def test_ws_destinations_are_ignored(self) -> None:
-        # ws:// is the legacy stack's C++ sink; only udp carries PCM here.
+        # ws:// was removed from the C++ audio layer (it fed the legacy browser
+        # UI directly).  Old configs on disk may still carry one, and the
+        # decoder only warns about it, so discovery must keep parsing such a
+        # destination harmlessly and use the udp half.
         eps = ws._discover_audio_endpoints({
             'channels': [{'name': 'c', 'destination': 'udp://127.0.0.1:23456, ws://0.0.0.0:9000'}],
         })
@@ -81,11 +84,28 @@ class TestEndpointDiscovery:
         # A unicast UDP port has one consumer; sockaudio wins.
         eps = ws._discover_audio_endpoints({
             'channels': [{'name': 'c', 'destination': 'udp://127.0.0.1:23456, udp://127.0.0.1:23458'}],
-            'audio': {'instances': [{'udp_port': 23456}]},
+            'audio': {'module': 'sockaudio.py', 'instances': [{'udp_port': 23456}]},
         })
         ports = [e['port'] for e in eps]
         assert 23456 not in ports and 23457 not in ports
         assert 23458 in ports
+
+    def test_instances_do_not_claim_ports_when_the_module_is_disabled(self) -> None:
+        """An inert audio block must not silence browser audio.
+
+        multi_rx's configure_audio() returns early on an empty "module", so
+        nothing binds those ports.  Excluding them anyway would silence any
+        config that merely left a stale audio block behind -- which is how the
+        Home Assistant add-on runs by default (audio_output: browser sets
+        module to "").
+        """
+        for module in ('', '   ', None):
+            eps = ws._discover_audio_endpoints({
+                'channels': [{'name': 'c', 'destination': 'udp://127.0.0.1:23456'}],
+                'audio': {'module': module, 'instances': [{'udp_port': 23456}]},
+            })
+            ports = [e['port'] for e in eps]
+            assert ports == [23456, 23457], f'module={module!r} gave {ports}'
 
     def test_default_fallback_when_nothing_configured(self) -> None:
         eps = ws._discover_audio_endpoints({})

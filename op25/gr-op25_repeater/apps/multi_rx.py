@@ -40,6 +40,7 @@ exit 127
 '''
 import io
 import os
+import signal
 import sys
 import threading
 import time
@@ -72,7 +73,12 @@ from gr_gnuplot import eye_sink_f
 from gr_gnuplot import mixer_sink_c
 from gr_gnuplot import fll_sink_c
 
-sys.path.append('tdma')
+# Relative to THIS FILE, not the cwd.  cwd belongs to the user's data --
+# tgid_tags_file, whitelists and crypt_keys all resolve against it -- so it
+# is routinely not the apps directory (the Home Assistant add-on runs with
+# cwd set to the config dir).  A bare 'tdma' silently resolved to nothing
+# there and `import lfsr` died.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tdma'))
 import lfsr
 
 os.environ['IMBE'] = 'soft'
@@ -198,7 +204,6 @@ class channel(object):
         self.config = config
         self.symbol_rate = int(from_dict(config, 'symbol_rate', _def_symbol_rate))
         self.channel_rate = self.symbol_rate
-        self.ws_instance = get_ws_instance(from_dict(config, 'destination', ""))
         if dev.args == 'wavsrc':
             self.demod = p25_demodulator.p25_demod_fb(
                              msgq_id = self.msgq_id,
@@ -325,18 +330,20 @@ class channel(object):
     def set_plot_destination(self, plot): # match plot rate/output to the terminal in use
         if plot is None or plot not in self.sinks or self.tb.terminal_type is None:
             return
-        if self.tb.terminal_type == "http":
-            self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
-            self.sinks[plot][0].gnuplot.set_output_dir(self.tb.http_plot_directory)
-        elif self.tb.terminal_type == "ws":
-            # The browser renders these from the data stream, so no image
-            # directory is needed — but throttle to the same rate the http
-            # terminal uses for its images rather than sending every buffer.
+        if self.tb.terminal_type == "ws":
+            # The browser renders these from the raw data stream, so there is no
+            # image to write — but throttle rather than sending every buffer.
             self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
         else:
             self.sinks[plot][0].gnuplot.set_interval(self.tb.curses_plot_interval)
 
     def toggle_plot(self, plot_type):
+        # Only the ws terminal renders plots.  gnuplot is no longer spawned, so
+        # under curses/udp a plot sink would burn CPU building traces that
+        # nothing draws.
+        if self.tb.terminal_type != "ws":
+            sys.stderr.write("%s Plots require the ws terminal (\"module\": \"websocket_server.py\"); ignoring\n" % log_ts.get())
+            return
         if plot_type == 1:
             self.toggle_fft_plot()
         elif plot_type == 2:
@@ -686,15 +693,18 @@ class rx_block (gr.top_block):
         except (TypeError, ValueError):
             pass
         self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type, **term_kwargs)
+        if self.terminal is None:
+            # op25_terminal() answers None for a terminal_type it does not
+            # recognise (having already explained why on stderr).  Carry on
+            # headless rather than turning that into an AttributeError.
+            sys.stderr.write("Terminal not created for terminal_type '%s'; continuing headless\n" % term_type)
+            return
         self.terminal_type = self.terminal.get_terminal_type()
         self.terminal_config = config
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))
+        # Despite the name this is the ws terminal's plot rate; nothing writes
+        # images any more.  curses_plot_interval defaults to 0.0 (every buffer).
         self.http_plot_interval = float(from_dict(config, 'http_plot_interval', 1.0))
-        self.http_plot_directory = str(from_dict(config, 'http_plot_directory', "../www/images"))
-        try:
-            os.makedirs(self.http_plot_directory, exist_ok=True)
-        except OSError as e:
-            sys.stderr.write("Warning: unable to create plot directory %s: %s\n" % (self.http_plot_directory, e))
         self.ui_timeout = float(from_dict(config, 'terminal_timeout', 5.0))
 
     def configure_trunking(self, config):
@@ -890,7 +900,6 @@ class rx_block (gr.top_block):
             ui_rsp.append(js)
             ui_rsp.append(self.ui_freq_update())
             ui_rsp.append(self.ui_calllog_update())
-            ui_rsp.append(self.ui_plot_update())
         elif s == 'toggle_plot':
             if not self.get_interactive():
                 sys.stderr.write("%s Cannot start plots for non-realtime (replay) sessions\n" % log_ts.get())
@@ -953,13 +962,6 @@ class rx_block (gr.top_block):
             sys.stderr.write("%s set_full_config is not supported; edit the config file instead\n" % log_ts.get())
             ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
                            'detail': "set_full_config is not supported; edit the config file instead"})
-        elif s == 'get_ws_instances':
-            js = {}
-            js['json_type'] = "ws_instances"
-            js['uuid'] = m_uuid
-            for chan in self.channels:
-                js[chan.msgq_id] = chan.ws_instance
-            ui_rsp.append(js)
         elif s == 'dump_tgids':
             self.trunk_rx.dump_tgids()
             ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
@@ -1018,19 +1020,6 @@ class rx_block (gr.top_block):
             meta_s, meta_q = self.meta_streams[s_name]
             params[rx_id]['stream_url'] = meta_s.get_url()
         return params
-
-    def ui_plot_update(self):
-        if self.terminal_type is None or self.terminal_type != "http":
-            return { }
-
-        filenames = []
-        for chan in self.channels:
-            for sink in chan.sinks:
-                fn = chan.sinks[sink][0].gnuplot.filename
-                if fn is not None and os.access(os.path.join(self.http_plot_directory, fn), os.R_OK):
-                    filenames.append(fn)
-        d = {'json_type': 'rx_update', 'files': filenames}
-        return d
 
     def kill(self):
         for chan in self.channels:
@@ -1117,6 +1106,24 @@ class rx_main(object):
         self.tb = rx_block(options.verbosity, config = config)
         self.q_watcher = du_queue_watcher(self.tb.ui_out_q, self.process_qmsg)
         sys.stderr.write('python version detected: %s\n' % sys.version)
+        signal.signal(signal.SIGTERM, self._on_sigterm)
+
+    def _on_sigterm(self, signum, frame):
+        """Shut down cleanly on SIGTERM (docker stop, systemd, s6).
+
+        Raising re-uses the KeyboardInterrupt path in run(), which calls
+        tb.stop(); merely clearing keep_running would exit the loop without
+        stopping the flowgraph.
+
+        This fires promptly only on the interactive path, whose loop is
+        time.sleep(1.0) — PEP 475 runs the handler and lets the exception
+        propagate out of the sleep.  On the non-interactive path run() blocks
+        in tb.wait(), which is C++ with no bytecode executing, so the handler
+        will not run until that returns.  s6 is configured to send SIGINT
+        instead for exactly this reason, and SIGKILL backstops it.
+        """
+        sys.stderr.write("SIGTERM received; shutting down\n")
+        raise KeyboardInterrupt
 
     def process_qmsg(self, msg):
         if msg is None or self.tb.process_qmsg(msg):

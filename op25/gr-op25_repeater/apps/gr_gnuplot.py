@@ -17,13 +17,17 @@
 # Software Foundation, Inc., 51 Franklin Street, Boston, MA
 # 02110-1301, USA.
 
-import sys
-import os
-import time
-import subprocess
-import json
+"""Plot sinks for the OP25 signal displays.
 
-import shutil
+Despite the module name, gnuplot is no longer invoked: the browser renders
+these plots itself from the raw traces that send_plot() pushes onto out_q.
+The gnuplot subprocess only ever existed for the removed http terminal's PNG
+output and for rx.py's x11 windows, and both are gone.  The name is kept
+because renaming it would churn six imports in multi_rx.py for no gain.
+"""
+
+import time
+import json
 
 from gnuradio import gr, eng_notation
 from gnuradio import blocks, audio
@@ -37,8 +41,6 @@ import gnuradio.op25_repeater as op25_repeater
 _def_debug = 0
 _def_sps = 5
 _def_sps_mult = 2
-
-GNUPLOT = shutil.which('gnuplot') or '/usr/bin/gnuplot'
 
 Y_AVG    = 0.03
 FFT_AVG  = 0.05
@@ -79,9 +81,6 @@ class wrap_gp(object):
         self.plot_count = 0
         self.last_plot = 0
         self.plot_interval = None
-        self.sequence = 0
-        self.output_dir = None
-        self.filename = None
         self.chan = chan
         self.out_q = out_q
         if plot_name == "":
@@ -89,49 +88,16 @@ class wrap_gp(object):
         else:
             self.plot_name = plot_name + " "
 
-        self.gp = None
-        if out_q is None:   # only need gnuplot when not using the web-UI queue
-            self.attach_gp()
-
-    def attach_gp(self):
-        args = [GNUPLOT]
-        exe  = GNUPLOT
-        self.gp = subprocess.Popen(args, executable=exe, stdin=subprocess.PIPE)
-
     def set_sps(self, sps):
         self.sps = int(sps)
 
     def kill(self):
-        try:
-            if self.gp is not None:
-                self.gp.stdin.close()   # closing pipe should cause subprocess to exit
-        except IOError:
-            pass
         if self.out_q is not None:
             self.out_q.flush()
         self.out_q = None
-        if self.gp is None:
-            return
-        sleep_count = 0
-        while True:                     # wait politely, but only for so long
-            self.gp.poll()
-            if self.gp.returncode is not None:
-                break
-            time.sleep(0.1)
-            sleep_count += 1
-            if (sleep_count % 5) == 0:
-                self.gp.kill()
 
     def set_interval(self, v):
         self.plot_interval = v
-
-    def set_output_dir(self, v):
-        self.output_dir = v
-        # The http terminal serves gnuplot-rendered PNGs, so it needs a gnuplot
-        # process even though out_q is set (which otherwise means the front-end
-        # draws the plot itself and gnuplot can be skipped entirely).
-        if v and self.gp is None:
-            self.attach_gp()
 
     def plot(self, buf, bufsz, mode='eye'):
         BUFSZ = bufsz
@@ -146,8 +112,6 @@ class wrap_gp(object):
             self.buf = np.array([])
             return consumed
 
-        plots = []
-        s = ''
         traces = []     # numeric (xs, ys) series for the web UI
         while(len(self.buf)):
             if mode == 'eye':
@@ -155,32 +119,17 @@ class wrap_gp(object):
                     break
                 trace = np.asarray(self.buf[:self.sps], dtype=float)
                 # x is the position within the trace so the web UI overlays the
-                # traces into an eye diagram, as gnuplot does with separate lines.
+                # traces into an eye diagram, as gnuplot did with separate lines.
                 traces.append((np.arange(len(trace), dtype=float), trace))
-                if self.gp is not None:
-                    for i in range(self.sps):
-                        s += '%f\n' % self.buf[i]
-                    s += 'e\n'
                 self.buf=self.buf[self.sps:]
-                plots.append('"-" with lines')
             elif mode == 'constellation':
                 arr = np.asarray(self.buf)
                 traces.append((arr.real.astype(float), arr.imag.astype(float)))
-                if self.gp is not None:
-                    for b in self.buf:
-                        s += '%f\t%f\n' % (b.real, b.imag)
-                    s += 'e\n'
                 self.buf = []
-                plots.append('"-" with points')
             elif mode == 'symbol':
                 arr = np.asarray(self.buf, dtype=float)
                 traces.append((np.arange(len(arr), dtype=float), arr))
-                if self.gp is not None:
-                    for b in self.buf:
-                        s += '%f\n' % (b)
-                    s += 'e\n'
                 self.buf = []
-                plots.append('"-" with points')
             elif mode == 'fft' or mode == 'mixer' or mode == 'fll':
                 sum_pwr = 0.0
                 self.ffts = np.fft.fft((self.buf * np.blackman(BUFSZ)), BUFSZ , 0) / (0.42 * BUFSZ)
@@ -204,17 +153,13 @@ class wrap_gp(object):
                     y_val = 20 * np.log10(self.avg_pwr[i])
                     fft_xs.append(self.freqs[i])
                     fft_ys.append(y_val)
-                    if self.gp is not None:
-                        s += '%f\t%f\n' % (self.freqs[i], y_val)
                     if ((mode == 'mixer') or (mode == 'fll')) and (self.avg_pwr[i] > 1e-5):
                         if (self.freqs[i] - self.center_freq) < 0:
                             sum_pwr -= self.avg_pwr[i]
                         elif (self.freqs[i] - self.center_freq) > 0:
                             sum_pwr += self.avg_pwr[i]
-                s += 'e\n'
                 self.buf = []
                 traces.append((fft_xs, fft_ys))
-                plots.append('"-" with lines')
                 if min(self.avg_pwr) == 0: # plot is broken, probably because source device was missing
                     return consumed
                 min_y = 20 * np.log10(min(self.avg_pwr))
@@ -226,67 +171,6 @@ class wrap_gp(object):
         if self.plot_interval and self.last_plot + self.plot_interval > time.time():
             return consumed
         self.last_plot = time.time()
-
-        filename = None
-        if self.output_dir:
-            if self.sequence >= 2:
-                delete_pathname = '%s/plot-%d-%s-%d.png' % (self.output_dir, self.chan, mode, self.sequence-2)
-                if os.access(delete_pathname, os.W_OK):
-                    os.remove(delete_pathname)
-            h= 'set terminal png\n'
-            filename = 'plot-%d-%s-%d.png' % (self.chan, mode, self.sequence)
-            self.sequence += 1
-            h += 'set output "%s/%s"\n' % (self.output_dir, filename)
-        else:
-            h= 'set terminal x11 noraise\n'
-
-        #background = 'set object 1 circle at screen 0,0 size screen 1 fillcolor rgb"black"\n' #FIXME!
-        background = ''
-        h+= 'set key off\n'
-        if mode == 'constellation':
-            h+= background
-            h+= 'set size square\n'
-            h+= 'set xrange [-1:1]\n'
-            h+= 'set yrange [-1:1]\n'
-            h+= 'set title "%sConstellation"\n' % self.plot_name
-        elif mode == 'eye':
-            h+= background
-            h+= 'set yrange [-4:4]\n'
-            h+= 'set title "%sDatascope"\n' % self.plot_name
-        elif mode == 'symbol':
-            h+= background
-            h+= 'set yrange [-4:4]\n'
-            h+= 'set title "%sSymbol"\n' % self.plot_name
-        elif mode == 'fft' or mode == 'mixer' or mode =='fll':
-            h+= 'unset arrow; unset title\n'
-            h+= 'set xrange [%f:%f]\n' % (self.freqs[0], self.freqs[len(self.freqs)-1])
-            h+= 'set xlabel "Frequency"\n'
-            h+= 'set ylabel "Power(dB)"\n'
-            h+= 'set grid\n'
-            h+= 'set yrange [%d:0]\n' % ((self.min_y // 20) * 20)
-            if mode == 'mixer':
-                h+= 'set title "%sRaw Mixer\n' % self.plot_name
-            elif mode == 'fll':
-                h+= 'set title "%sTuned Mixer"\n' % self.plot_name
-            else:               # fft
-                if self.center_freq:
-                    arrow_pos = (self.center_freq - self.relative_freq) / 1e6
-                    h+= 'set arrow from %f, graph 0 to %f, graph 1 nohead\n' % (arrow_pos, arrow_pos)
-                    h+= 'set title "%sSpectrum: tuned to %f Mhz"\n' % (self.plot_name, arrow_pos)
-                else:
-                    h+= 'set title "%sSpectrum"\n' % self.plot_name
-        dat = '%splot %s\n%s' % (h, ','.join(plots), s)
-        dat = bytes(dat, 'utf8')
-        if self.gp is not None:
-            self.gp.poll()
-            if self.gp.returncode is None:  # make sure gnuplot is still running
-                try:
-                    self.gp.stdin.write(dat)
-                    self.gp.stdin.flush()
-                except (IOError, ValueError):
-                    pass
-        if filename:
-            self.filename = filename
 
         if self.out_q is not None:
             self.send_plot(mode, traces)

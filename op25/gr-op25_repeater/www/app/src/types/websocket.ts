@@ -38,7 +38,7 @@ export interface SystemHealthPayload {
 
 // SYSTEM_STATE payload union — the health payload OR decoder-emitted updates
 // that fall through the json_type map (e.g. trunk_update, channel_update,
-// plot, terminal_config, full_config, ws_instances).
+// plot, terminal_config, full_config).
 export type SystemStatePayload =
   | SystemHealthPayload
   | TrunkUpdatePayload

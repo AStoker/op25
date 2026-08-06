@@ -28,6 +28,7 @@
 P25 C4FM/CQPSK demodulation block.
 """
 
+import os
 import sys
 from packaging.version import Version
 from gnuradio import gr, eng_notation
@@ -42,7 +43,8 @@ import rms_agc
 from math import pi, isnan, isinf
 from log_ts import log_ts
 
-sys.path.append('tx')
+# Relative to THIS FILE, not the cwd -- see the matching note in multi_rx.py.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tx'))
 import op25_c4fm_mod
 
 # Check for gnuradio digital.fll_band_edge_cc() thread safety

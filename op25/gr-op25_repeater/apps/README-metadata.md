@@ -1,11 +1,13 @@
-OP25 supports sending of metadata updates to an icecast streaming server. Configuration depends on which variant of op25 you are running; `rx.py` or `multi_rx.py`.
+OP25 supports sending of metadata updates to an icecast streaming server.
 
-## `rx.py`
+## Configuration
 
-Make a local copy of meta.json (e.g. cp meta.json my_meta.json) and edit it so that it matches your streaming server mount point and password
+Metadata information is entered in the `metadata` section of the main
+`cfg.json` configuration file, which names `icemeta.py` as its `module`:
 
 ```
-    {
+    "metadata": {
+        "module": "icemeta.py",
         "icecastPass": "password",
         "icecastMountpoint": "mountpoint",
         "icecastServerAddress": "server.name:port",
@@ -16,12 +18,7 @@ Make a local copy of meta.json (e.g. cp meta.json my_meta.json) and edit it so t
     }
 ```
 
-Add the `-M my_meta.json` command line option to `rx.py`
-
-
-## `multi_rx.py`
-
-Metadata information is entered in the `metadata` section of the main `cfg.json` configuration file. Format and content is the same as used by `rx.py`
+(The older `rx.py -M my_meta.json` form is gone along with `rx.py`.)
 
 ## Metatag Format
 

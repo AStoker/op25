@@ -1,0 +1,93 @@
+---
+name: OP25 Trunking Scanner
+version: "0.0.2"
+slug: op25
+description: >-
+  P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web
+  UI, call recording and Home Assistant speech-to-text.
+url: https://github.com/AStoker/op25/tree/master/addons/op25
+image: ghcr.io/astoker/op25
+arch:
+  - amd64
+  - aarch64
+stage: experimental
+
+# s6-overlay v3 comes from the HA base image and provides /init; `init: false`
+# stops Supervisor from injecting its own.
+init: false
+# Manual until this is proven on real hardware -- an add-on that grabs the USB
+# radio on every boot while you are still shaking it out is a nuisance.
+boot: manual
+# Paired with timeout-kill in the s6 service, so Supervisor never SIGKILLs the
+# container before s6 has finished stopping the flowgraph.
+timeout: 30
+backup: cold
+
+# --- UI ---------------------------------------------------------------------
+# ingress_port defaults to 8099, which is what the s6 run script pins
+# terminal_type to. Stating it here trips the add-on linter.
+ingress: true
+panel_icon: mdi:radio-tower
+panel_title: OP25
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: >-
+    Direct access to the OP25 UI and API, for debugging and for media players
+    that cannot authenticate against ingress. Ingress does not need this; set
+    it to "disabled" once the sidebar panel is working.
+# --- hardware ---------------------------------------------------------------
+# usb: true bind-mounts /dev/bus/usb AND adds the USB device-cgroup rules, which
+# is all libusb needs. RTL-SDR has no /dev node, so no `devices:` entry, and
+# `full_access` is not required (it would in fact void usb/udev).
+usb: true
+udev: true
+# SYS_NICE for a real-time DSP flowgraph sharing a box with Home Assistant.
+realtime: true
+
+# --- integration ------------------------------------------------------------
+# Lets the add-on reach Home Assistant Core's REST API at http://supervisor/core
+# with $SUPERVISOR_TOKEN, so speech-to-text needs no long-lived token.
+homeassistant_api: true
+map:
+  - type: addon_config
+    read_only: false
+  - type: share
+    read_only: false
+  - type: media
+    read_only: false
+
+# --- options ----------------------------------------------------------------
+# The multi_rx JSON has ~10 nested sections (per-channel demod parameters,
+# control-channel lists, crypt keys, whitelists) that HA's options schema
+# cannot express -- max nesting depth 2, no unions. So only the things that
+# change when hardware or credentials change are first-class options; the rest
+# lives in a JSON file the user drops in the add-on's config directory.
+options:
+  config_file: /config/op25.json
+  work_dir: /config
+  verbosity: 1
+  audio_output: browser
+  device_overrides: []
+  home_assistant:
+    use_supervisor: true
+    url: ""
+    token: ""
+  dev_source_dir: ""
+  extra_json: "{}"
+schema:
+  config_file: str
+  work_dir: str
+  verbosity: int(0,10)
+  audio_output: list(browser|alsa|none)
+  device_overrides:
+    - name: str
+      serial: str?
+      gains: str?
+      ppm: float?
+  home_assistant:
+    use_supervisor: bool
+    url: str?
+    token: password?
+  dev_source_dir: str?
+  extra_json: str?

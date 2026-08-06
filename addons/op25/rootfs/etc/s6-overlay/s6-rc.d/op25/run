@@ -1,0 +1,103 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Render the effective multi_rx config and exec the decoder.
+#
+# The user's JSON is never rewritten. It is merged with add-on-owned settings
+# and piped to `multi_rx.py -c -`, which reads the whole config from stdin.
+# That means: no writable config file is needed, the terminal cannot be
+# accidentally set to something that makes no sense in a container, and the
+# Home Assistant token never touches disk.
+# ==============================================================================
+set -o pipefail
+
+declare apps_dir config_file work_dir verbosity audio_module
+declare ha_url ha_token overrides extra rendered
+
+# --------------------------------------------------------------- source dir -
+apps_dir=/opt/op25/apps
+if bashio::config.has_value 'dev_source_dir'; then
+    apps_dir="$(bashio::config 'dev_source_dir')/op25/gr-op25_repeater/apps"
+    bashio::log.warning "dev_source_dir is set: running Python from ${apps_dir}"
+    bashio::log.warning "The compiled GNU Radio blocks still come from the image,"
+    bashio::log.warning "so C++ changes there will NOT take effect."
+    if [ ! -f "${apps_dir}/multi_rx.py" ]; then
+        bashio::exit.nok "No multi_rx.py under ${apps_dir}"
+    fi
+fi
+
+config_file=$(bashio::config 'config_file')
+work_dir=$(bashio::config 'work_dir')
+verbosity=$(bashio::config 'verbosity')
+overrides=$(bashio::config 'device_overrides')
+extra=$(bashio::config 'extra_json')
+
+# ------------------------------------------------------------ audio backend -
+# "browser" (the default) leaves audio.module empty so nothing claims the UDP
+# port: a unicast port has one consumer, and websocket_server needs it to serve
+# /api/stream. "alsa" hands the port to sockaudio.py instead, which only makes
+# sense if the container has been given a sound device.
+audio_module=""
+case "$(bashio::config 'audio_output')" in
+    alsa) audio_module="sockaudio.py" ;;
+    none|browser) audio_module="" ;;
+esac
+
+# --------------------------------------------------- Home Assistant creds ----
+# NOTE: this is the ONLY place that injects Home Assistant settings into the
+# config. The `terminal.home_assistant` block is scheduled to be split into
+# transcription/alerts/call_recording blocks; when that lands, this function and
+# the jq filter below are the only things that need to change.
+ha_url=""
+ha_token=""
+if bashio::config.true 'home_assistant.use_supervisor'; then
+    # The Supervisor proxy authenticates us to Core, so no long-lived token.
+    ha_url="http://supervisor/core"
+    ha_token="${SUPERVISOR_TOKEN}"
+    bashio::log.info "Home Assistant: via Supervisor proxy (no token needed)"
+elif bashio::config.has_value 'home_assistant.url'; then
+    ha_url=$(bashio::config 'home_assistant.url')
+    ha_token=$(bashio::config 'home_assistant.token')
+    bashio::log.info "Home Assistant: ${ha_url} (explicit token)"
+else
+    bashio::log.info "Home Assistant: not configured; transcription disabled"
+fi
+# ha_bridge.py reads $OP25_HA_TOKEN, so the token stays out of the JSON that
+# /api/config serves to the browser.
+export OP25_HA_TOKEN="${ha_token}"
+
+# -------------------------------------------------------------- render ------
+rendered=$(jq \
+    --argjson overrides "${overrides:-[]}" \
+    --argjson extra "${extra:-\{\}}" \
+    --arg ha_url "${ha_url}" \
+    --arg audio "${audio_module}" '
+      .terminal.module              = "websocket_server.py"
+    | .terminal.terminal_type       = "ws:0.0.0.0:8099"
+    | .audio.module                 = $audio
+    | (if $ha_url != ""
+       then .terminal.home_assistant.url     = $ha_url
+          | .terminal.home_assistant.enabled = true
+       else . end)
+    | .devices |= map(
+        . as $d
+        | ($overrides | map(select(.name == $d.name)) | last) as $o
+        | if $o == null then $d else
+            $d
+            + (if ($o.serial // "") != "" then {args:  ("rtl=" + $o.serial)} else {} end)
+            + (if ($o.gains  // "") != "" then {gains: $o.gains}             else {} end)
+            + (if  $o.ppm    != null      then {ppm:   $o.ppm}               else {} end)
+          end)
+    | . * $extra
+    ' "${config_file}") \
+    || bashio::exit.nok "Failed to render the effective config from ${config_file}"
+
+# cwd is load-bearing -- see init-op25.
+cd "${work_dir}" || bashio::exit.nok "Cannot cd to ${work_dir}"
+
+bashio::log.info "Starting OP25 (source ${apps_dir}, cwd ${work_dir}, verbosity ${verbosity})"
+
+# No '2> stderr.2' here: all of OP25's logging goes to stderr, and in a
+# container stderr IS the add-on log. Redirecting it to a file, as the systemd
+# unit does, would make the add-on look silent.
+exec python3 -u "${apps_dir}/multi_rx.py" -v "${verbosity}" -c - <<< "${rendered}"

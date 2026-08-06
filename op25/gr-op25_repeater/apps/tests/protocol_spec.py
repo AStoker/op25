@@ -42,8 +42,7 @@ class TestJsonTypeRouting:
     # Sourced by grepping "'json_type'" across apps/*.py.
     REAL_JSON_TYPES = {
         'ok', 'error', 'call_log', 'channel_update', 'trunk_update',
-        'meta_update', 'plot', 'rx_update', 'terminal_config', 'full_config',
-        'ws_instances',
+        'meta_update', 'plot', 'terminal_config', 'full_config',
     }
 
     def test_no_fictional_keys(self) -> None:

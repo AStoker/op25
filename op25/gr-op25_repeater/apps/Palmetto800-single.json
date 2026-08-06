@@ -68,18 +68,14 @@
             "url": "http://192.168.0.217:8123",
             "token_file": "~/.config/op25/ha_token",
             "stt_engine": "stt.faster_whisper",
+            "media_upload": true,
+            "media_dir": "scanner",
             "language": "en",
             "webhook_id": "op25_call_a7f3c1d9e2b4",
-            "public_url": "http://localhost:8080",
-            "keywords": [
-                "structure fire",
-                "working fire",
-                "second alarm",
-                "officer down",
-                "signal 63",
-                "10-33"
-            ],
-            "keywords_only": false
+            "keywords": [],
+            "keywords_only": false,
+            "media_source": "www",
+            "media_url_base": "/local/scanner"
         }
     }
 }

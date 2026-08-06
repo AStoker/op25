@@ -19,6 +19,7 @@ import Hint from '../common/Hint';
 import InfoRow from '../common/InfoRow';
 import SectionHeading from '../common/SectionHeading';
 import { useOp25Service, useSelectedChannel } from '../../services/op25Service';
+import { apiUrl } from '../../utils/url';
 
 /** Log levels multi_rx actually distinguishes. 0-2 are the useful day-to-day
  *  settings; 10 turns on ESS/encryption-sync decoding. */
@@ -71,7 +72,7 @@ export default function ReceiverCard() {
   const [captures, setCaptures] = useState<CaptureFile[]>([]);
 
   const refreshCaptures = useCallback(() => {
-    fetch('/api/captures')
+    fetch(apiUrl('/api/captures'))
       .then((r) => (r.ok ? r.json() : null))
       .then((body: { captures?: CaptureFile[] } | null) => {
         if (body?.captures) setCaptures(body.captures);
@@ -206,7 +207,7 @@ export default function ReceiverCard() {
                   >
                     {c.exists ? (
                       <Link
-                        href={`/api/captures/${encodeURIComponent(c.name)}`}
+                        href={apiUrl(`/api/captures/${encodeURIComponent(c.name)}`)}
                         variant="body2"
                         sx={{ overflowWrap: 'anywhere' }}
                       >

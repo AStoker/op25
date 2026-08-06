@@ -1,21 +1,51 @@
 
-This file contains notes on the current OP25 P25 receiver (`rx.py`) and multi receiver (`multi_rx.py`):
+This file contains notes on the OP25 multi receiver (`multi_rx.py`), which is
+the only receiver app in this fork. The older single-receiver `rx.py` and its
+command-line interface were removed — everything is configured through a JSON
+file now.
 
 ## Example command line
 
 ```
-./rx.py  --args 'rtl' --gains 'lna:49' -T tsys.tsv -q -1 -2 -S 1000000 -P symbol -o 50000 -w 2> stderr.2
+./multi_rx.py -v 1 -c p25_rtl_example.json 2> stderr.2
 ```
 
-Running stderr to a file (e.g., `2> stderr.2`) is recommended to avoid screen misprinting.
+Running stderr to a file (e.g., `2> stderr.2`) is recommended: all logging goes
+to stderr, and under the curses terminal it would otherwise corrupt the screen.
 
-NOTE 1: For phase1 voice the `-V` option is not used.  Instead the `-w` option is used (see AUDIO SERVER section, below).  For P25 phase 2/TDMA audio decode, the `-2` option is required in addition to the `-w` option.
+```
+Usage: multi_rx.py [options]
 
-NOTE 2: For systems with a TDMA control channel the `--tdma-cc` option is required.
+Options:
+  -h, --help            show this help message and exit
+  -c CONFIG_FILE, --config-file=CONFIG_FILE
+                        specify config file name ('-' reads JSON from stdin)
+  -v VERBOSITY, --verbosity=VERBOSITY
+                        message debug level
+  -p, --pause           block on startup
+```
+
+Paths inside the config (tag files, whitelists, `crypt_keys`) are opened
+relative to the **current working directory**, not to the config file, so run
+from the directory holding them or use absolute paths.
+
+## Terminal types
+
+`multi_rx.py` picks its terminal from the `terminal` block of the JSON config:
+
+| `module` | `terminal_type` | Result |
+|---|---|---|
+| `websocket_server.py` | `ws:<host>:<port>` | **Web GUI** — React SPA, FastAPI/uvicorn, single port. See [README-new-gui.md](../../../README-new-gui.md). |
+| `terminal.py` | `curses` | Text UI in the terminal (keys below). |
+| `terminal.py` | `<udp port>` | Headless; attach `terminal.py <host> <port>` later. |
+
+The older `http:<host>:<port>` terminal (waitress + the `www-static` UI) was
+removed. A config that still names it prints a message pointing at the `ws:`
+replacement and then runs headless.
 
 ## Terminal Operation
 
-After starting `rx.py` if plotting is in use a separate gnuplot window should open.  You must click on the terminal window to restore it to focus, otherwise all keystrokes are consumed by gnuplot.  Once in the terminal window there are several keyboard commands:
+Keyboard commands in the curses terminal:
 
 - `B`: dynamically add tgid to blacklist
 - `d`: dump list of known tgids to log
@@ -30,175 +60,67 @@ After starting `rx.py` if plotting is in use a separate gnuplot window should op
 - `.`: increase fine tune by 100Hz
 - `<`: decrease fine tune by 1200Hz
 - `>`: increase fine tune by 1200Hz
-- `1`: toggle fft plot
-- `2`: toggle constellation plot (cqpsk)
-- `3`: toggle symbol plot
-- `4`: toggle datascope plot
-- `5`: toggle raw mixer plot
-- `6`: toggle tuned mixer plot
-- <cursor left> / <cursor right>: cycle through avaiable receivers (`multi_rx.py` only)
+- `1` … `6`: toggle fft / constellation / symbol / datascope / raw mixer /
+  tuned mixer plots — **`ws:` terminal only**, see Plot Modes below
+- <cursor left> / <cursor right>: cycle through available receivers
 
 ## Remote Terminal
 
-Adding (for example) `-l 56111` to the `rx.py` command starts `rx.py` but does not attach a curses terminal.  Instead the program runs as normal in the foreground (hit CTRL-C to end `rx.py` as desired).  To connect to a running instance of `rx.py`, (in this example)
+Set `"terminal_type"` to a bare UDP port number and `multi_rx.py` runs in the
+foreground with no attached terminal (hit CTRL-C to end it). To connect a
+curses view to the running instance:
+
 ```
 ./terminal.py 127.0.0.1 56111
 ```
 
-**Note:** `rx.py` and `terminal.py` need not run on the same machine.  The machine where `terminal.py` is running need not have an SDR device directly attached; but GNU Radio (and OP25) must be available.
+**Note:** the two need not run on the same machine, and the machine running
+`terminal.py` needs no SDR — but GNU Radio (and OP25) must be available.
 
 **Warning:** there is no security or encryption on the UDP port.
 
-## External UDP Audio Server
-Starting `rx.py` with the `-w -W host` options directs udp audio data to be sent over the network to the specified remote host.  It can then be received and played back with any of the following methods:
+## Audio
 
-1. Execute `./audio.sh` on a remote machine equipped with python2.7, `libasound.so.2` and the `sockaudio.py` file. **OR**
-2. Execute the command: `nc -kluvw 1 127.0.0.1 23456 | aplay -c1 -f S16_LE -r 8000` **OR**
-3. Execute the command: `vlc.exe --clock-jitter=500 --network-caching=0 --demux=rawaud --rawaud-channels 1 --rawaud-samplerate 8000 udp://@:23456`
+Local speaker output is the `audio` block (`"module": "sockaudio.py"`), which
+plays PCM arriving on a UDP port. Browser audio is served by the `ws:` terminal
+re-streaming the same kind of UDP port over HTTP.
 
-**Note:** audio underruns are to be expected when using `nc | aplay` as the pcm stream is interrupted every time a radio transmission ends.  The sockaudio player is designed to handle this more gracefully, and generally only underruns due to high cpu utilization or reception/decoding errors.
+A unicast UDP port has exactly one consumer, so the two cannot share one — see
+[README-browser-audio.md](../../../README-browser-audio.md) for the
+dual-destination arrangement that runs both.
 
-## Internal Audio Server
+The decoder can also simply be pointed at any UDP listener:
 
-Starting `rx.py` with the `-U` command line option enables an internal udp audio server which will play received audio through the default ALSA device.  Optionally you may specify which ALSA device to use by setting the `-O audio_out` option along with `-U`.
+```
+nc -kluvw 1 127.0.0.1 23456 | aplay -c1 -f S16_LE -r 8000
+vlc.exe --clock-jitter=500 --network-caching=0 --demux=rawaud \
+        --rawaud-channels 1 --rawaud-samplerate 8000 udp://@:23456
+```
 
-It is still necessary to specify the `-w` (wireshark) option if using either the internal or external audio server.
+**Note:** audio underruns are expected with `nc | aplay`, since the PCM stream
+stops every time a transmission ends. `sockaudio.py` handles that gracefully.
 
 ## Plot Modes
 
-Six types of plotting are currently implemented, via the -P parameter:
-- fft
-- constellation
-- symbol
-- datascope
-- mixer
-- fll
+Six plot types: `fft`, `constellation`, `symbol`, `datascope`, `mixer`, `fll`.
+Symbol and datascope work in both fsk4 and cqpsk modes; constellation requires
+cqpsk.
 
-The symbol and datascope mode is allowed both in fsk4 and cqpsk modes.  The constellation mode only works when the cqpsk demod mode is selected (or defaulted).
-
-A couple of notes specific to plot mode:
-
-**Note 1:** At program startup time the gnuplot window is given the focus after it opens.  Before you can enter terminal commands you need to click on the terminal window once to make it the active window.
-
-**Note 2:** In some cases the gnuplot window is displayed on top of the terminal window used by OP25.  If so it may be necessary to move one or the other of the two windows.
-
-## Command Line Options
-
-```
-Usage: rx.py [options]
-
-Options:
-  -h, --help            show this help message and exit
-  --args=ARGS           device args
-  --antenna=ANTENNA     select antenna
-  -a, --audio           use direct audio input
-  -A, --audio-if        soundcard IF mode (use --calibration to set IF freq)
-  -I AUDIO_INPUT, --audio-input=AUDIO_INPUT
-                        pcm input device name.  E.g., hw:0,0 or /dev/dsp
-  -i INPUT, --input=INPUT
-                        input file name
-  -b Hz, --excess-bw=Hz
-                        for RRC filter
-  -c Hz, --calibration=Hz
-                        USRP offset or audio IF frequency
-  -C Hz, --costas-alpha=Hz
-                        value of alpha for Costas loop
-  -D DEMOD_TYPE, --demod-type=DEMOD_TYPE
-                        cqpsk | fsk4
-  -P PLOT_MODE, --plot-mode=PLOT_MODE
-                        constellation | fft | symbol | datascope | mixer | fll                      
-  -f Hz, --frequency=Hz
-                        USRP center frequency
-  -F IFILE, --ifile=IFILE
-                        read input from complex capture file
-  -H HAMLIB_MODEL, --hamlib-model=HAMLIB_MODEL
-                        specify model for hamlib
-  -s SEEK, --seek=SEEK  ifile seek in K, symbols file seek in seconds
-  -l TERMINAL_TYPE, --terminal-type=TERMINAL_TYPE
-                        'curses' or udp port or 'http:host:port'
-  -L LOGFILE_WORKERS, --logfile-workers=LOGFILE_WORKERS
-                        number of demodulators to instantiate
-  -M METACFG, --metacfg=METACFG
-                        Icecast Metadata Config File
-  -S SAMPLE_RATE, --sample-rate=SAMPLE_RATE
-                        source samp rate
-  -t, --tone-detect     use experimental tone detect algorithm
-  -T TRUNK_CONF_FILE, --trunk-conf-file=TRUNK_CONF_FILE
-                        trunking config file name
-  -v VERBOSITY, --verbosity=VERBOSITY
-                        message debug level
-  -V, --vocoder         voice codec
-  -n, --nocrypt         silence encrypted traffic
-  --crypt-behavior=CRYPT_BEHAVIOR
-                        encrypted traffic behavior: 0=allow, 1=silence, 2=skip
-  -o Hz, --offset=Hz    tuning offset frequency [to circumvent DC offset]
-  -p, --pause           block on startup
-  -w, --wireshark       output data to Wireshark
-  -W WIRESHARK_HOST, --wireshark-host=WIRESHARK_HOST
-                        Wireshark host
-  -u WIRESHARK_PORT, --wireshark-port=WIRESHARK_PORT
-                        Wireshark udp port
-  -r RAW_SYMBOLS, --raw-symbols=RAW_SYMBOLS
-                        dump decoded symbols to file
-  --symbols=SYMBOLS     playback symbols file (captured using -r)
-  -R RX_SUBDEV_SPEC, --rx-subdev-spec=RX_SUBDEV_SPEC
-                        select USRP Rx side A or B (default=A)
-  -g GAIN, --gain=GAIN  set USRP gain in dB (default is midpoint) or set audio
-                        gain
-  --gain-mode=GAIN_MODE
-                        Control SDR AGC with set_gain_mode()
-  -G GAIN_MU, --gain-mu=GAIN_MU
-                        gardner gain
-  -N GAINS, --gains=GAINS
-                        gain settings
-  -O AUDIO_OUTPUT, --audio-output=AUDIO_OUTPUT
-                        audio output device name
-  -x AUDIO_GAIN, --audio-gain=AUDIO_GAIN
-                        audio gain (default = 1.0)
-  -U, --udp-player      enable built-in udp audio player
-  -q FREQ_CORR, --freq-corr=FREQ_CORR
-                        frequency correction
-  -d FINE_TUNE, --fine-tune=FINE_TUNE
-                        fine tuning
-  -2, --phase2-tdma     enable phase2 tdma decode
-  --tdma-cc             enable tdma control channel
-  -Z DECIM_AMT, --decim-amt=DECIM_AMT
-                        spectrum decimation
-```
-
-## Terminal types
-
-`multi_rx.py` picks its terminal from the `terminal` block of the JSON config:
-
-| `module` | `terminal_type` | Result |
-|---|---|---|
-| `websocket_server.py` | `ws:<host>:<port>` | **Current web GUI** — React SPA, FastAPI/uvicorn, single port. See [README-new-gui.md](../../../README-new-gui.md). |
-| `terminal.py` | `http:<host>:<port>` | Legacy web GUI — two ports (HTTP on N, control WebSocket on N+1). See [README-websockets.md](../../../README-websockets.md). |
-| `terminal.py` | `curses` | Text UI in the terminal (keys listed above). |
-| `terminal.py` | `<udp port>` | Headless; attach `terminal.py <host> <port>` later. |
-
-The `ws:` terminal is `multi_rx.py`-only — `rx.py` imports `terminal.py`
-directly and only understands `curses`, `http:` and a UDP port.
-
-## HTTP Console
-
-The OP25 dashboard can be made accessible to any web browser over HTTP by including the option `-l http:<host>:<port>` when starting the `rx.py` app, where `<host>` is either `127.0.0.1` to limit access from only this host, or `0.0.0.0` if HTTP access from anywhere is to be allowed*.  After `rx.py` has started it begins listening on the specified port for incoming connections.
-
-Once connected the status page should automatically update to show trunking system status, frequency list, adjacent sites, and other data.
-
-Example:  you have started `rx.py` with the option `-l http:127.0.0.1:8080`. To connect, set your web browser URL to [http://127.0.0.1:8080](http://127.0.0.1:8080).
-
-If one or more plot modes has been selected using the `-P` option you may view them by clicking the "PLOT" button.  The plots are updated approx. every five seconds.  Click "STATUS" to return to the main status page.
-
-**Warning:** there is no security or encryption.  Be careful when using `0.0.0.0` as the listening address since anyone with access to the network can connect.
+Plots are **rendered by the browser** from raw trace data over the WebSocket, so
+they require the `ws:` terminal. There is no gnuplot process any more — under
+curses or a UDP terminal the toggle is a no-op and says so on stderr. Rate is
+`http_plot_interval` (default 1.0s) for `ws:`.
 
 ## Multi-receiver
 
-The `multi_rx.py` app allows an arbitrary number of SDR devices and channels to be defined.  Each channel may have one or more plot windows attached.
+`multi_rx.py` allows an arbitrary number of SDR devices and channels to be
+defined. Each channel may have one or more plots attached.
 
-Configuration is achieved via a json file (see `cfg.json` for an example). In this version, channels are automatically assigned to the first device found whose frequency span includes the selected frequency.
+Configuration is via a JSON file (see `cfg.json`). Channels are automatically
+assigned to the first device found whose frequency span includes the selected
+frequency.
 
-As of this writing (summer 2020), P25 Trunking and Motorola SmartNet/SmartZone are fully supported by `multi_rx.py`.  The `rx.py` app can still be used for single receiver P25 trunking.
+P25 Trunking, Motorola SmartNet/SmartZone and DMR/Connect+ are supported.
 
 Below is a summary of the major config file keys used under the channel section:
 ```
@@ -210,26 +132,17 @@ filter_type:    'rc' for p25; 'rrc' for dmr and ysf; 'gmsk' for d-star
                 'widepulse' for Smartnet/Smartzone P25CAI voice
 plot:           'fft', 'constellation', 'datascope', 'symbol', 'mixer', 'fll'
                 [if more than one plot desired, provide a comma-separated list]
-destination:    'udp://host:port' or 'file://<filename>'
+destination:    'udp://host:port' [comma-separated list for multiple sinks]
 name:           arbitrary string used to identify channels and devices
 ```
 
-**Note:** DMR audio for the second time slot is sent on the specified port number plus two.  In the example `udp://127.0.0.1:56122`, audio for the first slot would use 56122; and 56124 for the second.
-
-The command line options for multi_rx:
-```
-Usage: multi_rx.py [options]
-
-Options:
-  -h, --help            show this help message and exit
-  -c CONFIG_FILE, --config-file=CONFIG_FILE
-                        specify config file name
-  -v VERBOSITY, --verbosity=VERBOSITY
-                        message debug level
-  -p, --pause           block on startup
-```
+**Note:** DMR audio for the second time slot is sent on the specified port
+number plus two. In the example `udp://127.0.0.1:56122`, audio for the first
+slot would use 56122; and 56124 for the second.
 
 ## Encryption
 
-P25 ADP/RC4 (algid `0xAA`), DES-OFB (algid `0x81`) and AES-OFB (algid `0x84`) decryption with a known key is now supported by `multi_rx.py`.  See the example configurations: `p25_rtl_example.json`, `p25_conventional_example.json` and also the example json formatting of the keys file: `example_keys.json`.
-
+P25 ADP/RC4 (algid `0xAA`), DES-OFB (algid `0x81`) and AES-OFB (algid `0x84`)
+decryption with a known key is supported. See the example configurations:
+`p25_rtl_example.json`, `p25_conventional_example.json` and also the example
+json formatting of the keys file: `example_keys.json`.

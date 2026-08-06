@@ -19,6 +19,14 @@
 # Software Foundation, Inc., 51 Franklin Street, Boston, MA
 # 02110-1301, USA.
 
+# NOTE: this module is loaded dynamically, by name, from the JSON config
+# ("audio": {"module": "sockaudio.py"}) -- multi_rx.configure_audio() does the
+# importlib call.  Nothing imports it statically, so a grep for importers will
+# wrongly report it as dead.  It is the local-speaker output path and is live.
+# websocket_server._discover_audio_ports() also coordinates with it: a unicast
+# UDP port has one consumer, so ports claimed here are excluded from browser
+# audio.
+
 from ctypes import *
 import os
 import sys

@@ -323,9 +323,11 @@ export interface TerminalConfig {
   /** Keyword → colour rules for tinting talkgroup tags. A list here replaces
    *  the built-in defaults rather than extending them. */
   smart_colors?: SmartColorRule[];
+  /** Plot rate for the `ws` terminal, in seconds. Named for the http terminal
+   *  that used to own it; that terminal is gone but the key is unchanged. */
   http_plot_interval?: number;
+  /** Plot rate for the curses terminal. Defaults to 0.0 — every buffer. */
   curses_plot_interval?: number;
-  http_plot_directory?: string;
   terminal_timeout?: number;
   /** Explicit browser-audio UDP port override. */
   audio_ports?: number[];

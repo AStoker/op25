@@ -1,0 +1,138 @@
+name: Build add-on
+
+on:
+  release:
+    types: [published]
+  push:
+    branches:
+      - 'addon/**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to publish
+        default: dev
+        required: true
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: op25
+  # github.repository_owner is "AStoker" and Docker rejects uppercase in an
+  # image name, so this cannot be derived from the context.
+  REGISTRY_PREFIX: ghcr.io/astoker
+
+permissions:
+  contents: read
+
+concurrency:
+  group: addon-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Supervisor pulls the tag named by config.yaml's `version:`, so a release
+  # whose tag disagrees with it publishes an image nobody can install.
+  version-check:
+    name: config.yaml version matches the tag
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cfg=$(python3 -c \
+            "import yaml;print(yaml.safe_load(open('addons/op25/config.yaml'))['version'])")
+          echo "git tag: ${tag}   config.yaml: ${cfg}"
+          if [ "${tag}" != "${cfg}" ]; then
+            echo "::error::Release tag '${tag}' != config.yaml version '${cfg}'"
+            exit 1
+          fi
+
+  init:
+    name: Initialize build
+    needs: [version-check]
+    # version-check only runs for releases; skipped is fine, failed is not.
+    if: always() && (needs.version-check.result == 'success' || needs.version-check.result == 'skipped')
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.tag || 'dev' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: init
+    # aarch64 maps to a native ubuntu-24.04-arm runner, so no QEMU and no
+    # 45-minute emulated GNU Radio compile.
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # cosign
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.init.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push
+        uses: home-assistant/builder/actions/build-image@2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          image: ${{ matrix.image }}
+          # Repository root, not the add-on folder: the Dockerfile copies the
+          # C++ sources and the frontend from the tree.
+          context: "."
+          file: addons/op25/Dockerfile
+          version: ${{ needs.init.outputs.version }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            ${{ github.event_name == 'release' && 'latest' || '' }}
+          push: "true"
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          cache-gha: "true"
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [init, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+      id-token: write
+    steps:
+      - name: Publish
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}
+          image-tags: |
+            ${{ needs.init.outputs.version }}
+            ${{ github.event_name == 'release' && 'latest' || '' }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A private package is an opaque "pull access denied" for every user,
+      # including you. It cannot be fixed from here -- it is a one-time setting
+      # on the GHCR package page -- so say so loudly on the first publish.
+      - name: Reminder
+        run: |
+          echo "::notice::Published ${{ env.REGISTRY_PREFIX }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.version }}"
+          echo "::notice::If this is the first publish, set the GHCR package to PUBLIC,"
+          echo "::notice::otherwise Supervisor cannot pull it anonymously."

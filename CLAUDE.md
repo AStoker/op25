@@ -1,17 +1,18 @@
 # CLAUDE.md — op25 modernization
 
 Fork of boatbod/op25 (P25/DMR/SmartNet trunking SDR decoder). Working branch:
-`feature/updated-gui`. The goal of this branch is to replace the legacy web UI +
-WSGI server with a modern React SPA served by a FastAPI/uvicorn backend, and to
-keep the whole thing buildable on both **macOS (Apple Silicon)** and
-**Raspberry Pi 5 (Debian, GNURadio 3.10)**.
+`feature/HA-app`. The React SPA + FastAPI/uvicorn rewrite is merged to `master`;
+the goal of *this* branch is to package OP25 as a **Home Assistant OS add-on**
+(Docker image, s6, ingress) while keeping the standalone install working on
+**macOS (Apple Silicon)** and **Debian / Raspberry Pi 5 (GNURadio 3.10)**.
 
 ## Target platforms
 
 | Platform | Install script | Python | Notes |
 |---|---|---|---|
-| macOS (Apple Silicon) | `./install-mac.sh` | venv at `op25/gr-op25_repeater/apps/.venv` seeded from Homebrew gnuradio's private venv | dev/test machine |
-| Raspberry Pi 5 (Debian) | `./install.sh` | system `/usr/bin/python3` | deployment target; must stay working |
+| macOS (Apple Silicon) | `./install-mac.sh` | venv at `op25/gr-op25_repeater/apps/.venv` seeded from Homebrew gnuradio's private venv | dev machine; no SDR attached any more |
+| Home Assistant OS 18.2 (Intel N100, amd64) | the add-on, `addons/op25/` | `/usr/bin/python3` in the image | **where the dongle lives**; primary deployment target |
+| Debian / Raspberry Pi 5 | `./install.sh` | system `/usr/bin/python3` | standalone install; must stay working |
 
 `op25/gr-op25_repeater/apps/op25_python` is a one-line text file holding the
 absolute path of the interpreter to use. It is gitignored and written by the
@@ -19,15 +20,14 @@ install script. **Always invoke apps with that interpreter**, e.g.
 
 ```bash
 cd op25/gr-op25_repeater/apps
-$(cat op25_python) multi_rx.py -c richland-single.json -v 1
+$(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1
 ```
 
-## Two parallel UI stacks — know which one you're touching
+## The UI stack
 
-The branch currently contains **both** the old and the new stack. They are
-selected entirely by the `terminal` block of the JSON config.
+There is one web UI, selected by the `terminal` block of the JSON config. The
+legacy stack was removed on this branch — see "What was removed" below.
 
-### New stack (the target)
 ```
 op25/gr-op25_repeater/www/app/          React 18 + MUI 6 + Vite  (source)
         └─ yarn build → www/dist/       served by websocket_server.py
@@ -55,30 +55,37 @@ Config selector:
 - Docs: `README-new-gui.md` (protocol + endpoints), `www/app/AGENTS.md`
   (frontend conventions).
 
-### Legacy stack (still present, being replaced)
-```
-op25/gr-op25_repeater/www/react-app-legacy/    older React GUI (source)
-        └─ yarn build → www/www-static/ served by http_server.py
-op25/gr-op25_repeater/apps/http_server.py        waitress WSGI
-```
-Config selector:
-```json
-"terminal": { "module": "terminal.py", "terminal_type": "http:0.0.0.0:8080" }
-```
-- Two ports: HTTP on N, control WebSocket on **N+1**, HTTP POST fallback on N.
-- Documented in `README-websockets.md`, which is explicitly labelled legacy.
-- This is the stack that uses `ws://` audio destinations (websocketpp sinks in
-  `lib/op25_audio.cc`); the new stack ignores them and re-streams UDP instead.
-- `terminal.py` also provides `terminal_type: "curses"` for a TUI.
+`terminal.py` survives, but only for `terminal_type: "curses"` (a TUI) and a
+bare UDP port number (headless, attach `./terminal.py <host> <port>` later —
+that attach mode *is* the remote curses view). A config naming `http:` prints a
+migration message and runs headless rather than tracebacking.
 
-`www/react-app-legacy/AGENTS.md` is the detailed (legacy) protocol reference and is
-still the best description of the underlying `multi_rx.py` JSON message shapes
-(`json_type: channel_update / trunk_update / rx_update / terminal_config`),
-which the new stack reuses.
+### What was removed (and why a grep will mislead you)
+
+Deleted deliberately on this branch. Do not resurrect these when resolving an
+upstream merge:
+
+| Removed | Was |
+|---|---|
+| `apps/http_server.py`, `www/react-app-legacy/`, `www/www-static/`, `www/images/` | the two-port waitress GUI |
+| `apps/rx.py`, `trunking.py`, `p25_decoder.py`, `audio.py`, `p25_demodulator.py`, `cfgtrunk.py` | the pre-`multi_rx` receiver and its trunking module |
+| the `ws://` branch of `lib/op25_audio.cc` + `include/websocketpp/` + `include/asio*` | C++ websocketpp audio sinks (753 files, 7.5 MB) |
+| the gnuplot subprocess in `gr_gnuplot.py` | PNG/x11 plot rendering |
+| liquidsoap/Icecast-era scripts, `op25_stats.sh` | streaming helpers |
+
+**Two survivors look dead to a grep and are not.** Both are loaded by *name*
+from the JSON config via `importlib`, so nothing imports them statically:
+
+- `sockaudio.py` — `"audio": {"module": "sockaudio.py"}`, local speaker output.
+- `icemeta.py` — `"metadata": {"module": "icemeta.py"}`, Icecast metadata. Its
+  only static importer was `rx.py`, so it went from one importer to zero while
+  staying live.
+
+Each carries a comment at the top saying so.
 
 ## Verified working (end-to-end smoke test, 2026-07-30, macOS + RTL-SDR V4)
 
-Live against the real Palmetto 800 system with `richland-single.json`:
+Live against the real Palmetto 800 system with `Palmetto800-single.json`:
 RF lock → control-channel decode → trunk/channel/call state over the WebSocket →
 React UI fully populated → browser audio. Specifically confirmed:
 
@@ -94,8 +101,8 @@ React UI fully populated → browser audio. Specifically confirmed:
 
 ## Audio backends
 
-`sockaudio.py` is the single choke point for local speaker output — `audio.py`,
-`rx.py` and `multi_rx.py` all go through `socket_audio`. It has three backends
+`sockaudio.py` is the single choke point for local speaker output; `multi_rx.py`
+loads it as `audio.module` and goes through `socket_audio`. It has three backends
 behind one duck-typed interface (`open/close/setup/write/drain/drop/dump/check`):
 
 | Backend | Library | Platforms |
@@ -128,7 +135,11 @@ real delay. `latency='low'` gives ~102 ms. Tunable via
 A unicast UDP port has exactly one consumer, so `sockaudio` and
 `websocket_server`'s `UdpAudioReceiver` cannot share one. Local audio wins:
 `_discover_audio_ports()` excludes any port claimed by an `audio.instances[]`
-entry. To run both, give the channel a second destination and let discovery find
+entry — but **only when `audio.module` is actually set**. `configure_audio()`
+returns early on an empty module, so the instances list is inert and those
+ports belong to the browser; excluding them anyway silenced any config with a
+leftover audio block, which is exactly how the add-on runs by default.
+To run both, give the channel a second destination and let discovery find
 it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
 
 ```json
@@ -136,7 +147,8 @@ it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
 ```
 
 `terminal.audio_ports` is an explicit override that wins outright.
-`apps/richland-mac.json` is a working example of this dual-audio setup.
+`apps/Palmetto800-single.json` is a working example of this dual-audio setup,
+and the tracked `p25_rtl_example.json` / `smartnet_example.json` now use it too.
 
 ## Call capture, speech-to-text, Home Assistant
 
@@ -224,8 +236,29 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   token should come from `token_file` or `$OP25_HA_TOKEN` rather than the
   config in the first place — redaction is a backstop, not the mechanism.
 - Clips live in a bounded in-memory ring (`ClipStore`, 60 clips / 24 MB).
-  Nothing is written to disk.
-- Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
+  Nothing is written to disk *here* — but `media_upload` pushes each clip to
+  HA's `/api/media_source/local_source/upload`, which inverts the transfer:
+  HA never connects back, so `public_url` and this host's reachability stop
+  mattering, and clips outlive the ring. The upload runs **before**
+  `_post_webhook` so the payload can carry `media_path`; an automation cannot
+  wait on an upload it did not start. That endpoint is `@require_admin`, so a
+  merely-valid token gets a bare 401 — `_upload_media` adds that hint itself.
+  Multipart is hand-rolled because this module stays stdlib-only.
+- **`/media/<source>/<dir>` is not linkable.** `LocalMediaView` inherits
+  `requires_auth = True`, so a notification tap 401s and a dashboard link is
+  swallowed by the frontend router (no panel named `media`). `<config>/www` is
+  registered as a *static* path at `/local` and bypasses auth entirely, so the
+  fix is to upload there and set `media_url_base` — the upload target and the
+  public URL stop agreeing at that point, which is the only reason that key
+  exists. It buys linkability at the cost of the clips being unauthenticated.
+- The media filename is the only metadata that travels with the audio (HA's
+  library is bare files, no sidecar, no DB), hence
+  `<date>_<time>_<tgid>_<slug>_<id>.wav` from `_media_filename()`. Underscores
+  are stripped from the slug so `split('_')` always yields exactly five
+  fields — one oddly-named talkgroup would otherwise break every consumer's
+  parsing — and the leading timestamp makes a plain directory listing sort
+  chronologically.
+- Tests: `tests/call_capture_spec.py` (170 tests), including HTTP round-trips
   against a stub HA. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s
   per run on this machine.
@@ -272,18 +305,26 @@ The React app is expected to work on a phone as well as a desktop.
 
 ## Signal plots
 
-The new UI renders plots client-side from raw data rather than displaying
-gnuplot images. `wrap_gp.send_plot()` emits `json_type: "plot"` with
+The UI renders plots client-side from raw data. **gnuplot is not involved at
+all** — the subprocess, the PNG writer and the x11 path were deleted with the
+legacy stack, so `gr_gnuplot.py` is now a misnomer (kept, because renaming it
+would churn six imports in `multi_rx.py` for no gain).
+`wrap_gp.send_plot()` emits `json_type: "plot"` with
 `{chan, mode, data: [[x,y],...], xrange, yrange, title}`, matching
 `PlotPayload` in `www/app/src/types/op25.ts`. All six modes work: `fft`,
 `constellation`, `symbol`, `eye`, `mixer`, `fll`.
 
 Things to know:
 
-- `wrap_gp` skips `attach_gp()` when `out_q` is set, and `multi_rx.py` **always**
-  passes `out_q`. So gnuplot is only started if `set_output_dir()` is also
-  called, which the `http` terminal does for its PNGs. `rx.py` passes no
-  `out_q`, so its curses/x11 plots are unaffected.
+- **Plots require the `ws` terminal.** `toggle_plot()` is a no-op elsewhere and
+  says so on stderr. Nothing renders the traces under curses, so building them
+  would be pure CPU burn.
+- `send_plot()` puts a bare **dict** on `ui_in_q`, while `multi_rx` puts a
+  **list** — same message type `-4`. `curses_terminal.process_q_events()`
+  normalises both. It did not use to, and iterating the dict yielded key
+  strings, which `process_json()` then subscripted: a `TypeError` that the bare
+  `except` in `run()` converted into a `quit`. Pressing 1–6 under curses killed
+  the receiver. Keep that normalisation.
 - Payloads are decimated to `PLOT_MAX_POINTS` (1200) by striding, not
   truncating, so a long trace still spans its full range.
 - Eye traces are overlaid by setting x to the position within the trace, which
@@ -294,6 +335,65 @@ Things to know:
   `op25Service.tsx` adopts any mode it sees data for. Without that, a reload
   leaves the toggle dark while data streams, and the next click switches the
   decoder off while switching the display on.
+
+## Home Assistant add-on
+
+`addons/op25/` plus a root `repository.yaml` make this repo an add-on store.
+The image is built by CI and published to `ghcr.io/astoker/op25`; `config.yaml`
+names it with `image:`, so Supervisor *pulls* rather than compiling GNU Radio on
+the user's box.
+
+- **Debian trixie base**, not bookworm. Trixie's librtlsdr is 2.0.2, which
+  already supports the RTL-SDR Blog V4 — that deletes the whole
+  `update-rtlsdr.sh` dpkg-build workstream. It also packages `python3-fastapi`
+  and `python3-uvicorn`, so no pip and no PEP 668. GNU Radio there is 3.10.12.
+- **The DVB driver question is platform-specific — check before assuming.**
+  On **generic x86-64** (HA OS 18.2, kernel 6.18.39) `CONFIG_DVB_USB_RTL28XXU`
+  is absent: it appears in exactly one fragment, `kernel-arm64-rockchip.config`,
+  and the x86-64 board config has no DVB entries at all. So on an amd64 NUC
+  nothing can claim the dongle and no blacklist is needed.
+  On an **arm64 Rockchip** HA OS board the module *is* built (`=m`), so
+  `dvb_usb_rtl28xxu` can bind the device first. That cannot be fixed from
+  inside the add-on — HA OS ignores `/etc/modprobe.d` — so it is a host-side
+  problem to document if anyone hits it. `blacklist-rtl.conf` remains for the
+  standalone Debian path.
+- **Ingress strips the prefix before proxying**, so the Python side needs no
+  path awareness: it still sees `/api/config` and `/ws`. Only the browser
+  needed fixing — `vite base: './'` plus `www/app/src/utils/url.ts`, which
+  resolves every fetch/WS URL against `document.baseURI`. Some of those strings
+  are *server*-generated and root-absolute (`/api/stream?port=N` from
+  `/api/audio/channels`, `audio_url` on a clip), which is why `apiUrl()` strips
+  a leading slash rather than assuming a relative input.
+- **Never point a Home Assistant media player at an ingress URL.** Those carry
+  a rotating per-session token only an authenticated browser holds. That is
+  what the published port 8099 is for.
+- **The run script renders the config, it does not edit the user's file.**
+  `rootfs/.../op25/run` merges add-on options over the user's JSON with `jq` and
+  pipes the result to `multi_rx.py -c -`. That forces
+  `terminal.module`/`terminal_type`, keeps the HA token out of the JSON that
+  `/api/config` serves (it goes via `$OP25_HA_TOKEN`), and leaves their file
+  untouched. **The Home Assistant injection is confined to one commented block
+  there** so the pending transcription/alerts schema split is a one-place edit.
+- **`usb: true` + `udev: true` is sufficient.** `usb: true` bind-mounts
+  `/dev/bus/usb` *and* adds the USB device-cgroup rules, which is all libusb
+  needs; RTL-SDR has no `/dev` node, so no `devices:` entry, and `full_access`
+  would actually void `usb`/`udev`.
+- **s6 `finish` halts the supervision tree** rather than letting s6 restart in
+  place, so a flowgraph that cannot start surfaces to Supervisor instead of
+  silently looping. `down-signal` is SIGINT because `multi_rx`'s non-interactive
+  path blocks in `tb.wait()` (C++, no bytecode) where a Python SIGTERM handler
+  cannot run; `timeout-kill` backstops it.
+- **CPU budget.** The target is an Intel N100: four Alder Lake-N E-cores, ~6 W,
+  sharing the box with Home Assistant. Single-channel P25 is comfortable;
+  multi-channel plus a local Whisper model is not, so point transcription at
+  HA Cloud or an off-box Wyoming instance. `USE_SIMD` stays at its CMake
+  default (SSE2 on x86_64) — never set `AVX`, which is `-march=native` and
+  would bake the CI runner's ISA into an image that has to run on the N100.
+- Two non-obvious build inputs, both found by dry-running the builder stage's
+  COPY list through cmake: `op25/gr-op25_repeater/cmake/Modules` (installed by
+  its `CMakeLists.txt`) and `docs/doxygen/pydoc_macros.h`, which GNU Radio's
+  `GrPybind.cmake` `configure_file()`s for every pybind target. `.dockerignore`
+  excludes `docs/` but re-includes that one header.
 
 ## Known remaining gaps
 
@@ -317,9 +417,14 @@ Things to know:
 5. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
    path in particular is unchanged in its ALSA/PulseAudio ordering but has only
    been exercised through the fallback chain on macOS.
-6. `add_default_config` (curses `t` key) is rx.py-only; under multi_rx it
-   answers with an explicit "not supported" error, since systems come from the
-   JSON config.
+6. `add_default_config` (curses `t` key) answers with an explicit "not
+   supported" error — systems come from the JSON config. It was only ever
+   implemented in `rx.py`, which is gone.
+7. **On-air decode is unverified since the `ws://` C++ removal**, because the
+   dongle now lives on the Home Assistant NUC. The *audio transport* is
+   covered: `tests/audio_udp_roundtrip_spec.py` drives the real compiled
+   `analog_udp` block and asserts non-silent PCM comes out of `/api/stream`.
+   What is still untested here is RF → demod → vocoder, which needs hardware.
 
 ## Testing the running stack without a browser
 
@@ -352,19 +457,25 @@ cd op25/gr-op25_repeater/www/app && yarn install && yarn build   # → ../dist
 
 # Run
 cd op25/gr-op25_repeater/apps
-$(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
+$(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 213 tests,
-in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
-`httpx`.
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 280 tests,
+mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
+Requires `httpx`.
+
+Without GNU Radio installed it is 271 passed / 7 skipped: `trunk_json_spec`
+(via `tk_trbo`/`tk_smartnet`) and `audio_udp_roundtrip_spec` need the built
+OOT module and `importorskip` out. Everything else is GR-free because
+`websocket_server` guards its `from gnuradio import gr`.
 
 - `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
   traversal, method handling, CORS (21).
 - `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
   speech heuristics, hallucination filtering, clip store, keyword matching, HA
-  config, HA HTTP round-trips, REST endpoints, per-port capture (116).
+  config, HA HTTP round-trips, media upload, REST endpoints, per-port
+  capture (170).
 - `tests/protocol_spec.py` — json_type routing, live SYSTEM_STATE, call-log
   ring, capture listing/download, upstream type validation (26).
 - `tests/trunk_json_spec.py` — trunk_update payload shapes for P25 / SmartNet /
@@ -385,10 +496,12 @@ instead (see `tests/audio_streams_spec.py`).
 configs are untracked and live only on the dev machine. Do not assume a clean
 checkout has them.
 
-- `richland-single.json` — one RTL-SDR, Palmetto 800 (SC) P25 trunked system,
-  **new** `ws:` terminal. This is the primary smoke test.
-- `richland.json` — three-dongle version, legacy `http:` terminal.
-- `palmetto_tgs.tsv` — talkgroup tags.
+- `Palmetto800-single.json` — one RTL-SDR, Palmetto 800 (SC) P25 trunked
+  system. This is the primary smoke test. (Tracked, unusually — `apps/.gitignore`
+  re-includes `Palmetto800*`.)
+- `Palmetto800-multi.json` — three-dongle version.
+- `palmetto_tgs.tsv` — talkgroup tags. **Not tracked**, so a clean checkout
+  cannot load it.
 - Tracked examples: `cfg.json`, `p25_single_rtl_example.json`, etc.
 
 ## Hardware notes
@@ -408,7 +521,22 @@ checkout has them.
 
 - Python is 3.10+ only; `websocket_server.py` uses `from __future__ import
   annotations` and PEP 604 unions.
-- Do not add subdirectories to the legacy `www-static/` output — `http_server.py`
-  strips `/` from request paths. (The new `dist/` server has no such limit.)
-- Upstream PRs go to boatbod's `dev` branch; keep fork-specific changes
-  reviewable and separate from upstream syncs.
+- **This is a hard fork, no longer tracking upstream.** It began as
+  [boatbod/op25](https://github.com/boatbod/op25) and diverged at merge-base
+  `b2e04c3f`; the `upstream` git remote has been removed deliberately, so
+  `git merge upstream/...` is not part of the workflow any more.
+
+  The divergence is not incidental — `rx.py`, `trunking.py`, `p25_decoder.py`,
+  `http_server.py`, the whole legacy web UI and the `ws://` C++ audio transport
+  are deleted (see "What was removed"), the config schema has changed, and the
+  frontend is a different application. A merge would conflict in most of that
+  and resolving it would mean resurrecting code this fork exists to be rid of.
+
+  If a specific upstream fix is worth having, cherry-pick it deliberately.
+  The files where that is still realistic are the decoder internals:
+  `lib/` (except `op25_audio.*`), `apps/multi_rx.py`, `apps/tk_*.py`,
+  `apps/p25_demodulator_dev.py`, `apps/sockaudio.py`, `apps/helper_funcs.py`,
+  `apps/squelch*` and `include/gnuradio/`. Everything else is fork-only.
+
+    git fetch https://github.com/boatbod/op25.git dev
+    git cherry-pick <sha>

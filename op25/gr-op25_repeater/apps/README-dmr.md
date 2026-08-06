@@ -31,15 +31,14 @@ Trunking requires configuration of the appropriate trunking module name (current
 
 ## Startup
 
-Much like op25's `rx.py`, `multi_rx.py` is best started using a shell script.
+`multi_rx.py` is best started using a shell script.
 ```
 ./multi_rx.py -v 10 -c dmr_rtl_example.json 2> stderr.2
 ```
 
-If you want to hear audio, you will also need to start an audio server in a separate terminal window.
-```
-./audio.py -u 23466
-```
+For audio, configure the `audio` block for local speaker output, or use the
+`ws:` terminal and listen in the browser -- see
+[README-browser-audio.md](../../../README-browser-audio.md).
 
 ## Known Issues & Limitations
 

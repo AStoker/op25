@@ -21,6 +21,12 @@
 # Based on original work metaPy.py by
 # Copyright (C)2013, Brandon Rasmussen, K7BBR
 
+# NOTE: this module is loaded dynamically, by name, from the JSON config
+# ("metadata": {"module": "icemeta.py"}) -- multi_rx.configure_metadata() does
+# the importlib call.  Its only static importer was rx.py, which has been
+# removed, so a grep for importers will now wrongly report it as dead.  It is
+# the Icecast stream-metadata path and is still referenced by cfg.json.
+
 import sys
 import time
 import threading

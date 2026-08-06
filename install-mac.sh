@@ -63,7 +63,6 @@ BREW_PACKAGES=(
     cmake                             # build system
     pybind11                          # Python/C++ bindings
     cppunit                           # unit test framework (required by cmake)
-    gnuplot                           # plotting
     doxygen                           # documentation
     pkg-config                        # package config helper
 )
@@ -155,9 +154,7 @@ echo "====== Installing Python dependencies into virtualenv..."
 
 PIP_PACKAGES=(
     numpy
-    waitress
-    requests
-    websockets
+    requests                          # icemeta.py (Icecast metadata)
     "fastapi"
     "uvicorn[standard]"
     sounddevice                       # PortAudio bindings: local speaker output
