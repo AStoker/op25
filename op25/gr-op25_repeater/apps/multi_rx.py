@@ -681,6 +681,12 @@ class rx_block (gr.top_block):
         except (TypeError, ValueError):
             pass
         self.terminal = terminal.op25_terminal(self.ui_in_q, self.ui_out_q, term_type, **term_kwargs)
+        if self.terminal is None:
+            # op25_terminal() answers None for a terminal_type it does not
+            # recognise (having already explained why on stderr).  Carry on
+            # headless rather than turning that into an AttributeError.
+            sys.stderr.write("Terminal not created for terminal_type '%s'; continuing headless\n" % term_type)
+            return
         self.terminal_type = self.terminal.get_terminal_type()
         self.terminal_config = config
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))

@@ -8,7 +8,8 @@ import type { SmartColorRule } from '../types/op25';
  * arrive over the WebSocket as part of `terminal_config`.
  */
 
-/** The built-in set, matching the legacy UI's defaults (www-static/main.js:27).
+/** The built-in set, matching the defaults the removed legacy UI used
+ *  ([www-static/main.js:27](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/www-static/main.js#L27)).
  *  A `smart_colors` list in the config replaces this wholesale — it does not
  *  extend it, so a config that omits EMS loses the EMS rule. */
 export const DEFAULT_SMART_COLORS: SmartColorRule[] = [

@@ -21,7 +21,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../dist'),
     emptyOutDir: true,
-    // assetsDir: '',      // No assets/ subdirectory – all output lands in www-static root
+    // assetsDir: '',      // No assets/ subdirectory – all output lands in dist root
     rollupOptions: {
       output: {
         entryFileNames: 'op25-react.js',

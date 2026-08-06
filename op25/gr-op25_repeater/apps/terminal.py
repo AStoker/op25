@@ -558,28 +558,6 @@ class curses_terminal(threading.Thread):
             self.keep_running = False
         self.send_command('quit', 0)
 
-class http_terminal(threading.Thread):
-    def __init__(self, input_q,  output_q, endpoint, **kwds):
-        from http_server import http_server
-
-        threading.Thread.__init__ (self, **kwds)
-        self.setDaemon(1)
-        self.input_q = input_q
-        self.output_q = output_q
-        self.endpoint = endpoint
-        self.keep_running = True
-        self.server = http_server(self.input_q, self.output_q, self.endpoint)
-        self.start()
-
-    def get_terminal_type(self):
-        return "http"
-
-    def end_terminal(self):
-        self.keep_running = False
-
-    def run(self):
-        self.server.run()
-
 class udp_terminal(threading.Thread):
     def __init__(self, input_q,  output_q, port, **kwds):
         threading.Thread.__init__ (self, **kwds)
@@ -637,7 +615,14 @@ def op25_terminal(input_q,  output_q, terminal_type, config = None):
             port = int(terminal_type)
             return udp_terminal(input_q, output_q, port)
         elif terminal_type.startswith('http:'):
-            return http_terminal(input_q, output_q, terminal_type.replace('http:', ''))
+            sys.stderr.write(
+                'error: the "http:" terminal has been removed, along with the\n'
+                '       waitress server and the www-static UI it served.  Use the\n'
+                '       websocket terminal instead:\n'
+                '           "module": "websocket_server.py",\n'
+                '           "terminal_type": "ws:%s"\n'
+                % terminal_type.replace('http:', ''))
+            return None
         else:
             sys.stderr.write('warning: unsupported terminal type: %s\n' % terminal_type)
             return None
