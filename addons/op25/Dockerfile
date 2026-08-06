@@ -126,4 +126,11 @@ RUN python3 -c 'import gnuradio.op25, gnuradio.op25_repeater' \
 
 LABEL io.hass.type="addon"
 
+# Replaces the obsolete config.yaml `watchdog:` key. Hits the loopback inside
+# the container, so it works whether or not the port mapping is enabled.
+# start-period is generous: the decoder has to configure the SDR and lock the
+# control channel before uvicorn answers.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8099/api/ha/status > /dev/null || exit 1
+
 WORKDIR /opt/op25/apps

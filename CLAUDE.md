@@ -521,13 +521,22 @@ checkout has them.
 
 - Python is 3.10+ only; `websocket_server.py` uses `from __future__ import
   annotations` and PEP 604 unions.
-- **Upstream merges: the fork has permanently diverged.** The files listed
-  under "What was removed" are deleted on purpose. When `git merge upstream/dev`
-  conflicts in any of them, resolve as *deleted* — do not resurrect. The
-  merge-base is `b2e04c3f`.
-  The still-mergeable surface is: `lib/` (except `op25_audio.*`),
-  `apps/multi_rx.py`, `apps/tk_*.py`, `apps/p25_demodulator_dev.py`,
-  `apps/sockaudio.py`, `apps/icemeta.py`, `apps/helper_funcs.py`,
-  `apps/squelch*`, and `include/gnuradio/`. Anything touching the UI, the
-  terminal or the audio transport is fork-only now, so upstream PRs should be
-  limited to that surface.
+- **This is a hard fork, no longer tracking upstream.** It began as
+  [boatbod/op25](https://github.com/boatbod/op25) and diverged at merge-base
+  `b2e04c3f`; the `upstream` git remote has been removed deliberately, so
+  `git merge upstream/...` is not part of the workflow any more.
+
+  The divergence is not incidental — `rx.py`, `trunking.py`, `p25_decoder.py`,
+  `http_server.py`, the whole legacy web UI and the `ws://` C++ audio transport
+  are deleted (see "What was removed"), the config schema has changed, and the
+  frontend is a different application. A merge would conflict in most of that
+  and resolving it would mean resurrecting code this fork exists to be rid of.
+
+  If a specific upstream fix is worth having, cherry-pick it deliberately.
+  The files where that is still realistic are the decoder internals:
+  `lib/` (except `op25_audio.*`), `apps/multi_rx.py`, `apps/tk_*.py`,
+  `apps/p25_demodulator_dev.py`, `apps/sockaudio.py`, `apps/helper_funcs.py`,
+  `apps/squelch*` and `include/gnuradio/`. Everything else is fork-only.
+
+    git fetch https://github.com/boatbod/op25.git dev
+    git cherry-pick <sha>

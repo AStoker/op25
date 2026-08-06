@@ -1,10 +1,21 @@
-# This is the boatbod fork of op25.  
+# OP25 — P25 / DMR / SmartNet trunking decoder
 
-> **This fork has removed `rx.py`.** `multi_rx.py` is the only receiver app;
-> it is a superset of what `rx.py` did, driven by a JSON config rather than
-> command-line options. The legacy two-port web GUI (`http_server.py` +
-> `www-static`) is gone too. See [CLAUDE.md](CLAUDE.md) for the merge policy
-> this implies.
+A hard fork of [boatbod/op25](https://github.com/boatbod/op25), which is itself
+a fork of the original OP25 project. Diverged at `b2e04c3f` and no longer
+tracking upstream — see [CLAUDE.md](CLAUDE.md) for what changed and why a merge
+is not on the table.
+
+What is different here:
+
+- **A modern web UI** — React 18 + MUI on a FastAPI/uvicorn backend, one port,
+  with client-rendered signal plots. The legacy two-port waitress GUI is gone.
+- **A Home Assistant OS add-on** (`addons/op25/`) with ingress, so the scanner
+  runs on the same box as Home Assistant and appears in its sidebar.
+- **Call capture and speech-to-text**, with keyword alerts pushed into Home
+  Assistant.
+- **macOS (Apple Silicon) support** via a cross-platform PortAudio backend.
+- **`rx.py` has been removed.** `multi_rx.py` is the only receiver app; it is a
+  superset, driven by a JSON config rather than command-line options.
 
 ## `multi_rx.py` capabilities
 
