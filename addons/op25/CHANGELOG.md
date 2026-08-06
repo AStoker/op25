@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.0
+## 0.0.2
+
+First image published to GHCR. Same content as 0.0.1, which never built: its
+tag disagreed with the manifest version and the manifest tripped the add-on
+linter.
+
+## 0.0.1
 
 Initial release. Experimental — not yet verified on real hardware.
 
