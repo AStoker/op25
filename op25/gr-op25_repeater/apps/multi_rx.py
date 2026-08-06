@@ -198,7 +198,6 @@ class channel(object):
         self.config = config
         self.symbol_rate = int(from_dict(config, 'symbol_rate', _def_symbol_rate))
         self.channel_rate = self.symbol_rate
-        self.ws_instance = get_ws_instance(from_dict(config, 'destination', ""))
         if dev.args == 'wavsrc':
             self.demod = p25_demodulator.p25_demod_fb(
                              msgq_id = self.msgq_id,
@@ -945,13 +944,6 @@ class rx_block (gr.top_block):
             sys.stderr.write("%s set_full_config is not supported; edit the config file instead\n" % log_ts.get())
             ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
                            'detail': "set_full_config is not supported; edit the config file instead"})
-        elif s == 'get_ws_instances':
-            js = {}
-            js['json_type'] = "ws_instances"
-            js['uuid'] = m_uuid
-            for chan in self.channels:
-                js[chan.msgq_id] = chan.ws_instance
-            ui_rsp.append(js)
         elif s == 'dump_tgids':
             self.trunk_rx.dump_tgids()
             ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})

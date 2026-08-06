@@ -24,8 +24,6 @@ import sys
 import json
 import ast
 from threading import Lock
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
 from log_ts import log_ts
 
 #################
@@ -177,16 +175,6 @@ def read_tsv_file(tsv_filename, key):
 
 def get_fractional_ppm(tuned_freq, adj_val):
     return (adj_val * 1e6 / tuned_freq)
-
-def get_ws_instance(destinations):
-    ws_instance = None
-    dest_list = destinations.replace(' ','').split(',')
-    for destination in dest_list:   # match first occurrence of ws:// or wss:// in destinations list
-        url = urlparse(destination)
-        if ((url.scheme == "ws") or (url.scheme == "wss")) and (url.netloc != ""):
-            ws_instance = urlunparse((url.scheme, url.netloc, "", "", "", ""))
-            break
-    return ws_instance
 
 # threading Lock with timeout
 class TimeoutLock():

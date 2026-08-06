@@ -994,7 +994,6 @@ _JSON_TYPE_TO_MSG: dict[str, str] = {
     "call_log":        MSG_CALL_ACTIVITY,
     "terminal_config": MSG_SYSTEM_STATE,
     "full_config":     MSG_SYSTEM_STATE,
-    "ws_instances":    MSG_SYSTEM_STATE,
     "meta_update":     MSG_SYSTEM_STATE,
 }
 

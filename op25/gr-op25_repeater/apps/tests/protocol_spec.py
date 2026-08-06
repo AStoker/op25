@@ -43,7 +43,6 @@ class TestJsonTypeRouting:
     REAL_JSON_TYPES = {
         'ok', 'error', 'call_log', 'channel_update', 'trunk_update',
         'meta_update', 'plot', 'terminal_config', 'full_config',
-        'ws_instances',
     }
 
     def test_no_fictional_keys(self) -> None:
