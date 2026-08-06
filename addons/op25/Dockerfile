@@ -60,19 +60,28 @@ COPY op25/gr-op25_repeater/lib                 /src/op25/gr-op25_repeater/lib
 COPY op25/gr-op25_repeater/python              /src/op25/gr-op25_repeater/python
 COPY op25/gr-op25_repeater/grc                 /src/op25/gr-op25_repeater/grc
 COPY op25/gr-op25_repeater/apps/CMakeLists.txt /src/op25/gr-op25_repeater/apps/CMakeLists.txt
-# GNU Radio's GrPybind.cmake configure_file()s this one 4 KB header for every
-# pybind target, so cmake fails without it.  Just the header -- the rest of
-# docs/ is 2.6 MB of doxygen scaffolding that is never built (the top-level
-# add_subdirectory(docs) is commented out).
-COPY op25/gr-op25/docs/doxygen/pydoc_macros.h \
-     /src/op25/gr-op25/docs/doxygen/pydoc_macros.h
-COPY op25/gr-op25_repeater/docs/doxygen/pydoc_macros.h \
-     /src/op25/gr-op25_repeater/docs/doxygen/pydoc_macros.h
+# Both modules' docs/ are build inputs, not documentation: GrPybind.cmake
+# configure_file()s docs/doxygen/pydoc_macros.h, and the generated
+# *_docstrings target runs docs/doxygen/update_pydoc.py.  Copying only the
+# header gets you a clean cmake configure and then a build failure.
+# 2.6 MB, and it stays in this stage -- the runtime image never sees it.
+COPY op25/gr-op25/docs                         /src/op25/gr-op25/docs
+COPY op25/gr-op25_repeater/docs                /src/op25/gr-op25_repeater/docs
 
-# -DCMAKE_INSTALL_PREFIX=/usr is required, not cosmetic: the pybind modules go
-# to ${GR_PYTHON_DIR}/gnuradio/op25*, and with the default /usr/local prefix
-# that does not land on Debian's sys.path reliably. arch-install.sh does the same.
+# Two install-location settings, both load-bearing:
+#
+#   CMAKE_INSTALL_PREFIX=/usr  puts the shared libs beside Debian's own
+#   gnuradio rather than in /usr/local.
+#
+#   GR_PYTHON_DIR=/usr/lib/python3/dist-packages  is NOT optional here.
+#   GrPython.cmake only computes it `if(NOT DEFINED GR_PYTHON_DIR)`, and on
+#   this build it resolves to lib/python3.13/site-packages -- a path Debian's
+#   interpreter does not have on sys.path at all (it uses dist-packages).
+#   The result builds and installs happily and then fails at
+#   `import gnuradio.op25`.  Pin it to where the system gnuradio package
+#   actually lives.
 RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+        -DGR_PYTHON_DIR=/usr/lib/python3/dist-packages \
     && cmake --build /build --parallel "$(nproc)" \
     && DESTDIR=/install cmake --install /build --strip \
     && rm -rf /install/usr/include /install/usr/lib/cmake

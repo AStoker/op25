@@ -11,7 +11,7 @@ the goal of *this* branch is to package OP25 as a **Home Assistant OS add-on**
 | Platform | Install script | Python | Notes |
 |---|---|---|---|
 | macOS (Apple Silicon) | `./install-mac.sh` | venv at `op25/gr-op25_repeater/apps/.venv` seeded from Homebrew gnuradio's private venv | dev machine; no SDR attached any more |
-| Home Assistant OS (amd64 NUC) | the add-on, `addons/op25/` | `/usr/bin/python3` in the image | **where the dongle lives**; primary deployment target |
+| Home Assistant OS 18.2 (Intel N100, amd64) | the add-on, `addons/op25/` | `/usr/bin/python3` in the image | **where the dongle lives**; primary deployment target |
 | Debian / Raspberry Pi 5 | `./install.sh` | system `/usr/bin/python3` | standalone install; must stay working |
 
 `op25/gr-op25_repeater/apps/op25_python` is a one-line text file holding the
@@ -383,6 +383,12 @@ the user's box.
   silently looping. `down-signal` is SIGINT because `multi_rx`'s non-interactive
   path blocks in `tb.wait()` (C++, no bytecode) where a Python SIGTERM handler
   cannot run; `timeout-kill` backstops it.
+- **CPU budget.** The target is an Intel N100: four Alder Lake-N E-cores, ~6 W,
+  sharing the box with Home Assistant. Single-channel P25 is comfortable;
+  multi-channel plus a local Whisper model is not, so point transcription at
+  HA Cloud or an off-box Wyoming instance. `USE_SIMD` stays at its CMake
+  default (SSE2 on x86_64) — never set `AVX`, which is `-march=native` and
+  would bake the CI runner's ISA into an image that has to run on the N100.
 - Two non-obvious build inputs, both found by dry-running the builder stage's
   COPY list through cmake: `op25/gr-op25_repeater/cmake/Modules` (installed by
   its `CMakeLists.txt`) and `docs/doxygen/pydoc_macros.h`, which GNU Radio's

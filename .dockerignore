@@ -23,10 +23,10 @@ op25/gr-op25_repeater/apps/stderr*
 op25/gr-op25_repeater/apps/*.2
 
 # Not needed to build or run
+# The top-level docs/ is doxygen output and unused (add_subdirectory(docs) is
+# commented out).  op25/*/docs is NOT excluded: pydoc_macros.h and
+# update_pydoc.py in there are pybind build inputs.
 docs
-op25/*/docs
-# ...except the one header GrPybind.cmake configure_file()s.
-!op25/*/docs/doxygen/pydoc_macros.h
 field-test
 *.md
 # Store assets: Supervisor reads these from the repo, not from the image.

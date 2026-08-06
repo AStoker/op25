@@ -48,7 +48,7 @@
         ]
     },
     "metadata": {
-        "module": "icemeta.py",
+        "module": "",
         "streams": [
             {
                 "stream_name": "stream0",

@@ -73,7 +73,12 @@ from gr_gnuplot import eye_sink_f
 from gr_gnuplot import mixer_sink_c
 from gr_gnuplot import fll_sink_c
 
-sys.path.append('tdma')
+# Relative to THIS FILE, not the cwd.  cwd belongs to the user's data --
+# tgid_tags_file, whitelists and crypt_keys all resolve against it -- so it
+# is routinely not the apps directory (the Home Assistant add-on runs with
+# cwd set to the config dir).  A bare 'tdma' silently resolved to nothing
+# there and `import lfsr` died.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tdma'))
 import lfsr
 
 os.environ['IMBE'] = 'soft'
