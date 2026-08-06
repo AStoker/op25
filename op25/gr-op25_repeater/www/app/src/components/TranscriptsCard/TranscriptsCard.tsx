@@ -16,6 +16,7 @@ import CardShell from '../CardShell/CardShell';
 import InsetPanel from '../common/InsetPanel';
 import { useOp25Service } from '../../services/op25Service';
 import { highlight } from '../../utils/callTranscripts';
+import { apiUrl } from '../../utils/url';
 import type { CallClip } from '../../types/op25';
 
 /** Clips are short; keep the list light rather than virtualising it. */
@@ -91,7 +92,7 @@ function useHaStatus(): HaChipState | null {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      fetch('/api/ha/status')
+      fetch(apiUrl('/api/ha/status'))
         .then((r) => (r.ok ? r.json() : null))
         .then((body: HaStatusResponse | null) => {
           if (!cancelled && body) setState(summariseHa(body));
@@ -236,7 +237,7 @@ export default function TranscriptsCard() {
     }
     // A finite WAV clip plays fine through a plain <audio> element — unlike
     // the unbounded /api/stream response, which needs the Web Audio path.
-    const el = new Audio(clip.audio_url);
+    const el = new Audio(apiUrl(clip.audio_url));
     el.onended = () => setPlayingId(null);
     el.onerror  = () => setPlayingId(null);
     audioRef.current = el;

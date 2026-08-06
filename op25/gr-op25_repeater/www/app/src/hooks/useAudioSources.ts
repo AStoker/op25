@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiUrl } from '../utils/url';
 
 /** One selectable audio stream, as reported by GET /api/audio/channels. */
 export interface AudioSource {
@@ -35,7 +36,7 @@ export function useAudioSources(): AudioSource[] {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      fetch('/api/audio/channels')
+      fetch(apiUrl('/api/audio/channels'))
         .then((r) => (r.ok ? r.json() : null))
         .then((body: { streams?: AudioSource[] } | null) => {
           if (!cancelled && body?.streams) setSources(body.streams);

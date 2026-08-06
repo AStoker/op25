@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { useWebSocketService } from './websocketService';
+import { apiUrl } from '../utils/url';
 import type {
   CallClip,
   CallClipPayload,
@@ -210,7 +211,7 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   // what /api/config exists for.  Whichever arrives first wins.
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/config')
+    fetch(apiUrl('/api/config'))
       .then((r) => (r.ok ? r.json() : null))
       .then((cfg: OP25Config | null) => {
         if (cancelled || !cfg) return;
@@ -225,7 +226,7 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   // reloaded page can show the calls it missed while it was gone.
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/calls?limit=100')
+    fetch(apiUrl('/api/calls?limit=100'))
       .then((r) => (r.ok ? r.json() : null))
       .then((body: { calls?: CallClip[] } | null) => {
         if (cancelled || !body?.calls) return;

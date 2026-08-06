@@ -4,6 +4,12 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs so index.html works both at the server root
+  // (http://host:8080/) and under a path prefix. Home Assistant serves add-ons
+  // through ingress at /api/hassio_ingress/<session-token>/, where the
+  // root-absolute "/op25-react.js" would 404. Runtime fetch/WebSocket URLs are
+  // resolved against document.baseURI by src/utils/url.ts for the same reason.
+  base: './',
   server: {
     // Proxy API and WebSocket requests to the Python backend during `yarn dev`.
     // Change the target port if you start websocket_server.py on a different port.

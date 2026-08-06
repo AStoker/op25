@@ -7,17 +7,18 @@ import React, {
   useState,
 } from 'react';
 import type { DownstreamMessage, UpstreamMessage } from '../types/websocket';
+import { wsUrl } from '../utils/url';
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Derive the WebSocket URL from the current page origin so the app works
- *  regardless of host/port, then falls back to localhost:8080 for local dev. */
+/** Derive the WebSocket URL from the document base so the app works regardless
+ *  of host, port *and* path prefix (Home Assistant ingress), falling back to
+ *  localhost:8080 for local dev. */
 function defaultWsUrl(): string {
   if (typeof window === 'undefined') return 'ws://127.0.0.1:8080/ws';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws`;
+  return wsUrl('ws');
 }
 
 const RECONNECT_DELAY_MS = 3_000;

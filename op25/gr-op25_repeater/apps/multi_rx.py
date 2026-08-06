@@ -40,6 +40,7 @@ exit 127
 '''
 import io
 import os
+import signal
 import sys
 import threading
 import time
@@ -1100,6 +1101,24 @@ class rx_main(object):
         self.tb = rx_block(options.verbosity, config = config)
         self.q_watcher = du_queue_watcher(self.tb.ui_out_q, self.process_qmsg)
         sys.stderr.write('python version detected: %s\n' % sys.version)
+        signal.signal(signal.SIGTERM, self._on_sigterm)
+
+    def _on_sigterm(self, signum, frame):
+        """Shut down cleanly on SIGTERM (docker stop, systemd, s6).
+
+        Raising re-uses the KeyboardInterrupt path in run(), which calls
+        tb.stop(); merely clearing keep_running would exit the loop without
+        stopping the flowgraph.
+
+        This fires promptly only on the interactive path, whose loop is
+        time.sleep(1.0) — PEP 475 runs the handler and lets the exception
+        propagate out of the sleep.  On the non-interactive path run() blocks
+        in tb.wait(), which is C++ with no bytecode executing, so the handler
+        will not run until that returns.  s6 is configured to send SIGINT
+        instead for exactly this reason, and SIGKILL backstops it.
+        """
+        sys.stderr.write("SIGTERM received; shutting down\n")
+        raise KeyboardInterrupt
 
     def process_qmsg(self, msg):
         if msg is None or self.tb.process_qmsg(msg):

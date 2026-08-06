@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiUrl } from '../utils/url';
 
 /**
  * These constants MUST match websocket_server.py:
@@ -143,7 +144,9 @@ export function useAudioStream(url: string): UseAudioStreamResult {
       const primeInSamples = Math.round((PRIME_MS / 1_000) * SERVER_SAMPLE_RATE);
       const maxInSamples = Math.round((MAX_QUEUE_MS / 1_000) * SERVER_SAMPLE_RATE);
 
-      const response = await fetch(url);
+      // `url` may be a server-generated root-absolute path such as
+      // /api/stream?port=N, so normalise it against the document base.
+      const response = await fetch(apiUrl(url));
       if (!response.ok || !response.body) {
         throw new Error(`Stream request failed: HTTP ${response.status}`);
       }
