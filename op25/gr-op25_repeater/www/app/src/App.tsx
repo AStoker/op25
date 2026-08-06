@@ -17,19 +17,13 @@ import BandPlanCard from './components/BandPlanCard/BandPlanCard';
 import SiteInfoCard from './components/SiteInfoCard/SiteInfoCard';
 import AdjacentSitesCard from './components/AdjacentSitesCard/AdjacentSitesCard';
 import PatchesCard from './components/PatchesCard/PatchesCard';
-import ConfigCard from './components/ConfigCard/ConfigCard';
+import AboutDialog from './components/AboutDialog/AboutDialog';
+import ConfigDialog from './components/ConfigDialog/ConfigDialog';
 import ReceiverCard from './components/ReceiverCard/ReceiverCard';
 import SignalPlotsCard from './components/SignalPlotsCard/SignalPlotsCard';
 import CallHistoryCard from './components/CallHistoryCard/CallHistoryCard';
 import SubscribersCard from './components/SubscribersCard/SubscribersCard';
 import TranscriptsCard from './components/TranscriptsCard/TranscriptsCard';
-
-// Settings live behind the gear in the AppBar (see Header). The remaining
-// entries here are still placeholders from the original scaffold.
-const navItems: NavItem[] = [
-  { label: 'Config', onClick: () => { /* TODO: open Config dialog */ } },
-  { label: 'About', onClick: () => { /* TODO: open About dialog */ } },
-];
 
 /**
  * Mobile section grouping. A phone cannot usefully show nine cards at once,
@@ -40,7 +34,7 @@ const navItems: NavItem[] = [
 const SECTIONS = [
   { label: 'Live',   render: () => <><PlayerCard /><ChannelsCard /></> },
   { label: 'Audio',  render: () => <><TranscriptsCard /><CallHistoryCard /></> },
-  { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /><ConfigCard /></> },
+  { label: 'System', render: () => <><SiteInfoCard /><BandPlanCard /><AdjacentSitesCard /><PatchesCard /><SubscribersCard /></> },
   // "Signal" alone did not suggest the tuning controls were in here.
   { label: 'Signal & Tuning', render: () => <><ReceiverCard /><SignalPlotsCard /></> },
 ];
@@ -105,7 +99,6 @@ function DesktopLayout() {
         <BandPlanCard />
         <AdjacentSitesCard />
         <PatchesCard />
-        <ConfigCard />
       </Stack>
     </Stack>
   );
@@ -114,6 +107,14 @@ function DesktopLayout() {
 function AppShell() {
   const theme = useTheme();
   const compact = useMediaQuery(theme.breakpoints.down('md'));
+
+  // The header's two nav entries are modals rather than routes: there is one
+  // page here, and a router for two dialogs would be all cost and no benefit.
+  const [dialog, setDialog] = useState<'config' | 'about' | null>(null);
+  const navItems: NavItem[] = [
+    { label: 'Config', onClick: () => setDialog('config') },
+    { label: 'About',  onClick: () => setDialog('about') },
+  ];
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
@@ -134,6 +135,9 @@ function AppShell() {
         <Toolbar />
         {compact ? <MobileLayout /> : <DesktopLayout />}
       </Box>
+
+      <ConfigDialog open={dialog === 'config'} onClose={() => setDialog(null)} />
+      <AboutDialog  open={dialog === 'about'}  onClose={() => setDialog(null)} />
     </Box>
   );
 }

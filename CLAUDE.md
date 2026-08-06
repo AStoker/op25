@@ -288,6 +288,15 @@ The React app is expected to work on a phone as well as a desktop.
 - Below `md` the layout switches to tabs (Live / Audio / System / Signal) in
   `App.tsx`; at `md` and above it keeps the two-column dashboard. A phone
   cannot usefully show ten cards at once.
+- **The header's `Config` and `About` are modals, not routes** (`ConfigDialog`,
+  `AboutDialog`, both on `common/DialogShell`, full-screen below `sm`). Config
+  holds the one decoder knob that is live at runtime — log level, i.e. `-v`,
+  which `set_debug` applies to *every* channel and device, so it is not in the
+  per-channel Tuning card — plus the browser's display preferences and the
+  read-only loaded JSON (moved out of the dashboard, where nobody scans it).
+  The AppBar gear menu is gone; its smart-colours switch is in Config →
+  Interface, next to the accent-colour picker that `themeService` has always
+  exposed and no UI ever reached.
 - `useIsPhone()` (`hooks/useIsPhone.ts`) is how the data tables drop
   lower-value columns below `sm` rather than letting the important ones
   squeeze into slivers. The Virtuoso tables use `tableLayout: fixed`, so the

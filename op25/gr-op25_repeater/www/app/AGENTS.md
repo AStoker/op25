@@ -28,6 +28,8 @@ app/                        ← this directory
       useSystemState.ts     the SYSTEM_STATE health payload
       useIsPhone.ts         drop low-value table columns below sm
     components/<Name>Card/  one card per panel, all wrapped in CardShell
+    components/ConfigDialog/  Config modal: runtime knobs, display prefs, loaded JSON
+    components/AboutDialog/   About modal: what this fork is, how it differs upstream
     components/common/      the design-system primitives (see below)
     utils/systemKind.ts     P25 / SmartNet / Connect+ branching + safe formatters
     types/op25.ts           decoder payload shapes
@@ -81,6 +83,7 @@ already uses. Instead:
 | Note under a control | `common/Hint` (what `Field` renders internally) |
 | Repeated outlined tile | `common/InsetPanel` — `highlight` for a keyword hit |
 | Filter box in a heading | `common/SearchField` — magnifier, placeholder, clear button |
+| A modal panel | `common/DialogShell` — the dialog's `CardShell`: title, close button, full-screen below `sm` |
 
 Never use `helperText=" "` to reserve a line: that is what made the TGID field
 taller than its buttons whether or not it had anything to say. Put the message
@@ -106,6 +109,24 @@ nothing.
 it from the selected channel.
 
 ---
+
+## Where a setting goes
+
+The header's `Config` and `About` entries are modals, not routes — there is one
+page here. `AppShell` owns which one is open.
+
+- **Config → Decoder** is for anything global to the decoder. Log level lives
+  here and not in `ReceiverCard` because `set_debug` fans out to every channel,
+  device and trunking module (`multi_rx.py:616`); the rest of the tab is the
+  read-only startup picture, since `multi_rx` reads its JSON once and takes only
+  `-c` / `-v` / `-p` / `-d` on the command line, of which just `-v` is live.
+- **Config → Interface** is for browser preferences (theme, accent colour, smart
+  colours) — localStorage only, never sent to the decoder. This is where the
+  AppBar gear menu went; the theme icon in the header stays as a shortcut.
+- **Config → Running config** is the loaded JSON, read-only (`set_full_config`
+  answers with an error, by design).
+- **A dashboard card** is for anything you watch or act on per channel. If it is
+  not worth a glance during normal operation, it belongs in a dialog.
 
 ## Things that will bite you
 

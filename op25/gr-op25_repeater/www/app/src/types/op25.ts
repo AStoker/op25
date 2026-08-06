@@ -300,6 +300,15 @@ export interface OP25Config {
     chans: TrunkingChanConfig[];
   };
   terminal?: TerminalConfig;
+  /** Local speaker output. Loaded by name via importlib (`sockaudio.py`), so
+   *  nothing imports it statically — an empty/absent module means the decoder's
+   *  UDP audio belongs entirely to the browser. */
+  audio?: {
+    module?: string;
+    instances?: { instance_name?: string; device_name?: string; udp_port?: number }[];
+  };
+  /** Icecast metadata module (`icemeta.py`), same importlib arrangement. */
+  metadata?: { module?: string; [k: string]: unknown };
 }
 
 /** One smart-colour rule: any tag containing one of `keywords` (case-

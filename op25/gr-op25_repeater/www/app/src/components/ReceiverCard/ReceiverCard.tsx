@@ -5,29 +5,18 @@ import Link from '@mui/material/Link';
 import ButtonGroup from '@mui/material/ButtonGroup';
 import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
-import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
-import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import StopCircleIcon from '@mui/icons-material/StopCircle';
 import CardShell from '../CardShell/CardShell';
 import ControlRow from '../common/ControlRow';
-import Field from '../common/Field';
 import Hint from '../common/Hint';
 import InfoRow from '../common/InfoRow';
 import SectionHeading from '../common/SectionHeading';
 import { useOp25Service, useSelectedChannel } from '../../services/op25Service';
 import { apiUrl } from '../../utils/url';
-
-/** Log levels multi_rx actually distinguishes. 0-2 are the useful day-to-day
- *  settings; 10 turns on ESS/encryption-sync decoding. */
-const LOG_LEVELS = [0, 1, 2, 3, 5, 9, 10];
-
-/** Shared by the menu items and the closed select, so both read the same. */
-const LOG_LEVEL_LABEL = (lvl: number): string =>
-  lvl === 0 ? '0 — quiet' : lvl === 10 ? '10 — ESS/crypt' : String(lvl);
 
 function formatHz(hz: number | null | undefined): string {
   if (hz === null || hz === undefined || !Number.isFinite(hz)) return '—';
@@ -50,15 +39,15 @@ interface CaptureFile {
 
 /**
  * Receiver-level controls: the commands multi_rx has always accepted from the
- * curses terminal (fine tune, log level, symbol capture, list reload, state
- * dumps) which had no browser equivalent until now.  Everything here acts on
- * the channel selected in ChannelsCard.
+ * curses terminal (fine tune, symbol capture, list reload, state dumps) which
+ * had no browser equivalent until now.  Everything here acts on the channel
+ * selected in ChannelsCard — log level is not here because `set_debug` applies
+ * to every channel and device at once, so it lives in Config → Decoder.
  */
 export default function ReceiverCard() {
   const {
     channels, channelIds, selectedChannelId,
     adjustTune, tuningStepSmall, tuningStepLarge,
-    setLogLevel, logLevel,
     toggleCapture, reloadLists, dumpTgids, dumpBuffer,
     decoderRunning,
   } = useOp25Service();
@@ -122,43 +111,6 @@ export default function ReceiverCard() {
             <Button onClick={() => adjustTune(tuningStepLarge)}>{`+${tuningStepLarge}`}</Button>
           </ButtonGroup>
           <Hint>Steps come from terminal_config (tuning_step_small / tuning_step_large).</Hint>
-        </Box>
-
-        <Divider />
-
-        {/* ---- Log level -------------------------------------------------- */}
-        <Box>
-          {/* The section heading names the control, so the field itself carries
-              no second label of its own. */}
-          <SectionHeading title="Log level" />
-          <Field
-            hint={`${logLevel === null ? 'Decoder default. ' : ''}Applies immediately and `
-              + `goes to the decoder's stderr, not this page.`}
-            sx={{ maxWidth: 380 }}
-          >
-            <TextField
-              select
-              disabled={disabled}
-              value={logLevel ?? ''}
-              onChange={(e) => setLogLevel(Number(e.target.value))}
-              slotProps={{
-                htmlInput: { 'aria-label': 'log verbosity' },
-                // Until terminal_config arrives the level is unknown, and an
-                // empty box reads as a broken control rather than a default.
-                select: {
-                  displayEmpty: true,
-                  renderValue: (v: unknown) => (v === '' || v === null
-                    ? <Box component="span" sx={{ color: 'text.disabled' }}>not set</Box>
-                    : LOG_LEVEL_LABEL(Number(v))),
-                },
-              }}
-              sx={{ width: 150 }}
-            >
-              {LOG_LEVELS.map((lvl) => (
-                <MenuItem key={lvl} value={lvl}>{LOG_LEVEL_LABEL(lvl)}</MenuItem>
-              ))}
-            </TextField>
-          </Field>
         </Box>
 
         <Divider />
