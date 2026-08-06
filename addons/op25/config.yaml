@@ -1,11 +1,11 @@
 ---
 name: OP25 Trunking Scanner
-version: "0.0.2"
+version: "0.0.3"
 slug: op25
 description: >-
   P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web
   UI, call recording and Home Assistant speech-to-text.
-url: https://github.com/AStoker/op25/tree/master/addons/op25
+url: https://github.com/AStoker/op25/tree/main/addons/op25
 image: ghcr.io/astoker/op25
 arch:
   - amd64

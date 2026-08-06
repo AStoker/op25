@@ -1,86 +1,63 @@
 {
-    "channels": [
-        {
-            "name": "Voice Channel",
-            "device": "sdr0",
-            "trunking_sysname": "Trunked System",
-            "demod_type": "cqpsk",
-            "destination": "udp://127.0.0.1:23456",
-            "meta_stream_name": "",
-            "excess_bw": 0.2,
-            "filter_type": "rc",
-            "if_rate": 24000,
-            "plot": "",
-            "symbol_rate": 4800,
-            "enable_analog": "off",
-            "whitelist": "",
-            "blacklist": "",
-            "crypt_keys": ""
-        }
-    ],
     "devices": [
         {
-            "args": "rtl",
-            "gains": "LNA:39",
             "name": "sdr0",
+            "args": "rtl",
+            "frequency": 859262500,
+            "gains": "LNA:39",
+            "gain_mode": false,
             "offset": 0,
             "ppm": 0.0,
-            "usable_bw_pct": 0.85,
             "rate": 1000000,
+            "usable_bw_pct": 0.85,
             "tunable": true
+        }
+    ],
+    "channels": [
+        {
+            "name": "Richland Palmetto 800",
+            "device": "sdr0",
+            "trunking_sysname": "Palmetto800",
+            "demod_type": "cqpsk",
+            "filter_type": "rc",
+            "excess_bw": 0.2,
+            "destination": "udp://127.0.0.1:23456",
+            "if_rate": 24000,
+            "symbol_rate": 4800,
+            "enable_analog": "off"
         }
     ],
     "trunking": {
         "module": "tk_p25.py",
         "chans": [
             {
-                "#nac": "0x4a6",
-                "#wacn": "0xbee00",
-                "#sysid": "0x4a2",
-                "sysname": "Trunked System",
-                "control_channel_list": "773.84375",
+                "sysname": "Palmetto800",
+                "control_channel_list": "859.26250,853.50000,855.46250,860.88750",
+                "tgid_tags_file": "palmetto_tgs.tsv",
+                "nac": "0x1D1",
+                "#site": "RFSS 2 / Site 32 (0x20); primary CC 859.2625, secondaries per sccb",
+                "#sysid": "0x1D9",
+                "#wacn": "0xBEE00",
                 "whitelist": "",
-                "tgid_tags_file": "",
-                "rid_tags_file": "",
-                "tdma_cc": false,
+                "blacklist": "",
                 "crypt_behavior": 2
-            }
-        ]
-    },
-    "metadata": {
-        "module": "",
-        "streams": [
-            {
-                "stream_name": "stream0",
-                "meta_format_idle": "[idle]",
-                "meta_format_tgid": "[%TGID%]",
-                "meta_format_tag": "[%TGID%] %TAG%",
-                "meta_format_rid": "@ [%RID%]",
-                "meta_format_rtag": "@ [%RID%] %RTAG%",
-                "icecastServerAddress": "192.168.3.24:8000",
-                "icecastMountpoint": "op25",
-                "icecastMountExt": ".xspf",
-                "icecastPass": "hackme",
-                "delay": 0.0
             }
         ]
     },
     "audio": {
         "module": "",
-        "instances": [
-            {
-                "instance_name": "audio0",
-                "device_name": "pulse",
-                "udp_port": 23456,
-                "audio_gain": 1.0,
-                "number_channels": 1
-            }
-        ]
+        "instances": []
     },
     "terminal": {
-        "curses_plot_interval": 0.1,
         "http_plot_interval": 1.0,
-        "tuning_step_large": 1200,
-        "tuning_step_small": 100
+        "home_assistant": {
+            "enabled": false,
+            "_comment": "Transcription is off by default. Turn enabled on and set the add-on option home_assistant.use_supervisor; url and token are injected by the add-on, do not put them here.",
+            "stt_engine": "stt.faster_whisper",
+            "language": "en",
+            "keywords": [],
+            "keywords_only": false,
+            "media_upload": false
+        }
     }
 }

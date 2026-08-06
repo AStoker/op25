@@ -12,18 +12,35 @@ declare config_file work_dir
 config_file=$(bashio::config 'config_file')
 work_dir=$(bashio::config 'work_dir')
 
+mkdir -p "$(dirname "${config_file}")" 2>/dev/null || true
+
+# Seed a working config on first run rather than refusing to start.
+#
+# Getting a file into an add-on's config directory on Home Assistant OS is the
+# single most awkward step of installing this: there is no host shell, and the
+# addon_configs share only appears if the Samba add-on is recent enough and the
+# user knows to look for it.  So write the sample out ourselves.  The user can
+# then edit it in place through whatever file access they do have -- and if
+# they have none yet, the add-on still starts and the UI still comes up.
 if ! bashio::fs.file_exists "${config_file}"; then
-    bashio::log.fatal "Config file not found: ${config_file}"
-    bashio::log.fatal ""
-    bashio::log.fatal "Copy your multi_rx JSON config -- plus any .tsv talkgroup"
-    bashio::log.fatal "tag files it references -- into this add-on's config"
-    bashio::log.fatal "directory, visible over Samba as:"
-    bashio::log.fatal "    addon_configs/<slug>_op25/"
-    bashio::log.fatal ""
-    bashio::log.fatal "A starting point is included in the image at"
-    bashio::log.fatal "    /opt/op25/samples/op25.sample.json"
-    bashio::log.fatal "and the docs are at https://github.com/AStoker/op25"
-    bashio::exit.nok
+    if cp /opt/op25/samples/op25.sample.json "${config_file}" 2>/dev/null; then
+        bashio::log.warning "No config found, so a sample was written to:"
+        bashio::log.warning "    ${config_file}"
+        bashio::log.warning ""
+        bashio::log.warning "It is set up for the Palmetto 800 P25 system in South"
+        bashio::log.warning "Carolina.  If that is not your system, edit the"
+        bashio::log.warning "control_channel_list and frequencies -- otherwise the"
+        bashio::log.warning "receiver will run but never lock."
+        bashio::log.warning ""
+        bashio::log.warning "Talkgroup names need a .tsv alongside it (see"
+        bashio::log.warning "trunking.chans[].tgid_tags_file).  Without one you get"
+        bashio::log.warning "talkgroup numbers, which is harmless."
+    else
+        bashio::log.fatal "No config at ${config_file}, and the sample could not"
+        bashio::log.fatal "be written there -- is the directory writable?"
+        bashio::log.fatal "See https://github.com/AStoker/op25/blob/main/addons/op25/DOCS.md"
+        bashio::exit.nok
+    fi
 fi
 
 if ! jq empty "${config_file}" 2>/dev/null; then

@@ -20,25 +20,46 @@ inside the add-on.
 
 ## Setup
 
-**1. Install, but do not start yet.**
+**1. Install and start it.** On first run the add-on writes a working sample
+config for you, so there is nothing to place beforehand. It is set up for the
+**Palmetto 800** P25 system in South Carolina — if that is not your system it
+will run without locking, which is harmless.
 
-**2. Put a config where the add-on can find it.** OP25 is configured by a JSON
-file that is far too structured for add-on options — per-channel demodulator
-parameters, control-channel lists, talkgroup tag files, crypt keys. Copy yours
-into the add-on's config directory, which appears over Samba as:
+**2. Edit that config for your system.** It lands at `/config/op25.json`
+*inside* the add-on. Reaching it from outside is the genuinely awkward part of
+Home Assistant OS, because there is no host shell. Pick whichever of these you
+already have:
 
+| Method | Where the file appears |
+|---|---|
+| **Samba share** add-on | the `addon_configs` share → `<slug>_op25/op25.json`. If you only see `config`, `share`, `media`… your Samba add-on predates `addon_configs` — update it. |
+| **Studio Code Server** or **File editor** add-on | needs its own config changed to see other add-ons' directories; simplest is to point OP25 at `/share` instead (below) |
+| **Advanced SSH & Web Terminal** add-on | `/addon_configs/<slug>_op25/` with Protection mode **off** |
+
+`<slug>` is a hash for a repository add-on, so expect a directory like
+`a1b2c3d4_op25`. Just look for the one ending in `_op25`.
+
+**If none of that is convenient, use `/share` instead.** That share is visible
+to essentially every file-access add-on. Set the options:
+
+```yaml
+config_file: /share/op25/op25.json
+work_dir: /share/op25
 ```
-addon_configs/<slug>_op25/op25.json
-```
 
-Copy any `.tsv` talkgroup tag files it references into the same directory:
-paths inside the config are resolved relative to `work_dir` (`/config` by
-default), not to the config file.
+and put your JSON and `.tsv` files in the `op25` folder of the `share` share.
 
-A starting point ships in the image at `/opt/op25/samples/op25.sample.json`.
+Whichever you choose, **`.tsv` talkgroup tag files must sit in `work_dir`** —
+paths inside the config resolve against it, not against the config file. Without
+them you get talkgroup numbers instead of names, which is a soft failure.
 
-**3. Set your dongle's serial.** Start the add-on once and read the log — the
-pre-flight step runs `rtl_test -t` and prints every device it can see. Then set:
+The pristine sample is always in the image at
+`/opt/op25/samples/op25.sample.json`.
+
+**3. Only if you have more than one SDR: pin the serial.** With a single
+dongle the sample's `"args": "rtl"` selects it and there is nothing to do. With
+several, read the log — the pre-flight runs `rtl_test -t` and prints each
+device's serial — then set:
 
 ```yaml
 device_overrides:
@@ -46,8 +67,8 @@ device_overrides:
     serial: "00000101"
 ```
 
-This is a convenience so you do not have to edit the JSON when hardware moves;
-it rewrites that device's `args` to `rtl=<serial>`.
+This rewrites that device's `args` to `rtl=<serial>` without you editing the
+JSON, which is handy when hardware moves between machines.
 
 > `rtl_test -t` always ends with `No E4000 tuner found, aborting.` That is an
 > E4000-only benchmark declining to run, **not** a failure. What matters is the
