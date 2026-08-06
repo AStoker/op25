@@ -356,13 +356,11 @@ Things to know:
 6. `add_default_config` (curses `t` key) answers with an explicit "not
    supported" error — systems come from the JSON config. It was only ever
    implemented in `rx.py`, which is gone.
-7. **The live audio path has not been re-verified since the `ws://` C++
-   transport was removed.** The build is clean from a fresh configure and
-   `enabled()` provably keeps its meaning for any config with a `udp://`
-   destination, but real PCM through `/api/stream` is the check that matters,
-   because a wrong edit there compiles and decodes and is simply silent. The
-   dongle now lives on the Home Assistant NUC, so this closes out as part of
-   add-on testing.
+7. **On-air decode is unverified since the `ws://` C++ removal**, because the
+   dongle now lives on the Home Assistant NUC. The *audio transport* is
+   covered: `tests/audio_udp_roundtrip_spec.py` drives the real compiled
+   `analog_udp` block and asserts non-silent PCM comes out of `/api/stream`.
+   What is still untested here is RF → demod → vocoder, which needs hardware.
 
 ## Testing the running stack without a browser
 
@@ -399,9 +397,14 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 277 tests,
-in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
-`httpx`.
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 280 tests,
+mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
+Requires `httpx`.
+
+Without GNU Radio installed it is 271 passed / 7 skipped: `trunk_json_spec`
+(via `tk_trbo`/`tk_smartnet`) and `audio_udp_roundtrip_spec` need the built
+OOT module and `importorskip` out. Everything else is GR-free because
+`websocket_server` guards its `from gnuradio import gr`.
 
 - `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
   traversal, method handling, CORS (21).

@@ -28,7 +28,9 @@ CHANS = [
 
 @pytest.fixture()
 def trbo() -> Any:
-    import tk_trbo
+    # tk_trbo pulls in GNU Radio transitively, so this fixture cannot run on a
+    # bare checkout (CI without the OOT module built).  Skip rather than error.
+    tk_trbo = pytest.importorskip("tk_trbo", reason="needs GNU Radio")
     tuned: list[dict[str, Any]] = []
     ctl = tk_trbo.rx_ctl(
         debug=0,
@@ -191,7 +193,7 @@ class TestTrboCallFiltering:
         assert status['0']['hold_tgid'] == 777
 
     def test_skip_expires(self, trbo: Any) -> None:
-        import tk_trbo
+        tk_trbo = pytest.importorskip("tk_trbo", reason="needs GNU Radio")
         rcvr = self._receiver(trbo)
         rcvr.process_grant(_grant_buf(1, 300, lcn=1, slot=0))
         trbo.ui_command('skip', 300, 0)
@@ -234,7 +236,7 @@ class TestTrboChannelStatus:
 @pytest.fixture()
 def smartnet_system() -> Any:
     """A tk_smartnet control-channel object with no flowgraph attached."""
-    import tk_smartnet
+    tk_smartnet = pytest.importorskip("tk_smartnet", reason="needs GNU Radio")
     sys_obj = tk_smartnet.osw_receiver.__new__(tk_smartnet.osw_receiver)
 
     # Only the state to_json() reads — building the real object needs GNURadio.
