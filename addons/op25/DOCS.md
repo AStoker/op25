@@ -9,9 +9,14 @@ You need an SDR that librtlsdr supports, plugged into the Home Assistant host.
 The RTL-SDR Blog V4 works out of the box on this image (Debian trixie ships
 librtlsdr 2.0.2).
 
-Home Assistant OS does not build the DVB kernel drivers, so unlike a normal
-Debian install there is nothing to blacklist — the dongle cannot be claimed by
-`dvb_usb_rtl28xxu`.
+On **x86-64** Home Assistant OS the DVB driver for these dongles is not built,
+so unlike a normal Debian install there is nothing to blacklist — nothing can
+claim the device before OP25 does. (Checked against HA OS 18.2, kernel 6.18.39:
+`CONFIG_DVB_USB_RTL28XXU` appears only in the arm64-rockchip kernel fragment.)
+
+On an **arm64 Rockchip** board it *is* built as a module, and may grab the
+dongle first. HA OS ignores `/etc/modprobe.d`, so that cannot be solved from
+inside the add-on.
 
 ## Setup
 

@@ -135,7 +135,11 @@ real delay. `latency='low'` gives ~102 ms. Tunable via
 A unicast UDP port has exactly one consumer, so `sockaudio` and
 `websocket_server`'s `UdpAudioReceiver` cannot share one. Local audio wins:
 `_discover_audio_ports()` excludes any port claimed by an `audio.instances[]`
-entry. To run both, give the channel a second destination and let discovery find
+entry — but **only when `audio.module` is actually set**. `configure_audio()`
+returns early on an empty module, so the instances list is inert and those
+ports belong to the browser; excluding them anyway silenced any config with a
+leftover audio block, which is exactly how the add-on runs by default.
+To run both, give the channel a second destination and let discovery find
 it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
 
 ```json
@@ -343,10 +347,16 @@ the user's box.
   already supports the RTL-SDR Blog V4 — that deletes the whole
   `update-rtlsdr.sh` dpkg-build workstream. It also packages `python3-fastapi`
   and `python3-uvicorn`, so no pip and no PEP 668. GNU Radio there is 3.10.12.
-- **HA OS does not build the DVB drivers.** `CONFIG_DVB_USB_RTL28XXU` is absent
-  from every HAOS kernel fragment, so `dvb_usb_rtl28xxu` cannot claim the
-  dongle. `blacklist-rtl.conf` is for the standalone Debian path only — and it
-  could not be applied from inside a container anyway.
+- **The DVB driver question is platform-specific — check before assuming.**
+  On **generic x86-64** (HA OS 18.2, kernel 6.18.39) `CONFIG_DVB_USB_RTL28XXU`
+  is absent: it appears in exactly one fragment, `kernel-arm64-rockchip.config`,
+  and the x86-64 board config has no DVB entries at all. So on an amd64 NUC
+  nothing can claim the dongle and no blacklist is needed.
+  On an **arm64 Rockchip** HA OS board the module *is* built (`=m`), so
+  `dvb_usb_rtl28xxu` can bind the device first. That cannot be fixed from
+  inside the add-on — HA OS ignores `/etc/modprobe.d` — so it is a host-side
+  problem to document if anyone hits it. `blacklist-rtl.conf` remains for the
+  standalone Debian path.
 - **Ingress strips the prefix before proxying**, so the Python side needs no
   path awareness: it still sees `/api/config` and `/ws`. Only the browser
   needed fixing — `vite base: './'` plus `www/app/src/utils/url.ts`, which
