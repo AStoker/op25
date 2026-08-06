@@ -525,9 +525,21 @@ class curses_terminal(threading.Thread):
                 break
             msg = self.input_q.delete_head_nowait()
             if msg.type() == -4:
-                for m in json.loads(msg.to_string()):
-                    if m is not None and len(m) > 0:
-                        rc |= self.process_json(json.dumps(m))
+                payload = json.loads(msg.to_string())
+                # multi_rx sends a list of update dicts, but gr_gnuplot.send_plot
+                # puts a bare dict on the same queue with the same type.  Iterating
+                # that yields key *strings*, and process_json() then subscripts a
+                # str -- a TypeError that the bare except in run() turns into a
+                # 'quit', taking the whole receiver down.  Normalise instead.
+                if isinstance(payload, dict):
+                    payload = [payload]
+                elif not isinstance(payload, list):
+                    continue
+                for m in payload:
+                    if isinstance(m, dict) and len(m) > 0:
+                        # bool(): process_json() bare-returns None on a couple of
+                        # early-out paths, and "rc |= None" is a TypeError.
+                        rc |= bool(self.process_json(json.dumps(m)))
         return rc
 
     def send_command(self, command, arg1 = 0, arg2 = 0):

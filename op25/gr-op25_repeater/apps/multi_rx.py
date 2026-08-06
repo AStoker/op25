@@ -332,6 +332,12 @@ class channel(object):
             self.sinks[plot][0].gnuplot.set_interval(self.tb.curses_plot_interval)
 
     def toggle_plot(self, plot_type):
+        # Only the ws terminal renders plots.  gnuplot is no longer spawned, so
+        # under curses/udp a plot sink would burn CPU building traces that
+        # nothing draws.
+        if self.tb.terminal_type != "ws":
+            sys.stderr.write("%s Plots require the ws terminal (\"module\": \"websocket_server.py\"); ignoring\n" % log_ts.get())
+            return
         if plot_type == 1:
             self.toggle_fft_plot()
         elif plot_type == 2:
