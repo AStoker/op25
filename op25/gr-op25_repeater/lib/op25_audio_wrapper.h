@@ -58,11 +58,14 @@ public:
         // threadsafety guard
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // op25_audio contains std::mutex, std::thread and websocketpp::server,
-        // all of which are non-copyable.  Apple's libc++ (macOS) is stricter
-        // than libstdc++ (Linux) about requiring map value types to be
-        // copy-constructible during internal tree rebalancing, so we store
-        // by unique_ptr to keep the non-copyable members off the map's value.
+        // Stored by unique_ptr so the map holds a stable, cheaply-movable value
+        // and op25_audio itself never has to be copy-constructible.  This was
+        // originally required because op25_audio held a std::mutex, std::thread
+        // and websocketpp::server (all non-copyable) and Apple's libc++ is
+        // stricter than libstdc++ about copy-constructible map values during
+        // tree rebalancing.  Those members went with the ws:// transport, but
+        // the indirection is kept: it costs nothing and keeps the constraint
+        // from silently reappearing.
         auto it = audioMap.find(msgq_id);
         if (it == audioMap.end()) {
             if (debug >= 10)

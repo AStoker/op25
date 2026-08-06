@@ -63,7 +63,10 @@ class TestEndpointDiscovery:
         assert slot_a[1]['name'] == 'ch two'
 
     def test_ws_destinations_are_ignored(self) -> None:
-        # ws:// is the legacy stack's C++ sink; only udp carries PCM here.
+        # ws:// was removed from the C++ audio layer (it fed the legacy browser
+        # UI directly).  Old configs on disk may still carry one, and the
+        # decoder only warns about it, so discovery must keep parsing such a
+        # destination harmlessly and use the udp half.
         eps = ws._discover_audio_endpoints({
             'channels': [{'name': 'c', 'destination': 'udp://127.0.0.1:23456, ws://0.0.0.0:9000'}],
         })
