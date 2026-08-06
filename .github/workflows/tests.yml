@@ -1,0 +1,95 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" httpx pytest pytest-asyncio numpy
+
+      # Runs without GNU Radio: websocket_server guards its `from gnuradio
+      # import gr`, and the specs that genuinely need the built OOT module
+      # (trunk_json_spec via tk_trbo/tk_smartnet, audio_udp_roundtrip_spec)
+      # importorskip out. Expect ~271 passed / ~10 skipped here versus 281
+      # passed on a machine with the module installed.
+      - name: Run tests
+        working-directory: op25/gr-op25_repeater/apps
+        run: pytest -q
+
+  frontend:
+    name: frontend build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # `yarn build` is `tsc -b && vite build`, so this is the type check too.
+      # Without it a type error would only surface ten minutes into the image
+      # build, which runs the same command.
+      - name: Install and build
+        working-directory: op25/gr-op25_repeater/www/app
+        run: |
+          yarn install --frozen-lockfile
+          yarn build
+
+      # www/dist is a committed artifact and drifts silently. This does not
+      # fail the build -- a drifting dist is a nuisance, not a broken tree --
+      # but it puts the diff in the log.
+      - name: Warn if the committed www/dist is stale
+        run: |
+          if ! git diff --quiet -- op25/gr-op25_repeater/www/dist; then
+            echo "::warning::www/dist differs from a fresh build of www/app."
+            echo "::warning::Run 'yarn build' in www/app and commit the result."
+            git diff --stat -- op25/gr-op25_repeater/www/dist
+          else
+            echo "www/dist is up to date."
+          fi
+
+  addon-config:
+    name: add-on manifest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Supervisor searches a repository recursively for config.yaml, so a
+      # stray one anywhere in the tree becomes a phantom add-on in every user's
+      # store.
+      - name: Only one add-on manifest exists
+        run: |
+          found=$(find . -name config.yaml -not -path './.git/*' \
+                         -not -path './addons/op25/*' -not -path '*/node_modules/*')
+          if [ -n "${found}" ]; then
+            echo "::error::Unexpected config.yaml files (Supervisor would treat these as add-ons):"
+            echo "${found}"
+            exit 1
+          fi
+          echo "OK: addons/op25/config.yaml is the only manifest."
+
+      - name: Lint the add-on
+        uses: frenck/action-addon-linter@v2
+        with:
+          path: ./addons/op25

@@ -10,8 +10,9 @@ the goal of *this* branch is to package OP25 as a **Home Assistant OS add-on**
 
 | Platform | Install script | Python | Notes |
 |---|---|---|---|
-| macOS (Apple Silicon) | `./install-mac.sh` | venv at `op25/gr-op25_repeater/apps/.venv` seeded from Homebrew gnuradio's private venv | dev/test machine |
-| Raspberry Pi 5 (Debian) | `./install.sh` | system `/usr/bin/python3` | deployment target; must stay working |
+| macOS (Apple Silicon) | `./install-mac.sh` | venv at `op25/gr-op25_repeater/apps/.venv` seeded from Homebrew gnuradio's private venv | dev machine; no SDR attached any more |
+| Home Assistant OS (amd64 NUC) | the add-on, `addons/op25/` | `/usr/bin/python3` in the image | **where the dongle lives**; primary deployment target |
+| Debian / Raspberry Pi 5 | `./install.sh` | system `/usr/bin/python3` | standalone install; must stay working |
 
 `op25/gr-op25_repeater/apps/op25_python` is a one-line text file holding the
 absolute path of the interpreter to use. It is gitignored and written by the
@@ -330,6 +331,53 @@ Things to know:
   `op25Service.tsx` adopts any mode it sees data for. Without that, a reload
   leaves the toggle dark while data streams, and the next click switches the
   decoder off while switching the display on.
+
+## Home Assistant add-on
+
+`addons/op25/` plus a root `repository.yaml` make this repo an add-on store.
+The image is built by CI and published to `ghcr.io/astoker/op25`; `config.yaml`
+names it with `image:`, so Supervisor *pulls* rather than compiling GNU Radio on
+the user's box.
+
+- **Debian trixie base**, not bookworm. Trixie's librtlsdr is 2.0.2, which
+  already supports the RTL-SDR Blog V4 — that deletes the whole
+  `update-rtlsdr.sh` dpkg-build workstream. It also packages `python3-fastapi`
+  and `python3-uvicorn`, so no pip and no PEP 668. GNU Radio there is 3.10.12.
+- **HA OS does not build the DVB drivers.** `CONFIG_DVB_USB_RTL28XXU` is absent
+  from every HAOS kernel fragment, so `dvb_usb_rtl28xxu` cannot claim the
+  dongle. `blacklist-rtl.conf` is for the standalone Debian path only — and it
+  could not be applied from inside a container anyway.
+- **Ingress strips the prefix before proxying**, so the Python side needs no
+  path awareness: it still sees `/api/config` and `/ws`. Only the browser
+  needed fixing — `vite base: './'` plus `www/app/src/utils/url.ts`, which
+  resolves every fetch/WS URL against `document.baseURI`. Some of those strings
+  are *server*-generated and root-absolute (`/api/stream?port=N` from
+  `/api/audio/channels`, `audio_url` on a clip), which is why `apiUrl()` strips
+  a leading slash rather than assuming a relative input.
+- **Never point a Home Assistant media player at an ingress URL.** Those carry
+  a rotating per-session token only an authenticated browser holds. That is
+  what the published port 8099 is for.
+- **The run script renders the config, it does not edit the user's file.**
+  `rootfs/.../op25/run` merges add-on options over the user's JSON with `jq` and
+  pipes the result to `multi_rx.py -c -`. That forces
+  `terminal.module`/`terminal_type`, keeps the HA token out of the JSON that
+  `/api/config` serves (it goes via `$OP25_HA_TOKEN`), and leaves their file
+  untouched. **The Home Assistant injection is confined to one commented block
+  there** so the pending transcription/alerts schema split is a one-place edit.
+- **`usb: true` + `udev: true` is sufficient.** `usb: true` bind-mounts
+  `/dev/bus/usb` *and* adds the USB device-cgroup rules, which is all libusb
+  needs; RTL-SDR has no `/dev` node, so no `devices:` entry, and `full_access`
+  would actually void `usb`/`udev`.
+- **s6 `finish` halts the supervision tree** rather than letting s6 restart in
+  place, so a flowgraph that cannot start surfaces to Supervisor instead of
+  silently looping. `down-signal` is SIGINT because `multi_rx`'s non-interactive
+  path blocks in `tb.wait()` (C++, no bytecode) where a Python SIGTERM handler
+  cannot run; `timeout-kill` backstops it.
+- Two non-obvious build inputs, both found by dry-running the builder stage's
+  COPY list through cmake: `op25/gr-op25_repeater/cmake/Modules` (installed by
+  its `CMakeLists.txt`) and `docs/doxygen/pydoc_macros.h`, which GNU Radio's
+  `GrPybind.cmake` `configure_file()`s for every pybind target. `.dockerignore`
+  excludes `docs/` but re-includes that one header.
 
 ## Known remaining gaps
 
