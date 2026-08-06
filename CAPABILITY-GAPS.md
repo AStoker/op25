@@ -1,9 +1,16 @@
 # Capability gaps — fork vs. upstream boatbod/op25
 
 Audit date: 2026-08-04. Branch `feature/updated-gui` @ `bf56b51b`.
+**Closed 2026-08-05 at `3b7d4d49`** — see "Status" below.
 Reference points: upstream `README.md` capability lists, `op25/gr-op25_repeater/apps/README*.md`,
-the legacy control protocol table in `op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md`,
+the legacy control protocol table in
+[www/react-app-legacy/AGENTS.md](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md),
 and `upstream/dev` (12 commits ahead of our merge-base `b2e04c3f`).
+
+> **Links into the legacy tree are permalinks pinned to `3b7d4d49`.** That commit is the
+> last one before `www/www-static/`, `www/react-app-legacy/` and `apps/http_server.py`
+> were deleted. They no longer resolve in the working tree, and that is expected — this
+> document is a closed audit, not a live map.
 
 Scope: what upstream *advertises* (or ships) that this fork's new stack
 (`websocket_server.py` + `www/app`) does not deliver, plus code paths that exist
@@ -14,10 +21,20 @@ code · **[P3]** docs & housekeeping.
 
 ---
 
-## Status — 2026-08-04
+## Status — closed 2026-08-05
 
 Worked through in six phases (commits `2ab54018`…`b2ef0cf6` plus the merge
-`0f328a14`). 42 of 46 items closed; test count went 137 → 213.
+`0f328a14`). 42 of 46 items closed; test count went 137 → 213 (277 by audit close).
+
+**The audit is closed.** Of the four items that were still open on 2026-08-04:
+
+- `meta_update` (§2) is the one real remaining gap, carried forward as a standing
+  known limitation rather than closed.
+- Two are upstream roadmap tracking (§10) and were never fork regressions.
+- The upstream-PR-policy note (§10) is retired — see the strikethrough there.
+
+This file is now a historical record. It is not maintained against the working tree,
+and its links into the deleted legacy stack are pinned permalinks (see above).
 
 Where the fix differs from what the item proposed, that is deliberate:
 
@@ -96,10 +113,12 @@ The new UI only ever sends `get_full_config`, `get_terminal_config`, `hold`,
 - [x] **[P2] `terminal_config` is requested and then discarded.** Requested at
       [op25Service.tsx:146](op25/gr-op25_repeater/www/app/src/services/op25Service.tsx#L146); no handler.
       Keys the legacy UI honours and the new one ignores
-      ([main.js:276-300](op25/gr-op25_repeater/www/www-static/main.js#L276-L300)):
+      ([main.js:276-300](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/www-static/main.js#L276-L300)):
       `smart_colors`, `tuning_step_small`, `tuning_step_large`, `default_channel`, `terminal_interface`.
-- [ ] **[P2] `meta_update` is ignored.** *(partial: it now has a real route in
-      `_JSON_TYPE_TO_MSG`, but no card displays Icecast stream state yet.)* Emitted by
+- [ ] **[P2] `meta_update` is ignored.** *(Still open at audit close — the only one. It has a
+      real route in `_JSON_TYPE_TO_MSG`, but no card displays Icecast stream state. Carried
+      forward as a standing gap rather than closed; Icecast metadata is a niche path and
+      `icemeta.py` remains a live `metadata.module`.)* Emitted by
       [tk_p25.py:54-69](op25/gr-op25_repeater/apps/tk_p25.py#L54-L69) for Icecast metadata
       ("support for streaming metadata updates" — README-metadata.md). Nothing surfaces stream metadata
       state in the new UI.
@@ -139,9 +158,9 @@ The new UI only ever sends `get_full_config`, `get_terminal_config`, `hold`,
       replies `ok` and does nothing, so the legacy `ConfigDialog.tsx` "save config" cannot work. Either
       implement config write-back or remove the command and the dialog claim.
 - [x] **[P2] `dump_tracking` has no handler at all.** Sent by both legacy UIs
-      ([main.js:1738](op25/gr-op25_repeater/www/www-static/main.js#L1738),
-      `react-app-legacy/src/App.tsx:600`) and documented in
-      [www/react-app-legacy/AGENTS.md:116](op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md#L116) as "Log tracking
+      ([main.js:1738](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/www-static/main.js#L1738),
+      [react-app-legacy/src/App.tsx:600](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/react-app-legacy/src/App.tsx#L600)) and documented in
+      [www/react-app-legacy/AGENTS.md:116](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md#L116) as "Log tracking
       state". No matching branch in `multi_rx.py` or `rx.py`. Documented capability that never existed.
 - [x] **[P3] `set_freq` and `add_default_config` are curses-only.** Bound at
       [terminal.py:216,234](op25/gr-op25_repeater/apps/terminal.py#L216-L234) but only handled by
@@ -236,7 +255,9 @@ P25 payload shape.
       destinations, per-channel headphone toggle, "Mute Browser Audio at Startup"). Needs a "new stack"
       section or an explicit note.
 - [x] **[P2] `www/app/AGENTS.md` is thin; the new protocol is documented only in `CLAUDE.md`.**
-      The detailed reference (`www/react-app-legacy/AGENTS.md`) describes the legacy stack and includes at least
+      The detailed reference
+      ([www/react-app-legacy/AGENTS.md](https://github.com/AStoker/op25/blob/3b7d4d49d48b379495992dcbea5b57f5c3941d00/op25/gr-op25_repeater/www/react-app-legacy/AGENTS.md))
+      describes the legacy stack and includes at least
       one command that does not exist (`dump_tracking`, §4).
 - [x] **[P3] `apps/README.md` "HTTP Console" section covers only `rx.py -l http:…`.** No mention of
       `terminal_type: "ws:host:port"` or that the new GUI is `multi_rx.py`-only
@@ -271,5 +292,8 @@ P25 payload shape.
 - [ ] Demodulator improvements to speed up channel lock-time.
 - [ ] Additional encryption algorithms (today: ADP/RC4 `0xAA`, DES-OFB `0x81`, AES `0x84` —
       `lib/op25_crypt_{adp,des,aes}.cc`).
-- [ ] Fork-specific PRs upstream go to boatbod's `dev` branch; keep the new-stack work reviewable
-      separately from upstream syncs.
+- [x] ~~Fork-specific PRs upstream go to boatbod's `dev` branch; keep the new-stack work reviewable
+      separately from upstream syncs.~~ **Retired 2026-08-05.** No longer true: the fork
+      deliberately deleted `rx.py`, `trunking.py`, `p25_decoder.py`, `http_server.py`, the `ws://`
+      C++ audio transport and the vendored `websocketpp`/`asio` trees. The current merge policy
+      and the remaining mergeable surface are documented in `CLAUDE.md`.
