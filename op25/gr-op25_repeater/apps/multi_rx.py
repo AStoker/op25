@@ -325,13 +325,9 @@ class channel(object):
     def set_plot_destination(self, plot): # match plot rate/output to the terminal in use
         if plot is None or plot not in self.sinks or self.tb.terminal_type is None:
             return
-        if self.tb.terminal_type == "http":
-            self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
-            self.sinks[plot][0].gnuplot.set_output_dir(self.tb.http_plot_directory)
-        elif self.tb.terminal_type == "ws":
-            # The browser renders these from the data stream, so no image
-            # directory is needed — but throttle to the same rate the http
-            # terminal uses for its images rather than sending every buffer.
+        if self.tb.terminal_type == "ws":
+            # The browser renders these from the raw data stream, so there is no
+            # image to write — but throttle rather than sending every buffer.
             self.sinks[plot][0].gnuplot.set_interval(self.tb.http_plot_interval)
         else:
             self.sinks[plot][0].gnuplot.set_interval(self.tb.curses_plot_interval)
@@ -689,12 +685,9 @@ class rx_block (gr.top_block):
         self.terminal_type = self.terminal.get_terminal_type()
         self.terminal_config = config
         self.curses_plot_interval = float(from_dict(config, 'curses_plot_interval', 0.0))
+        # Despite the name this is the ws terminal's plot rate; nothing writes
+        # images any more.  curses_plot_interval defaults to 0.0 (every buffer).
         self.http_plot_interval = float(from_dict(config, 'http_plot_interval', 1.0))
-        self.http_plot_directory = str(from_dict(config, 'http_plot_directory', "../www/images"))
-        try:
-            os.makedirs(self.http_plot_directory, exist_ok=True)
-        except OSError as e:
-            sys.stderr.write("Warning: unable to create plot directory %s: %s\n" % (self.http_plot_directory, e))
         self.ui_timeout = float(from_dict(config, 'terminal_timeout', 5.0))
 
     def configure_trunking(self, config):
@@ -890,7 +883,6 @@ class rx_block (gr.top_block):
             ui_rsp.append(js)
             ui_rsp.append(self.ui_freq_update())
             ui_rsp.append(self.ui_calllog_update())
-            ui_rsp.append(self.ui_plot_update())
         elif s == 'toggle_plot':
             if not self.get_interactive():
                 sys.stderr.write("%s Cannot start plots for non-realtime (replay) sessions\n" % log_ts.get())
@@ -1018,19 +1010,6 @@ class rx_block (gr.top_block):
             meta_s, meta_q = self.meta_streams[s_name]
             params[rx_id]['stream_url'] = meta_s.get_url()
         return params
-
-    def ui_plot_update(self):
-        if self.terminal_type is None or self.terminal_type != "http":
-            return { }
-
-        filenames = []
-        for chan in self.channels:
-            for sink in chan.sinks:
-                fn = chan.sinks[sink][0].gnuplot.filename
-                if fn is not None and os.access(os.path.join(self.http_plot_directory, fn), os.R_OK):
-                    filenames.append(fn)
-        d = {'json_type': 'rx_update', 'files': filenames}
-        return d
 
     def kill(self):
         for chan in self.channels:

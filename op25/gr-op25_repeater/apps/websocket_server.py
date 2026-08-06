@@ -996,10 +996,6 @@ _JSON_TYPE_TO_MSG: dict[str, str] = {
     "full_config":     MSG_SYSTEM_STATE,
     "ws_instances":    MSG_SYSTEM_STATE,
     "meta_update":     MSG_SYSTEM_STATE,
-    # rx_update carries the http terminal's gnuplot PNG filenames and is only
-    # emitted when terminal_type == "http" (multi_rx.ui_plot_update), so the ws
-    # terminal never sees one.  Listed so its absence is a documented fact
-    # rather than an oversight.
 }
 
 
@@ -1504,9 +1500,9 @@ class ws_terminal(threading.Thread):
         """Broadcast decoder message(s) to all WebSocket clients.
 
         multi_rx.py enqueues a JSON *list* of dicts — a single 'update'
-        command yields trunk_update, channel_update, call_log and rx_update
-        entries in one message — so normalize to a list and route each entry
-        on its own json_type.
+        command yields trunk_update, channel_update and call_log entries in
+        one message — so normalize to a list and route each entry on its own
+        json_type.
         """
         if msg.type() != -4:
             return
@@ -1523,7 +1519,7 @@ class ws_terminal(threading.Thread):
                 continue
             entry.pop('uuid', None)  # internal request-correlation tag; not part of the client protocol
             if not entry:
-                continue  # e.g. ui_plot_update() returns {} for non-http terminals
+                continue  # e.g. ui_calllog_update() returns {} when there is nothing new
             json_type = entry.get('json_type', '')
             if json_type == 'channel_update':
                 # Keep the newest talkgroup/source per channel so captured
