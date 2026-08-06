@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.6
+
+- Persistance of metadata in `op25_metadata.sqlite` across restarts.
+- Talk groups fixed
+- Plots improved
+- Remote GUI hooks
+
 ## 0.0.5
 
 First image since 0.0.2: **0.0.3 and 0.0.4 never published one.** 0.0.3's build
