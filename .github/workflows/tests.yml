@@ -93,3 +93,9 @@ jobs:
         uses: frenck/action-addon-linter@v2
         with:
           path: ./addons/op25
+
+      # config.yaml, CHANGELOG.md and the web UI's package.json all carry the
+      # version. When config.yaml drifts, the release workflow's tag check kills
+      # the build after the fact -- this says so on the push that caused it.
+      - name: Version is consistent across the tree
+        run: scripts/bump-version.py --check

@@ -1,9 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { createRequire } from 'module';
+
+// Kept in step with addons/op25/config.yaml by scripts/bump-version.py, so the
+// About dialog can name the version an install is running. Baked in at build
+// time on purpose: the decoder does not know it, and asking the server would
+// mean a new endpoint for a string that only changes when we release.
+const { version } = createRequire(import.meta.url)('./package.json');
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
   // Relative asset URLs so index.html works both at the server root
   // (http://host:8080/) and under a path prefix. Home Assistant serves add-ons
   // through ingress at /api/hassio_ingress/<session-token>/, where the

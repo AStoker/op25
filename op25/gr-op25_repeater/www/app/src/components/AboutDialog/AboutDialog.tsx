@@ -2,6 +2,7 @@ import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Link from '@mui/material/Link';
 import Stack from '@mui/material/Stack';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import DialogShell from '../common/DialogShell';
 import InsetPanel from '../common/InsetPanel';
@@ -122,6 +123,12 @@ export default function AboutDialog({ open, onClose }: { open: boolean; onClose:
         <Box>
           <SectionHeading title="This session" />
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {/* Baked in at build time from package.json, which
+                scripts/bump-version.py keeps equal to the add-on version. A
+                stale committed www/dist would show the previous release here. */}
+            <Tooltip title="Version of this build. Matches the Home Assistant add-on version.">
+              <Chip variant="outlined" label={`v${__APP_VERSION__}`} />
+            </Tooltip>
             <Chip variant="outlined" label={`decoder ${health?.status ?? 'unknown'}`} />
             <Chip variant="outlined" label={`${channels.length} channel${channels.length === 1 ? '' : 's'}`} />
             <Chip variant="outlined" label={`${trunkChans.length} trunked system${trunkChans.length === 1 ? '' : 's'}`} />

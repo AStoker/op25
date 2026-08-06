@@ -126,6 +126,12 @@ RUN python3 -c 'import gnuradio.op25, gnuradio.op25_repeater' \
 
 LABEL io.hass.type="addon"
 
+# The Home Assistant builder passes BUILD_VERSION, so `docker inspect` on a
+# pulled image can answer "which release is this?" without trusting the tag it
+# was pulled by. Empty for a plain local `docker build`, which is harmless.
+ARG BUILD_VERSION
+LABEL io.hass.version="${BUILD_VERSION}"
+
 # Replaces the obsolete config.yaml `watchdog:` key. Hits the loopback inside
 # the container, so it works whether or not the port mapping is enabled.
 # start-period is generous: the decoder has to configure the SDR and lock the
