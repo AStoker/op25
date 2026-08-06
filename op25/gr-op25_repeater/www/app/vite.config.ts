@@ -9,6 +9,21 @@ import { createRequire } from 'module';
 // mean a new endpoint for a string that only changes when we release.
 const { version } = createRequire(import.meta.url)('./package.json');
 
+// Where `yarn dev` proxies /api and /ws.
+//
+// Defaults to a local websocket_server.py. Point it at the Home Assistant
+// add-on's published port to develop the UI against the machine that actually
+// has the dongle attached:
+//
+//     OP25_BACKEND=http://homeassistant.local:8099 yarn dev
+//
+// Everything the browser talks to is still http://localhost:5173, so this needs
+// no CORS and no change to the Python side. Note the add-on's port 8099 is
+// unauthenticated — ingress is the authenticated path — so treat this as a
+// trusted-LAN convenience, not a way to expose OP25 to a hostile network.
+const BACKEND = process.env.OP25_BACKEND ?? 'http://127.0.0.1:8080';
+const WS_BACKEND = BACKEND.replace(/^http/, 'ws');
+
 export default defineConfig({
   plugins: [react()],
   define: {
@@ -22,14 +37,14 @@ export default defineConfig({
   base: './',
   server: {
     // Proxy API and WebSocket requests to the Python backend during `yarn dev`.
-    // Change the target port if you start websocket_server.py on a different port.
+    // Set OP25_BACKEND to develop against a remote decoder (see above).
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: BACKEND,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://127.0.0.1:8080',
+        target: WS_BACKEND,
         ws: true,
       },
     },

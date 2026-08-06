@@ -10,6 +10,7 @@ DMR work.
 """
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -218,6 +219,89 @@ class TestTrboCallFiltering:
         trbo.dump_tgids()
 
 
+class TestTrboScanLists:
+    """Batch scan-list replacement (set_whitelist / set_blacklist).
+
+    Deliberately not N single 'whitelist' commands: each of those expires the
+    current call when the tgid it is on falls outside the new list, so applying a
+    50-entry list one entry at a time tears the receiver down repeatedly on the
+    way to the same end state.
+    """
+
+    def _receiver(self, trbo: Any) -> Any:
+        trbo.add_receiver(0, {})
+        return trbo.receivers[0]
+
+    def test_whitelist_replaces_rather_than_adds(self, trbo: Any) -> None:
+        trbo.ui_command('whitelist', 100, 0)
+        trbo.ui_command('set_whitelist', {'tgids': [200, 300]}, 0)
+        assert trbo.get_scan_lists()['whitelist'] == [200, 300]
+        assert not trbo.should_follow(100)
+        assert trbo.should_follow(200)
+
+    def test_empty_whitelist_means_scan_everything(self, trbo: Any) -> None:
+        # An empty *dict* would mean "scan nothing" -- find_voice_candidate reads
+        # `whitelist is not None and tgid not in whitelist`.
+        trbo.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        assert not trbo.should_follow(999)
+        trbo.ui_command('set_whitelist', {'tgids': []}, 0)
+        assert trbo.get_scan_lists()['whitelist'] is None
+        assert trbo.should_follow(999)
+
+    def test_blacklist_replaces_rather_than_adds(self, trbo: Any) -> None:
+        trbo.ui_command('lockout', 100, 0)
+        trbo.ui_command('set_blacklist', {'tgids': [200]}, 0)
+        assert trbo.get_scan_lists()['blacklist'] == [200]
+        assert trbo.should_follow(100)
+        assert not trbo.should_follow(200)
+
+    def test_whitelisting_clears_a_conflicting_lockout(self, trbo: Any) -> None:
+        trbo.ui_command('lockout', 100, 0)
+        trbo.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        assert trbo.get_scan_lists()['blacklist'] == []
+        assert trbo.should_follow(100)
+
+    def test_blacklisting_removes_from_the_whitelist(self, trbo: Any) -> None:
+        trbo.ui_command('set_whitelist', {'tgids': [100, 200]}, 0)
+        trbo.ui_command('set_blacklist', {'tgids': [100]}, 0)
+        assert trbo.get_scan_lists()['whitelist'] == [200]
+        assert not trbo.should_follow(100)
+
+    def test_a_timed_skip_survives_a_blacklist_replacement(self, trbo: Any) -> None:
+        """Timed entries are skips in flight, not user intent."""
+        rcvr = self._receiver(trbo)
+        rcvr.process_grant(_grant_buf(1, 300, lcn=1, slot=0))
+        trbo.ui_command('skip', 300, 0)
+        assert not trbo.should_follow(300)
+        trbo.ui_command('set_blacklist', {'tgids': [999]}, 0)
+        assert not trbo.should_follow(300)      # still skipped
+        assert trbo.get_scan_lists()['blacklist'] == [999]   # but not shown as a lockout
+
+    def test_a_newly_excluded_active_call_is_released(self, trbo: Any) -> None:
+        rcvr = self._receiver(trbo)
+        rcvr.process_grant(_grant_buf(1, 400, lcn=1, slot=0))
+        assert 400 in rcvr.active_tgids
+        trbo.ui_command('set_whitelist', {'tgids': [999]}, 0)
+        assert 400 not in rcvr.active_tgids
+
+    def test_a_still_included_active_call_is_left_alone(self, trbo: Any) -> None:
+        rcvr = self._receiver(trbo)
+        rcvr.process_grant(_grant_buf(1, 400, lcn=1, slot=0))
+        trbo.ui_command('set_whitelist', {'tgids': [400, 999]}, 0)
+        assert 400 in rcvr.active_tgids
+
+    def test_out_of_range_tgid_is_rejected_wholesale(self, trbo: Any) -> None:
+        # All-or-nothing: a partially applied scan list is worse than none.
+        trbo.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        with pytest.raises(ValueError):
+            trbo.ui_command('set_whitelist', {'tgids': [200, 70000]}, 0)
+        assert trbo.get_scan_lists()['whitelist'] == [100]
+
+    def test_non_list_payload_is_rejected(self, trbo: Any) -> None:
+        with pytest.raises(TypeError):
+            trbo.ui_command('set_whitelist', {'tgids': 100}, 0)
+
+
 class TestTrboChannelStatus:
     def test_status_reports_tuned_frequency(self, trbo: Any) -> None:
         trbo.add_receiver(0, {})
@@ -226,6 +310,142 @@ class TestTrboChannelStatus:
         assert status['channels'] == ['0']
         assert status['0']['freq'] == 461300000     # was hard-coded 0
         assert status['0']['system'] == 'Connect+'
+
+    def test_scan_lists_are_reported(self, trbo: Any) -> None:
+        """Without this the UI could set a scan list but never read one back --
+        and a whitelist loaded from a file was invisible entirely."""
+        trbo.add_receiver(0, {})
+        trbo.ui_command('set_whitelist', {'tgids': [100, 200]}, 0)
+        trbo.ui_command('set_blacklist', {'tgids': [300]}, 0)
+        status = json.loads(trbo.get_chan_status())['0']
+        assert status['whitelist'] == [100, 200]
+        assert status['blacklist'] == [300]
+
+    def test_no_whitelist_is_reported_as_null_not_empty(self, trbo: Any) -> None:
+        # None means "scan everything"; [] would mean "scan nothing".
+        trbo.add_receiver(0, {})
+        status = json.loads(trbo.get_chan_status())['0']
+        assert status['whitelist'] is None
+        assert status['blacklist'] == []
+
+
+# ---------------------------------------------------------------------------
+# P25 scan lists  (tk_p25)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def p25_pair() -> Any:
+    """An rx_ctl with two receivers on one system.
+
+    Built with __new__ because the real constructors need a flowgraph.  Starting
+    state matches load_bl_wl() with no lists configured: whitelist None ("scan
+    everything") and an empty blacklist.
+    """
+    tk_p25 = pytest.importorskip("tk_p25", reason="needs GNU Radio")
+
+    shared_bl: dict[int, Any] = {}
+
+    def receiver(msgq_id: int) -> Any:
+        rx = tk_p25.p25_receiver.__new__(tk_p25.p25_receiver)
+        rx.debug = 0
+        rx.msgq_id = msgq_id
+        rx.whitelist = None
+        rx.blacklist = shared_bl          # shared, as load_bl_wl leaves it
+        rx.skiplist = {}
+        rx.current_tgid = None
+        rx.hold_mode = False
+        rx.hold_tgid = None
+        rx.hold_until = 0.0
+        rx.expired: list[str] = []        # type: ignore[attr-defined]
+        rx.expire_talkgroup = lambda **kw: rx.expired.append(kw.get('reason', ''))
+        return rx
+
+    ctl = tk_p25.rx_ctl.__new__(tk_p25.rx_ctl)
+    ctl.debug = 0
+    rx0, rx1 = receiver(0), receiver(1)
+    ctl.receivers = {0: {'msgq_id': 0, 'sysname': 'sys', 'rx_rcvr': rx0},
+                     1: {'msgq_id': 1, 'sysname': 'sys', 'rx_rcvr': rx1}}
+    ctl.systems = {'sys': {'system': None, 'receivers': [rx0, rx1]}}
+    ctl.check_cc_assignments = lambda: None
+    ctl.pair = (rx0, rx1)                 # type: ignore[attr-defined]
+    return ctl
+
+
+class TestP25ScanLists:
+    def test_applies_to_every_receiver_of_the_system(self, p25_pair: Any) -> None:
+        """Receivers on one system all scan the same traffic, so a scan list that
+        only some of them honour is not a scan list."""
+        p25_pair.ui_command('set_whitelist', {'tgids': [100, 200]}, 0)
+        for rx in p25_pair.pair:
+            assert rx.get_scan_lists()['whitelist'] == [100, 200]
+
+    def test_each_receiver_gets_its_own_dict(self, p25_pair: Any) -> None:
+        """The aliasing guard.
+
+        With a whitelist file configured, load_bl_wl() hands every receiver of a
+        system the *same* dict object, while add_whitelist() silently un-shares it
+        by assigning a fresh {} -- so whether one receiver's change is seen by the
+        others depended on which call happened to run first.  set_scan_list gives
+        each receiver its own copy, making that irrelevant rather than
+        load-bearing.
+        """
+        rx0, rx1 = p25_pair.pair
+        shared = {50: None}
+        rx0.whitelist = rx1.whitelist = shared       # as a whitelist file leaves it
+        assert rx0.whitelist is rx1.whitelist
+
+        p25_pair.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        assert rx0.whitelist is not rx1.whitelist    # not shared any more
+        rx0.add_whitelist(999)
+        assert rx1.get_scan_lists()['whitelist'] == [100]
+        assert shared == {50: None}                  # the original is untouched
+
+    def test_blacklist_replacement_does_not_leak_between_receivers(self, p25_pair: Any) -> None:
+        rx0, rx1 = p25_pair.pair
+        assert rx0.blacklist is rx1.blacklist        # shared by load_bl_wl
+        p25_pair.ui_command('set_blacklist', {'tgids': [100]}, 0)
+        assert rx0.blacklist is not rx1.blacklist
+        rx0.add_blacklist(999)
+        assert rx1.get_scan_lists()['blacklist'] == [100]
+
+    def test_an_unknown_msgq_id_applies_to_all_systems(self, p25_pair: Any) -> None:
+        p25_pair.ui_command('set_whitelist', {'tgids': [42]}, -1)
+        for rx in p25_pair.pair:
+            assert rx.get_scan_lists()['whitelist'] == [42]
+
+    def test_empty_whitelist_becomes_none(self, p25_pair: Any) -> None:
+        p25_pair.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        p25_pair.ui_command('set_whitelist', {'tgids': []}, 0)
+        for rx in p25_pair.pair:
+            assert rx.whitelist is None
+            assert rx.get_scan_lists()['whitelist'] is None
+
+    def test_a_newly_excluded_current_call_is_expired(self, p25_pair: Any) -> None:
+        rx0, rx1 = p25_pair.pair
+        rx0.current_tgid = 500
+        p25_pair.ui_command('set_whitelist', {'tgids': [100]}, 0)
+        assert rx0.expired == ['not whitelisted']
+        assert rx1.expired == []              # rx1 had no call up
+
+    def test_a_still_included_current_call_is_left_alone(self, p25_pair: Any) -> None:
+        rx0, _ = p25_pair.pair
+        rx0.current_tgid = 100
+        p25_pair.ui_command('set_whitelist', {'tgids': [100, 200]}, 0)
+        assert rx0.expired == []
+
+    def test_timed_blacklist_entries_survive_a_replacement(self, p25_pair: Any) -> None:
+        rx0, _ = p25_pair.pair
+        rx0.blacklist = {777: 1e12}          # a TGID_SKIP_TIME skip in flight
+        p25_pair.ui_command('set_blacklist', {'tgids': [888]}, 0)
+        assert 777 in rx0.blacklist
+        assert rx0.get_scan_lists()['blacklist'] == [888]   # timed one is not a lockout
+
+    def test_out_of_range_tgid_is_rejected_before_anything_is_applied(self, p25_pair: Any) -> None:
+        with pytest.raises(ValueError):
+            p25_pair.ui_command('set_whitelist', {'tgids': [100, 0]}, 0)
+        for rx in p25_pair.pair:
+            assert rx.get_scan_lists()['whitelist'] is None
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +499,49 @@ class TestSmartnetSystemPayload:
     def test_talkgroup_tags_are_published(self, smartnet_system: Any) -> None:
         # Without these the talkgroup table was empty on SmartNet.
         tags = json.loads(smartnet_system.to_json())['tgid_tags']
-        assert tags['101'] == {'tag': 'FIRE DISP', 'configured': True, 'prio': 2}
+        assert tags['101'] == {
+            'tag': 'FIRE DISP', 'configured': True, 'prio': 2,
+            # A talkgroup known only from tgid_tags_file has never been heard.
+            'last_seen': 0, 'last_freq': None, 'count': 0,
+        }
         assert tags['202']['configured'] is False
+
+    def test_talkgroup_activity_is_published(self, smartnet_system: Any) -> None:
+        """last_seen / last_freq / count are what the GUI's Last column reads.
+
+        It used to derive that from frequency_data, which only lists a talkgroup
+        while its call is up (TGID_EXPIRY_TIME), so the column could only ever
+        say "Now" or nothing at all.
+
+        The tgid here is a multiple of 16 because update_talkgroup() splits the
+        low nibble off as status flags (``tgid & 0xfff0``), so 1616 is the record
+        that a grant for 1616-1631 lands in.
+        """
+        before = json.loads(smartnet_system.to_json())['tgid_tags']
+        assert '1616' not in before
+
+        smartnet_system.update_talkgroups(time.time(), 855_012_500, 1616, 0, mode=1)
+        after = json.loads(smartnet_system.to_json())['tgid_tags']['1616']
+        assert after['last_seen'] > 0
+        assert after['last_freq'] == 855_012_500
+        assert after['count'] == 0   # counter is bumped by the call logger, not here
+
+        # last_freq has to outlive the call: it is the *last* frequency heard,
+        # not the current one.  tk_p25 clears 'frequency' on expiry and the trunk
+        # logic depends on that, which is the whole reason for the second key.
+        smartnet_system.talkgroups[1616]['frequency'] = None
+        held = json.loads(smartnet_system.to_json())['tgid_tags']['1616']
+        assert held['last_freq'] == 855_012_500
+
+    def test_smartnet_publishes_no_encrypted_flag(self, smartnet_system: Any) -> None:
+        """talkgroups[tgid]['mode'] is analog-vs-digital, not clear-vs-encrypted.
+
+        Publishing it as 'encrypted' would mark every digital talkgroup on the
+        system as encrypted.  SmartNet carries encryption as a bit in the tgid.
+        """
+        smartnet_system.update_talkgroups(time.time(), 855_012_500, 1616, 0, mode=1)
+        assert smartnet_system.talkgroups[1616]['mode'] == 1
+        assert 'encrypted' not in json.loads(smartnet_system.to_json())['tgid_tags']['1616']
 
     def test_priority_is_published(self, smartnet_system: Any) -> None:
         tags = json.loads(smartnet_system.to_json())['tgid_tags']

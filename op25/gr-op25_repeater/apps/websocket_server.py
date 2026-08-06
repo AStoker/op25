@@ -26,7 +26,12 @@ Downstream (server → client)
 Upstream (client → server)
     CALL_CONTROL   – Any decoder UI command: hold, skip, lockout, whitelist,
                      reload, adj_tune, set_debug, capture, dump_tgids,
-                     dump_buffer, toggle_plot, get_full_config, …
+                     dump_buffer, toggle_plot, close_plots, get_full_config, …
+                     Normally sent as the bare command name with its argument in
+                     arg1; a payload carrying anything beyond command/arg1/arg2
+                     goes as JSON instead, which is how the batch scan-list
+                     commands (set_whitelist / set_blacklist) pass a list that
+                     would not fit in a gr.message's two floats.
     SYSTEM_CONTROL – quit.  Muting is a browser-side concern (the page simply
                      stops pulling /api/stream), so there is no mute command.
 """
@@ -65,6 +70,7 @@ from ha_bridge import (
     resample_pcm16,
     wav_bytes,
 )
+from tg_metadata import TalkgroupStore, db_path as _metadata_db_path
 
 try:
     from gnuradio import gr as _gr
@@ -444,6 +450,12 @@ clip_store: ClipStore = ClipStore()
 _call_capture: CallCapture | None = None
 _ha_bridge: HomeAssistantBridge | None = None
 
+# Durable talkgroup metadata (last heard, last frequency, lifetime call count).
+# Created when the terminal starts, because that is when the config -- and so the
+# database path -- is known.  None means nothing has been wired up yet, which is
+# the state every test that does not ask for it runs in.
+talkgroup_store: TalkgroupStore | None = None
+
 # Latest channel_update snapshot from the decoder, used to tag captured clips
 # with talkgroup / source / frequency.  Written by the ws_terminal thread and
 # read by the UDP audio thread, hence the lock.
@@ -478,6 +490,27 @@ def _note_channel_state(entry: dict[str, Any]) -> None:
         path = chan.get('capture_file')
         if path and path not in _capture_files:
             _capture_files.append(path)
+
+
+def _note_trunk_update(entry: dict[str, Any]) -> None:
+    """Fold each system's talkgroup activity into the durable store, then merge
+    the durable values back into the payload the browser is about to receive.
+
+    trunk_update is keyed by integer-as-string system index (tk_p25.p25_rx_ctl
+    numbers them 0, 1, ... in to_json) with the system name inside each entry, so
+    the systems are found by shape rather than by a fixed key list.
+    """
+    if talkgroup_store is None:
+        return
+    for value in entry.values():
+        if not isinstance(value, dict):
+            continue
+        tgid_tags = value.get('tgid_tags')
+        if not isinstance(tgid_tags, dict):
+            continue
+        system = str(value.get('system') or '')
+        talkgroup_store.observe(system, tgid_tags)
+        talkgroup_store.merge_into(system, tgid_tags)
 
 
 def _note_call_log(entry: dict[str, Any]) -> None:
@@ -948,6 +981,15 @@ class ConnectionManager:
         except ValueError:
             pass
 
+    def client_count(self) -> int:
+        """Number of attached clients.
+
+        Polled by ws_terminal to decide whether anything is still watching the
+        signal plots, which are the one thing the decoder computes purely for
+        the browser's benefit.
+        """
+        return len(self._connections)
+
     async def broadcast(self, message: dict[str, Any]) -> None:
         """Send *message* to every connected client, dropping stale connections."""
         dead: list[WebSocket] = []
@@ -1215,6 +1257,35 @@ async def audio_stream(
 
 
 # ---------------------------------------------------------------------------
+# Talkgroup metadata
+# ---------------------------------------------------------------------------
+
+@app.get("/api/talkgroups")
+async def list_talkgroups(
+    system: str | None = Query(None, description="Restrict to one trunking system"),
+    heard: bool = Query(False, description="Only talkgroups heard at least once"),
+) -> Response:
+    """Every talkgroup on record, newest activity first.
+
+    This is the durable view -- it includes talkgroups last heard in a *previous*
+    run of the decoder, which the live trunk_update payload cannot describe.  The
+    Talkgroup Browser uses it to offer a complete pick-list rather than only what
+    has been seen since start-up.
+    """
+    if talkgroup_store is None:
+        return Response(
+            content=json.dumps({"talkgroups": [], "count": 0, "persistent": False}),
+            media_type="application/json", headers={"Cache-Control": "no-store"})
+    rows = talkgroup_store.talkgroups(system)
+    if heard:
+        rows = [r for r in rows if r['last_seen'] > 0]
+    body = {"talkgroups": rows, "count": len(rows)}
+    body.update(talkgroup_store.stats())
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------
 # Captured call clips  (speech-to-text / Home Assistant integration)
 # ---------------------------------------------------------------------------
 
@@ -1403,6 +1474,13 @@ class ws_terminal(threading.Thread):
 
     UPDATE_INTERVAL: float = 1.0  # seconds between heartbeat 'update' commands
 
+    # How long after the last client disconnects before the decoder is told to
+    # shut its signal plots down.  Long enough that a page reload does not cost
+    # the user their enabled plots (op25Service re-adopts whatever modes it sees
+    # data for, so a torn-down plot comes back dark), short enough that a closed
+    # tab is not left burning DSP cycles on traces nobody will ever see.
+    PLOT_IDLE_GRACE: float = 5.0
+
     def __init__(
         self,
         input_q: Any,
@@ -1415,6 +1493,9 @@ class ws_terminal(threading.Thread):
         self.input_q  = input_q
         self.output_q = output_q
         self.keep_running = True
+        # None == clients attached; a timestamp == idle since then; -1 == idle
+        # and the decoder has already been told to close its plots.
+        self._idle_since: float | None = None
 
         # Parse "host:port" — the "ws:" prefix is stripped by op25_terminal().
         host, port_str = endpoint.split(':', 1)
@@ -1438,6 +1519,14 @@ class ws_terminal(threading.Thread):
         # configured, for Home Assistant speech-to-text.  Must be started
         # before the receiver so no call is missed.
         start_call_capture(_config, endpoint='%s:%d' % (self._host, self._port))
+
+        # Durable talkgroup metadata.  Opened here rather than at import time
+        # because the path comes from the config, and a plain `import
+        # websocket_server` (every test, and the CLI entry point) must not create
+        # a database as a side effect.
+        global talkgroup_store
+        if talkgroup_store is None:
+            talkgroup_store = TalkgroupStore(_metadata_db_path(_config))
 
         global _audio_receiver
         if _audio_receiver is None:
@@ -1467,6 +1556,12 @@ class ws_terminal(threading.Thread):
             _audio_receiver.stop()
             _audio_receiver = None
         stop_call_capture()
+        # Last chance to persist: up to FLUSH_INTERVAL of last-heard history is
+        # still only in memory at this point.
+        global talkgroup_store
+        if talkgroup_store is not None:
+            talkgroup_store.close()
+            talkgroup_store = None
 
     # ------------------------------------------------------------------
     # Thread body
@@ -1481,6 +1576,9 @@ class ws_terminal(threading.Thread):
                 # Ride the same 1 Hz tick for the health payload so `status`
                 # goes stale on its own when the decoder stops answering.
                 _broadcast_from_thread(MSG_SYSTEM_STATE, _system_state_payload())
+                self._reap_idle_plots(now)
+                if talkgroup_store is not None:
+                    talkgroup_store.flush()   # no-op until FLUSH_INTERVAL elapses
                 last_update = now
             if not self.input_q.empty_p():
                 msg = self.input_q.delete_head_nowait()
@@ -1505,6 +1603,25 @@ class ws_terminal(threading.Thread):
         msg = _gr.message().make_from_string(cmd, -2, arg1, arg2)
         if not self.output_q.full_p():
             self.output_q.insert_tail(msg)
+
+    def _reap_idle_plots(self, now: float) -> None:
+        """Turn the decoder's signal plots off while no client is attached.
+
+        Plots are the only thing the decoder computes solely for the browser, and
+        the decoder owns their on/off state so it survives a page reload — which
+        also means an enabled plot outlives the tab that enabled it.  multi_rx's
+        own 'watchdog' cannot catch this: it keys off 'update' going quiet, and
+        the heartbeat above keeps sending those forever so the call-log ring
+        keeps filling for the next client.
+        """
+        if manager.client_count() > 0:
+            self._idle_since = None
+            return
+        if self._idle_since is None:
+            self._idle_since = now
+        elif self._idle_since >= 0 and now - self._idle_since >= self.PLOT_IDLE_GRACE:
+            self._idle_since = -1.0     # sent; don't repeat until a client returns
+            self._send_cmd('close_plots', 0.0, -1.0)   # arg2 < 0 == every channel
 
     def _dispatch(self, msg: Any) -> None:
         """Broadcast decoder message(s) to all WebSocket clients.
@@ -1535,6 +1652,11 @@ class ws_terminal(threading.Thread):
                 # Keep the newest talkgroup/source per channel so captured
                 # call clips can be tagged with what was on the air.
                 _note_channel_state(entry)
+            elif json_type == 'trunk_update':
+                # Merges last_seen/last_freq/count from previous runs into the
+                # payload before it is broadcast, so the UI's last-heard column
+                # survives a decoder restart.
+                _note_trunk_update(entry)
             elif json_type == 'call_log':
                 _note_call_log(entry)
             elif json_type == 'full_config':
@@ -1549,16 +1671,28 @@ class ws_terminal(threading.Thread):
         output_q = self.output_q  # capture for closures
 
         async def handle_call_control(websocket: WebSocket, payload: dict[str, Any]) -> None:
+            """Forward a decoder UI command.
+
+            A gr.message carries a string plus two floats, so most commands go as
+            the bare command name with their argument in arg1.  Commands whose
+            argument does not fit in a float -- a batch scan list, say -- are sent
+            as the whole JSON payload instead; multi_rx.process_qmsg tries
+            json.loads() first and falls back to the bare-string form, so both
+            shapes have always been accepted.
+            """
             try:
                 if _gr is None:
                     return
                 command = str(payload.get('command', ''))
-                arg1    = float(payload.get('arg1', 0.0))
-                arg2    = float(payload.get('arg2', 0.0))
-                if command:
-                    m = _gr.message().make_from_string(command, -2, arg1, arg2)
-                    if not output_q.full_p():
-                        output_q.insert_tail(m)
+                if not command:
+                    return
+                arg1 = float(payload.get('arg1', 0.0))
+                arg2 = float(payload.get('arg2', 0.0))
+                extra = set(payload) - {'command', 'arg1', 'arg2'}
+                body = json.dumps(payload) if extra else command
+                m = _gr.message().make_from_string(body, -2, arg1, arg2)
+                if not output_q.full_p():
+                    output_q.insert_tail(m)
             except Exception:
                 sys.stderr.write('ws_terminal: handle_call_control error:\n%s\n' % traceback.format_exc())
 

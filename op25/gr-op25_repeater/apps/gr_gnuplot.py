@@ -47,8 +47,33 @@ FFT_AVG  = 0.05
 MIX_AVG  = 0.10
 BAL_AVG  = 0.05
 FFT_BINS = 512    # number of fft bins
-FFT_FREQ = 0.05   # time interval between fft updates
-MIX_FREQ = 0.02   # time interval between mixer updates
+FFT_FREQ = 0.05   # nominal time interval between fft updates
+MIX_FREQ = 0.02   # nominal time interval between mixer updates
+
+# How many spectrum averages to accumulate per plot actually sent to the UI.
+#
+# FFT_FREQ / MIX_FREQ were chosen for a gnuplot window redrawing continuously.
+# The browser is fed at http_plot_interval (1.0s by default), so computing 20
+# (fft) or 50 (mixer/fll) transforms per frame was 20-50x more work than the
+# display could use.  The transforms are not pure overhead — they feed the
+# exponential average that smooths the trace — so the rate is reduced rather
+# than removed, and the averaging constant is compensated in
+# _averaging_alpha() so the trace still settles over the same wall-clock time.
+#
+# 8 keeps enough independent looks per frame that the average is still visibly
+# a smoothed spectrum and not a single noisy snapshot.
+AVGS_PER_PLOT = 8
+
+# Cached analysis window.  BUFSZ is FFT_BINS for every caller of the fft/mixer/
+# fll paths, but key the cache anyway rather than assume it.
+_WINDOWS = {}
+
+def _blackman(n):
+    w = _WINDOWS.get(n)
+    if w is None:
+        w = np.blackman(n)
+        _WINDOWS[n] = w
+    return w
 
 # Cap on points sent to the web UI in one plot message.  Chosen to pass the
 # natural buffer sizes through untouched (fft 512, eye 100*sps, constellation
@@ -99,7 +124,54 @@ class wrap_gp(object):
     def set_interval(self, v):
         self.plot_interval = v
 
+    def compute_interval(self, nominal):
+        """How often the caller should actually hand us a buffer, in seconds.
+
+        ``nominal`` is the sink's historical rate (FFT_FREQ / MIX_FREQ), which
+        was set for a continuously-redrawing gnuplot window.  Nothing is served
+        by transforming faster than AVGS_PER_PLOT times per frame the UI will
+        ever see, so slow down to that when it is slower than nominal.  Never
+        speed up: a short plot_interval must not make the DSP work harder than
+        the original code did.
+        """
+        if not self.plot_interval:
+            return nominal
+        return max(nominal, float(self.plot_interval) / AVGS_PER_PLOT)
+
+    def _averaging_alpha(self, base_alpha, nominal, actual):
+        """Rescale an exponential-average coefficient for a slower update rate.
+
+        A one-pole average with coefficient ``a`` applied every ``nominal``
+        seconds retains (1-a) per step.  Sampling every ``actual`` seconds
+        instead means (actual/nominal) fewer steps in the same wall-clock time,
+        so retaining (1-a)**(actual/nominal) per step keeps the settling time
+        the same.  Without this, cutting the FFT rate from 20 Hz to 1 Hz would
+        stretch FFT_AVG's ~1s time constant to ~20s and the spectrum would
+        visibly lag the radio.
+        """
+        if actual <= nominal:
+            return base_alpha
+        return 1.0 - (1.0 - base_alpha) ** (actual / nominal)
+
+    def due(self):
+        """True when the next completed buffer should be turned into a plot.
+
+        For modes with no averaging state this is checked *before* any work, so
+        a throttled frame costs nothing at all.
+        """
+        if not self.plot_interval:
+            return True
+        return self.last_plot + self.plot_interval <= time.time()
+
     def plot(self, buf, bufsz, mode='eye'):
+        # Modes that carry no state between frames — every trace is built from
+        # one buffer and discarded — can be skipped outright when the UI is not
+        # due for a frame.  Only the fft/mixer/fll paths have to keep running to
+        # feed their exponential average, and those pay for it by computing at a
+        # reduced rate with a compensated coefficient instead.
+        if mode in ('eye', 'constellation', 'symbol') and not self.due():
+            return len(buf)
+
         BUFSZ = bufsz
         consumed = min(len(buf), BUFSZ-len(self.buf))
         if len(self.buf) < BUFSZ:
@@ -108,7 +180,12 @@ class wrap_gp(object):
             return consumed
 
         self.plot_count += 1
-        if mode == 'eye' and self.plot_count % 20 != 0:
+        # Historical decimation for the eye trace, which fills its buffer far
+        # faster than anything wants to draw it.  With plot_interval set, due()
+        # above is already the rate limiter and this would compound with it —
+        # 20 plot intervals per eye frame, i.e. one every 20 seconds — so it
+        # only applies to the unthrottled (curses_plot_interval == 0.0) case.
+        if mode == 'eye' and not self.plot_interval and self.plot_count % 20 != 0:
             self.buf = np.array([])
             return consumed
 
@@ -131,44 +208,39 @@ class wrap_gp(object):
                 traces.append((np.arange(len(arr), dtype=float), arr))
                 self.buf = []
             elif mode == 'fft' or mode == 'mixer' or mode == 'fll':
-                sum_pwr = 0.0
-                self.ffts = np.fft.fft((self.buf * np.blackman(BUFSZ)), BUFSZ , 0) / (0.42 * BUFSZ)
-                self.ffts = np.fft.fftshift(self.ffts)
-                self.freqs = np.fft.fftfreq(len(self.ffts))
-                self.freqs = np.fft.fftshift(self.freqs)
-                tune_freq = (self.center_freq - self.relative_freq) / 1e6
+                # Vectorized: the per-bin Python loop this replaces cost ~0.37ms
+                # (fft) / ~0.48ms (mixer) per call against ~0.02ms here, and ran
+                # 20-50 times a second.  It also computed a `sum_pwr` running
+                # total over every bin that nothing ever read.
+                self.ffts = np.fft.fftshift(
+                        np.fft.fft(self.buf * _blackman(BUFSZ), BUFSZ, 0) / (0.42 * BUFSZ))
+                self.freqs = np.fft.fftshift(np.fft.fftfreq(len(self.ffts)))
                 if self.center_freq and self.width:
-                                    self.freqs = ((self.freqs * self.width) + self.center_freq + self.offset_freq) / 1e6
+                    self.freqs = ((self.freqs * self.width) + self.center_freq + self.offset_freq) / 1e6
                 elif self.width:
-                                    self.freqs = (self.freqs * self.width)
-                fft_xs = []
-                fft_ys = []
-                for i in range(len(self.ffts)):
-                    if mode == 'fft':
-                        self.avg_pwr[i] = ((1.0 - FFT_AVG) * self.avg_pwr[i]) + (FFT_AVG * np.abs(self.ffts[i]))
-                    else:
-                        self.avg_pwr[i] = ((1.0 - MIX_AVG) * self.avg_pwr[i]) + (MIX_AVG * np.abs(self.ffts[i]))
-                    if self.avg_pwr[i] == 0: # guard against divide by zero
-                        break
-                    y_val = 20 * np.log10(self.avg_pwr[i])
-                    fft_xs.append(self.freqs[i])
-                    fft_ys.append(y_val)
-                    if ((mode == 'mixer') or (mode == 'fll')) and (self.avg_pwr[i] > 1e-5):
-                        if (self.freqs[i] - self.center_freq) < 0:
-                            sum_pwr -= self.avg_pwr[i]
-                        elif (self.freqs[i] - self.center_freq) > 0:
-                            sum_pwr += self.avg_pwr[i]
+                    self.freqs = (self.freqs * self.width)
+
+                nominal = FFT_FREQ if mode == 'fft' else MIX_FREQ
+                base    = FFT_AVG  if mode == 'fft' else MIX_AVG
+                alpha   = self._averaging_alpha(base, nominal, self.compute_interval(nominal))
+                # In-place so the accumulator is not reallocated 20-50 times a
+                # second; np.abs() of a 512-point complex array is the only
+                # temporary left.
+                self.avg_pwr *= (1.0 - alpha)
+                self.avg_pwr += alpha * np.abs(self.ffts)
+
                 self.buf = []
-                traces.append((fft_xs, fft_ys))
-                if min(self.avg_pwr) == 0: # plot is broken, probably because source device was missing
+                if not self.avg_pwr.all(): # plot is broken, probably because source device was missing
                     return consumed
-                min_y = 20 * np.log10(min(self.avg_pwr))
-                self.min_y = ((1.0 - Y_AVG) * self.min_y) + (Y_AVG * min_y) 
+                traces.append((self.freqs, 20.0 * np.log10(self.avg_pwr)))
+                min_y = 20 * np.log10(self.avg_pwr.min())
+                self.min_y = ((1.0 - Y_AVG) * self.min_y) + (Y_AVG * min_y)
         self.buf = []
 
-        # FFT processing needs to be completed to maintain the weighted average buckets
-        # regardless of whether we actually produce a new plot or not.
-        if self.plot_interval and self.last_plot + self.plot_interval > time.time():
+        # The fft/mixer/fll averages above are maintained on every completed
+        # buffer whether or not a frame goes out; the *rate* those buffers
+        # arrive at is what compute_interval() tunes, in the sink's work().
+        if not self.due():
             return consumed
         self.last_plot = time.time()
 
@@ -185,17 +257,22 @@ class wrap_gp(object):
         other front-ends consume.  Shape is fixed by PlotPayload in
         www/app/src/types/op25.ts: data is a flat list of [x, y] pairs.
         """
-        data = []
-        for xs, ys in traces:
-            data.extend([[float(x), float(y)] for x, y in zip(xs, ys)])
-        if not data:
+        # Assembled through numpy rather than a per-point Python comprehension:
+        # this runs once per frame but on up to 2400 points (the symbol trace),
+        # and tolist() converts to native floats in C.
+        chunks = [np.column_stack((np.asarray(xs, dtype=float),
+                                   np.asarray(ys, dtype=float)))
+                  for xs, ys in traces if len(xs)]
+        if not chunks:
             return
+        pairs = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
 
         # Decimate rather than truncate, so a long trace still spans its full
         # range instead of showing only the beginning.
-        if len(data) > PLOT_MAX_POINTS:
-            step = (len(data) + PLOT_MAX_POINTS - 1) // PLOT_MAX_POINTS
-            data = data[::step]
+        if len(pairs) > PLOT_MAX_POINTS:
+            step = (len(pairs) + PLOT_MAX_POINTS - 1) // PLOT_MAX_POINTS
+            pairs = pairs[::step]
+        data = pairs.tolist()
 
         d = {'json_type': 'plot', 'chan': self.chan, 'mode': mode, 'data': data}
 
@@ -289,8 +366,9 @@ class fft_sink_c(gr.sync_block):
         self.next_due = time.time()
 
     def work(self, input_items, output_items):
-        if time.time() > self.next_due:
-            self.next_due = time.time() + FFT_FREQ
+        now = time.time()
+        if now > self.next_due:
+            self.next_due = now + self.gnuplot.compute_interval(FFT_FREQ)
             in0 = input_items[0]
             self.gnuplot.plot(in0, FFT_BINS, mode='fft')
         return len(input_items[0])
@@ -324,8 +402,9 @@ class mixer_sink_c(gr.sync_block):
         self.next_due = time.time()
 
     def work(self, input_items, output_items):
-        if time.time() > self.next_due:
-            self.next_due = time.time() + MIX_FREQ
+        now = time.time()
+        if now > self.next_due:
+            self.next_due = now + self.gnuplot.compute_interval(MIX_FREQ)
             in0 = input_items[0]
             self.gnuplot.plot(in0, FFT_BINS, mode='mixer')
         return len(input_items[0])
@@ -349,8 +428,9 @@ class fll_sink_c(gr.sync_block):
         self.next_due = time.time()
 
     def work(self, input_items, output_items):
-        if time.time() > self.next_due:
-            self.next_due = time.time() + MIX_FREQ
+        now = time.time()
+        if now > self.next_due:
+            self.next_due = now + self.gnuplot.compute_interval(MIX_FREQ)
             in0 = input_items[0]
             self.gnuplot.plot(in0, FFT_BINS, mode='fll')
         return len(input_items[0])

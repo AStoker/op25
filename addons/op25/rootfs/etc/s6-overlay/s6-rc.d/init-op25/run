@@ -52,7 +52,10 @@ if ! jq empty "${config_file}" 2>/dev/null; then
 fi
 
 # cwd is load-bearing: tgid_tags_file, rid_tags_file, whitelist/blacklist and
-# crypt_keys are all opened with a bare open() relative to it.
+# crypt_keys are all opened with a bare open() relative to it -- and so is
+# op25_metadata.sqlite, the talkgroup last-heard cache tg_metadata.py writes.
+# That one lands here rather than under /data so it survives an add-on
+# reinstall, same as the user's config; it is a cache and safe to delete.
 mkdir -p "${work_dir}" /data/plots
 
 bashio::log.info "Config:   ${config_file}"

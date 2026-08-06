@@ -68,6 +68,18 @@ export interface OP25ServiceContextType {
   lockoutTalkGroup: (tgid?: number) => void;
   /** Whitelist the given tgid on the selected channel. */
   whitelistTalkGroup: (tgid: number) => void;
+  /** Replace the whole whitelist or blacklist in one command.
+   *
+   *  Not a loop over `whitelistTalkGroup`: each single add expires the current
+   *  call when the tgid it is on falls outside the new list, so applying a
+   *  50-entry list one at a time tears the receiver down repeatedly on the way to
+   *  the same end state.  An empty whitelist means "scan everything", which is
+   *  how a scan list is cleared. */
+  setScanList: (kind: 'whitelist' | 'blacklist', tgids: number[]) => void;
+  /** Talkgroups the selected channel is restricted to, or null for no restriction. */
+  scanWhitelist: number[] | null;
+  /** Talkgroups locked out on the selected channel. */
+  scanBlacklist: number[];
 
   /** The `terminal` config block as echoed back by the decoder. */
   terminalConfig: TerminalConfig | null;
@@ -117,6 +129,9 @@ const OP25ServiceContext = createContext<OP25ServiceContextType>({
   skipCall:           noop,
   lockoutTalkGroup:   noop,
   whitelistTalkGroup: noop,
+  setScanList:        noop,
+  scanWhitelist:      null,
+  scanBlacklist:      [],
   terminalConfig:     null,
   tuningStepSmall:    DEFAULT_TUNING_STEP_SMALL,
   tuningStepLarge:    DEFAULT_TUNING_STEP_LARGE,
@@ -388,6 +403,23 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     sendCommand('whitelist', tgid, resolveMsgqid());
   }, [sendCommand, resolveMsgqid]);
 
+  const setScanList = useCallback((kind: 'whitelist' | 'blacklist', tgids: number[]) => {
+    // Carries a list, so it goes as a JSON payload rather than in arg1/arg2.
+    // The decoder validates the whole list before applying any of it — a
+    // partially applied scan list would be worse than none.
+    const unique = Array.from(new Set(
+      tgids.filter((t) => Number.isInteger(t) && t > 0 && t <= 65534),
+    )).sort((a, b) => a - b);
+    send({
+      type: 'CALL_CONTROL',
+      payload: {
+        command: kind === 'whitelist' ? 'set_whitelist' : 'set_blacklist',
+        msgqid: resolveMsgqid(),
+        tgids: unique,
+      },
+    });
+  }, [send, resolveMsgqid]);
+
   const adjustTune = useCallback((hz: number) => {
     sendCommand('adj_tune', hz, resolveMsgqid());
   }, [sendCommand, resolveMsgqid]);
@@ -448,6 +480,17 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     [plotModesByChan, resolveMsgqid],
   );
 
+  // Scan lists are per channel (per receiver), so they follow the selection.
+  const activeChannel = selectedChannelId !== null ? channels[selectedChannelId] : undefined;
+  // `null` is meaningful — no whitelist in force, i.e. scan everything — and must
+  // not collapse to []. `undefined` (an older decoder that does not report them)
+  // is treated the same way.
+  const scanWhitelist = activeChannel?.whitelist ?? null;
+  const scanBlacklist = useMemo(
+    () => activeChannel?.blacklist ?? [],
+    [activeChannel?.blacklist],
+  );
+
   const value = useMemo<OP25ServiceContextType>(() => ({
     config,
     systems,
@@ -466,6 +509,9 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
     skipCall,
     lockoutTalkGroup,
     whitelistTalkGroup,
+    setScanList,
+    scanWhitelist,
+    scanBlacklist,
     terminalConfig,
     tuningStepSmall: Number(terminalConfig?.tuning_step_small) > 0
       ? Number(terminalConfig?.tuning_step_small) : DEFAULT_TUNING_STEP_SMALL,
@@ -481,7 +527,8 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
   }), [config, systems, channels, channelIds, callLog, callClips, plots, activePlotModes,
        togglePlotMode, decoderRunning, selectedChannelId,
        selectChannel, holdTalkGroup, releaseHold, skipCall,
-       lockoutTalkGroup, whitelistTalkGroup, terminalConfig, adjustTune,
+       lockoutTalkGroup, whitelistTalkGroup, setScanList, scanWhitelist, scanBlacklist,
+       terminalConfig, adjustTune,
        setLogLevel, logLevel, toggleCapture, reloadLists, dumpTgids, dumpBuffer]);
 
   return (

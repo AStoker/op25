@@ -212,6 +212,93 @@ class TestCaptures:
 # ---------------------------------------------------------------------------
 
 
+class TestIdlePlotReaping:
+    """Plots must not keep running after the last browser client goes away.
+
+    They are the only thing the decoder computes purely for the browser, and the
+    decoder owns their on/off state so it survives a page reload -- which also
+    means an enabled plot outlives the tab that enabled it.  multi_rx's own
+    'watchdog' cannot catch this: it keys off 'update' going quiet, and
+    ws_terminal keeps sending those forever so the call-log ring stays filled for
+    the next client.
+    """
+
+    @pytest.fixture()
+    def terminal(self, monkeypatch: Any) -> Any:
+        """A ws_terminal with the constructor's side effects skipped.
+
+        __init__ starts uvicorn, the UDP receiver and the call capture; none of
+        that is needed to exercise the reaper.
+        """
+        term = ws.ws_terminal.__new__(ws.ws_terminal)
+        term.keep_running = True
+        term._idle_since = None
+        sent: list[tuple[str, float, float]] = []
+        term._send_cmd = lambda cmd, arg1=0.0, arg2=0.0: sent.append((cmd, arg1, arg2))
+        term.sent = sent                       # type: ignore[attr-defined]
+        return term
+
+    def clients(self, monkeypatch: Any, count: int) -> None:
+        monkeypatch.setattr(ws.manager, 'client_count', lambda: count)
+
+    def test_nothing_is_sent_while_a_client_is_attached(self, terminal: Any,
+                                                       monkeypatch: Any) -> None:
+        self.clients(monkeypatch, 1)
+        for tick in range(100):
+            terminal._reap_idle_plots(float(tick))
+        assert terminal.sent == []
+
+    def test_plots_are_closed_after_the_grace_period(self, terminal: Any,
+                                                    monkeypatch: Any) -> None:
+        self.clients(monkeypatch, 0)
+        terminal._reap_idle_plots(1000.0)
+        assert terminal.sent == []              # grace period has just started
+        terminal._reap_idle_plots(1000.0 + ws.ws_terminal.PLOT_IDLE_GRACE - 0.1)
+        assert terminal.sent == []
+        terminal._reap_idle_plots(1000.0 + ws.ws_terminal.PLOT_IDLE_GRACE)
+        assert terminal.sent == [('close_plots', 0.0, -1.0)]   # arg2 < 0 == all channels
+
+    def test_the_command_is_sent_once_not_every_tick(self, terminal: Any,
+                                                    monkeypatch: Any) -> None:
+        self.clients(monkeypatch, 0)
+        for tick in range(1000, 1100):
+            terminal._reap_idle_plots(float(tick))
+        assert terminal.sent == [('close_plots', 0.0, -1.0)]
+
+    def test_a_page_reload_inside_the_grace_period_keeps_plots(self, terminal: Any,
+                                                              monkeypatch: Any) -> None:
+        """op25Service re-adopts whatever modes it sees data for, so tearing plots
+        down on a reload would leave the toggle dark and cost the user a click."""
+        self.clients(monkeypatch, 0)
+        terminal._reap_idle_plots(1000.0)
+        self.clients(monkeypatch, 1)                     # the page came back
+        terminal._reap_idle_plots(1001.0)
+        assert terminal._idle_since is None
+        self.clients(monkeypatch, 0)
+        terminal._reap_idle_plots(1002.0)                 # grace restarts here
+        terminal._reap_idle_plots(1002.0 + ws.ws_terminal.PLOT_IDLE_GRACE - 0.1)
+        assert terminal.sent == []
+
+    def test_a_returning_client_rearms_the_reaper(self, terminal: Any,
+                                                 monkeypatch: Any) -> None:
+        self.clients(monkeypatch, 0)
+        terminal._reap_idle_plots(1000.0)
+        terminal._reap_idle_plots(1000.0 + ws.ws_terminal.PLOT_IDLE_GRACE)
+        assert len(terminal.sent) == 1
+        self.clients(monkeypatch, 1)
+        terminal._reap_idle_plots(2000.0)
+        self.clients(monkeypatch, 0)
+        terminal._reap_idle_plots(3000.0)
+        terminal._reap_idle_plots(3000.0 + ws.ws_terminal.PLOT_IDLE_GRACE)
+        assert len(terminal.sent) == 2
+
+    def test_client_count_tracks_connections(self, client: Any) -> None:
+        assert ws.manager.client_count() == 0
+        with client.websocket_connect('/ws'):
+            assert ws.manager.client_count() == 1
+        assert ws.manager.client_count() == 0
+
+
 class TestUpstreamTypes:
     def test_only_two_upstream_types(self) -> None:
         assert ws.UPSTREAM_TYPES == {ws.MSG_CALL_CONTROL, ws.MSG_SYSTEM_CONTROL}

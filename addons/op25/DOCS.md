@@ -103,12 +103,45 @@ you switch to `alsa`, the local player claims the port and browser audio goes
 quiet unless you give the channel a second destination. See
 `README-browser-audio.md` in the repository.
 
+## Finding a talkgroup
+
+The talkgroup table shows when each one was last heard, on what frequency, and how
+many calls it has carried. That history is kept in `op25_metadata.sqlite` in the
+work directory, so it survives a restart — a tags file with two thousand entries
+would otherwise read "never heard" every time the add-on came back. It is a cache:
+deleting it loses history and nothing else.
+
+**Browse** opens a picker over the full configured list. The list holds still
+while it is open (the dashboard table re-sorts as traffic arrives, which is what
+makes hunting for one talkgroup there so annoying), filters live by substring or
+regex against both tag and TGID, and its header checkbox selects every current
+match — so `^(FIRE|EMS)` then one click.
+
+Selecting talkgroups only pins them to the top of the table. **Apply as scan list**
+is a separate, explicit action, because it makes the decoder ignore everything
+else — including for recording and transcription. The table marks off-list
+talkgroups so it is obvious when one is in force, and the chip in the section
+heading clears it.
+
 ## Development loop
 
 Set `dev_source_dir` to a checkout, for example `/share/op25/src`, and the
 add-on runs `multi_rx.py` and friends from there instead of from the image.
 Restart the add-on to pick up an edit. The compiled GNU Radio blocks still come
 from the image, so C++ changes need a rebuild.
+
+To work on the **web UI** from a development machine instead, point Vite's proxy
+at the add-on rather than copying builds around:
+
+```bash
+cd op25/gr-op25_repeater/www/app
+OP25_BACKEND=http://homeassistant.local:8099 yarn dev
+```
+
+The browser only talks to `localhost:5173`; Vite forwards `/api` and `/ws`. Note
+that port 8099 has **no authentication** — ingress is the authenticated path — so
+this is for a network you trust, and it is a good reason to set the port to
+`disabled` once the sidebar panel works.
 
 ## Troubleshooting
 

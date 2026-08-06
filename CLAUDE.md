@@ -272,6 +272,73 @@ levers that work are RF quality, a bigger Whisper model on a bigger host, and
 `initial_prompt` vocabulary biasing. `README-home-assistant.md` §7 has the
 numbers.
 
+## Talkgroup metadata and scan lists
+
+- **`frequency_data` cannot tell you when a talkgroup was last heard.** It lists
+  a tgid against a frequency only while the call is up — `TGID_EXPIRY_TIME` is
+  **1.0 s** (tk_p25.py:1957-1964) — and `last_activity` is a per-*frequency*
+  preformatted string. The GUI's Last column read that, so it could only ever
+  show `"  Now"` or blank, and the Freq column had the same single root cause.
+  Sorting was string-comparing `"  Now"` against `" 4.1s"`.
+- The per-talkgroup numbers now travel in `tgid_tags`: `last_seen` (raw epoch,
+  0 = never), `last_freq`, `count`. Same shape from `tk_p25` / `tk_smartnet` /
+  `tk_trbo`. Formatting stays client-side (`www/app/src/utils/lastSeen.ts`) —
+  the browser knows the viewer's clock, and a number sorts.
+- **`last_freq` is a separate sticky key, not a reuse of `frequency`.**
+  `expire_talkgroup` clears `['frequency']` to `None` to mean "no call up"
+  (tk_p25.py:2667) and the trunking logic depends on that.
+- **`encrypted` is P25-only in this payload.** SmartNet carries encryption in a
+  tgid bit (`tgid & 0x8`) and never stores it per talkgroup;
+  `talkgroups[tgid]['mode']` there is analog-vs-digital (tk_smartnet.py:2186), so
+  reporting it as `encrypted` would flag every digital talkgroup on the system.
+- **`apps/tg_metadata.py` is the fork's storage layer, deliberately not in the
+  `tk_*` modules** — those are the files where an upstream cherry-pick is still
+  realistic, so they only publish numbers they already had. The in-memory dict is
+  the source of truth; SQLite is write-behind, flushed in one transaction every
+  `FLUSH_INTERVAL` (30 s) and at shutdown. That database may be on an SD card on
+  HA OS, so the batching is the point, not an optimisation.
+  - `_note_trunk_update()` observes *and* merges: durable values are folded back
+    into the outgoing payload, so the browser never learns persistence exists.
+  - `last_seen` never regresses, and a reported `0` never erases a real stamp —
+    two receivers report independently and a fresh decoder reports 0 for
+    everything. `count` accumulates by **delta**, because the decoder's counter is
+    per-process; a counter that drops is treated as a restart and rebased.
+  - Path: `$OP25_METADATA_DB`, then `terminal.metadata_db`, then
+    `op25_metadata.sqlite` in the cwd. Either may be empty to disable.
+  - A bad path or corrupt file logs once and degrades to memory-only. This must
+    never be able to fail the decoder.
+  - `stats()` has no `talkgroups` key on purpose: `/api/talkgroups` spreads it
+    beside its `talkgroups` list, and a same-named counter silently replaced the
+    list with an integer. The tests caught that.
+- **`set_whitelist` / `set_blacklist` replace a list in one command.** Not a loop
+  over single `whitelist` commands: `add_whitelist()` expires the current call
+  whenever the tgid it is on falls outside the new list, so 50 entries applied one
+  at a time tear the receiver down repeatedly. Validation is all-or-nothing.
+  - These are the first commands whose argument does not fit a `gr.message`'s two
+    floats. `handle_call_control` sends the whole payload as JSON when it carries
+    any field beyond `command`/`arg1`/`arg2`; `multi_rx.process_qmsg` has always
+    tried `json.loads()` before the bare-string form, so nothing regressed.
+  - Applied to **every receiver of the system**, each with its own copy of the
+    dict. With a whitelist file configured `load_bl_wl()` hands every receiver the
+    *same* object (tk_p25.py:2276) while `add_whitelist()` un-shares it by
+    assigning a fresh `{}` — the copy makes that aliasing irrelevant instead of
+    load-bearing. Same bug class as the `tk_trbo` slot aliasing.
+  - An empty whitelist becomes `None`, which means "scan everything". An empty
+    *dict* would mean scan nothing, so the two are never interchangeable —
+    including in `channel_update.whitelist`, which is `null` for unrestricted.
+  - Timed blacklist entries survive a replacement: those are `TGID_SKIP_TIME`
+    skips in flight, and `get_scan_lists()` omits them so the UI does not flicker.
+- **Focus/pin and the scan list are separate, and the second is never implicit.**
+  Pinning is `localStorage` (`hooks/useTalkgroupFocus.ts`) and only sorts/filters
+  the table; the scan list stops other talkgroups being received at all, so it
+  takes an explicit button in the Talkgroup Browser. Narrowing what you look at
+  must not silently narrow what gets recorded and transcribed.
+- `components/TalkgroupBrowser` **freezes its list while open** (`systems` is
+  deliberately not a loader dependency). Chasing a row that re-sorts under you as
+  traffic arrives is the problem it exists to solve.
+- An invalid live regex shows *everything* and says why, rather than emptying the
+  table — most keystrokes in a pattern are a syntax error in progress.
+
 ## Responsive UI
 
 The React app is expected to work on a phone as well as a desktop.
@@ -328,6 +395,37 @@ Things to know:
 - **Plots require the `ws` terminal.** `toggle_plot()` is a no-op elsewhere and
   says so on stderr. Nothing renders the traces under curses, so building them
   would be pure CPU burn.
+- **The plot sinks only exist while a plot is on.** `toggle_plot` connects and
+  disconnects them under `tb.lock()` (multi_rx.py:415-430), so with every plot
+  off the cost is exactly zero. Any claim that plot work happens unconditionally
+  at full stream rate is wrong on both counts.
+- **The throttle sits after the FFT on purpose, and that is not the bug it looks
+  like.** The exponential average has to be fed to stay converged. What *was*
+  wrong is the rate: `FFT_FREQ` (20 Hz) and `MIX_FREQ` (50 Hz) suit a
+  continuously-redrawing gnuplot window, not a browser fed at
+  `http_plot_interval` (1 Hz). So `compute_interval()` reduces the transform rate
+  to `AVGS_PER_PLOT` (8) per frame and `_averaging_alpha()` rescales the
+  coefficient — `alpha' = 1 - (1-alpha)**(actual/nominal)` — which keeps the
+  settling time identical. Verified exact in `tests/plot_rate_spec.py`. Do not
+  "simplify" by moving the throttle above the FFT without that compensation:
+  20 Hz → 1 Hz would stretch `FFT_AVG`'s ~1 s time constant to ~20 s.
+  `compute_interval()` never goes *faster* than nominal, so a short
+  `http_plot_interval` cannot make the DSP work harder than it used to.
+- `eye` / `constellation` / `symbol` hold no state between frames, so `due()`
+  gates them *before* any work. The historical `plot_count % 20` eye decimation
+  therefore applies only when unthrottled — leaving it in both places meant 20
+  plot intervals per eye frame, one every 20 seconds at the default.
+- The averaging is vectorised (18x); measured 0.37 ms → 0.020 ms per call. A
+  `sum_pwr` running total accumulated over every bin for mixer/fll and never read
+  is gone, and the Blackman window is cached. Net at 1 Hz: ~35x less CPU on
+  `fft`, ~120x on `mixer`/`fll`.
+- **An enabled plot used to outlive the tab that enabled it.** The decoder owns
+  plot state so it survives a reload, and `multi_rx`'s `watchdog` only closes
+  plots when `update` goes quiet — which never happens, because `ws_terminal`
+  polls at 1 Hz whether or not a client is attached (deliberately, to keep the
+  call-log ring filling). `ws_terminal._reap_idle_plots()` now sends the new
+  `close_plots` command after `PLOT_IDLE_GRACE` (5 s) at zero clients; the grace
+  period is what stops a page reload costing the user their plots.
 - `send_plot()` puts a bare **dict** on `ui_in_q`, while `multi_rx` puts a
   **list** — same message type `-4`. `curses_terminal.process_q_events()`
   normalises both. It did not use to, and iterating the dict yielded key
@@ -376,6 +474,12 @@ the user's box.
 - **Never point a Home Assistant media player at an ingress URL.** Those carry
   a rotating per-session token only an authenticated browser holds. That is
   what the published port 8099 is for.
+- **Port 8099 is unauthenticated.** `allow_origins=["*"]`, no token: anyone on
+  the LAN can hold a talkgroup, apply a scan list, quit the decoder or listen.
+  Ingress is the authenticated path. That is also what `OP25_BACKEND` points a
+  local `yarn dev` at, so treat it as a trusted-LAN convenience. A tunnel is not
+  an alternative — unpublishing the port hides it from the HA host too, so there
+  would be nothing to forward to; the real fix would be auth on the server.
 - **The run script renders the config, it does not edit the user's file.**
   `rootfs/.../op25/run` merges add-on options over the user's JSON with `jq` and
   pipes the result to `multi_rx.py -c -`. That forces
@@ -464,20 +568,25 @@ cd build && make -j$(sysctl -n hw.logicalcpu) && sudo make install
 # Frontend (new stack)
 cd op25/gr-op25_repeater/www/app && yarn install && yarn build   # → ../dist
 
+# Frontend against the decoder on the Home Assistant box (which has the dongle).
+# Vite proxies /api and /ws, so the browser only ever talks to localhost:5173 --
+# no CORS, no dev-only code path on the Python side.
+OP25_BACKEND=http://homeassistant.local:8099 yarn dev
+
 # Run
 cd op25/gr-op25_repeater/apps
 $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 280 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 366 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
-Without GNU Radio installed it is 271 passed / 7 skipped: `trunk_json_spec`
-(via `tk_trbo`/`tk_smartnet`) and `audio_udp_roundtrip_spec` need the built
-OOT module and `importorskip` out. Everything else is GR-free because
-`websocket_server` guards its `from gnuradio import gr`.
+Without GNU Radio installed the `trunk_json_spec` (via `tk_trbo`/`tk_smartnet`),
+`plot_rate_spec` (via `gr_gnuplot`) and `audio_udp_roundtrip_spec` cases
+`importorskip` out. Everything else is GR-free because `websocket_server` guards
+its `from gnuradio import gr`.
 
 - `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
   traversal, method handling, CORS (21).
@@ -486,11 +595,22 @@ OOT module and `importorskip` out. Everything else is GR-free because
   config, HA HTTP round-trips, media upload, REST endpoints, per-port
   capture (170).
 - `tests/protocol_spec.py` — json_type routing, live SYSTEM_STATE, call-log
-  ring, capture listing/download, upstream type validation (26).
+  ring, capture listing/download, idle-plot reaping, upstream type
+  validation (32).
 - `tests/trunk_json_spec.py` — trunk_update payload shapes for P25 / SmartNet /
-  Connect+, plus Connect+ grant handling and call filtering (28).
+  Connect+, talkgroup activity fields, batch scan lists (including the
+  per-receiver dict copy), plus Connect+ grant handling and call filtering (51).
+- `tests/tg_metadata_spec.py` — durable talkgroup store: db path resolution,
+  merge rules (last_seen never regresses, count by delta), sqlite round-trip and
+  batching, degradation to memory-only, trunk_update wiring,
+  `/api/talkgroups` (36).
+- `tests/plot_rate_spec.py` — plot payload shape for all six modes, compute-rate
+  reduction, exponential-average compensation, stateless-mode skipping,
+  decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
-  `?channel=` / `?port=` selection (20).
+  `?channel=` / `?port=` selection (31).
+- `tests/audio_udp_roundtrip_spec.py` — drives the compiled `analog_udp` block
+  and asserts non-silent PCM out of `/api/stream` (3).
 - `tests/squelch_upstream_spec.py` — runs upstream's `squelch_core_test.py` and
   `squelch_gr_test.py`, which are standalone `main()` scripts rather than
   pytest modules, as subprocesses (2).
@@ -504,6 +624,10 @@ instead (see `tests/audio_streams_spec.py`).
 `apps/.gitignore` excludes `*.json`, `*.tsv`, `*.sh`, `op25_python` — so real
 configs are untracked and live only on the dev machine. Do not assume a clean
 checkout has them.
+
+`op25_metadata.sqlite` is written into the cwd (the work dir) by `tg_metadata.py`
+on first run. It is a cache of talkgroup last-heard history, safe to delete, and
+gitignored.
 
 - `Palmetto800-single.json` — one RTL-SDR, Palmetto 800 (SC) P25 trunked
   system. This is the primary smoke test. (Tracked, unusually — `apps/.gitignore`

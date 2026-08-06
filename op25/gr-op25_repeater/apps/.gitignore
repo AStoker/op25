@@ -13,6 +13,10 @@ stderr*
 *.liq
 *.bin
 op25_python
+# Talkgroup last-heard cache (tg_metadata.py). Written into the work dir, which
+# is this directory for a standalone run. Safe to delete.
+*.sqlite
+*.sqlite-journal
 
 # Tracked files that would otherwise be excluded
 !op25.sh

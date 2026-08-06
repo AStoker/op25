@@ -64,6 +64,18 @@ export interface CallControlPayload {
   command: string;        // e.g. 'hold' | 'skip' | 'lockout' | 'whitelist'
   arg1?: number;          // typically tgid
   arg2?: number;          // typically msgqid (channel index)
+
+  // --- batch scan lists (set_whitelist / set_blacklist) ------------------
+  // A gr.message carries a string plus two floats, so a command whose argument
+  // is a *list* cannot use arg1/arg2. When any field beyond command/arg1/arg2 is
+  // present the server forwards the whole payload as JSON instead, which
+  // multi_rx.process_qmsg has always accepted as an alternative to the bare
+  // command string. See websocket_server.py::handle_call_control.
+  /** Target channel. Required for the scan-list commands, which address a
+   *  receiver rather than relying on arg2. */
+  msgqid?: number;
+  /** The complete new list. Empty means "no whitelist", i.e. scan everything. */
+  tgids?: number[];
 }
 
 /** The only system-level action the decoder implements.  Muting is handled in

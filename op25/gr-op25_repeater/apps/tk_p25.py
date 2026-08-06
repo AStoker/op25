@@ -80,6 +80,11 @@ def add_default_tgid(tgs, tgid):
         tgs[tgid]['srcaddr'] = 0
         tgs[tgid]['time'] = 0
         tgs[tgid]['frequency'] = None
+        # Sticky companion to 'frequency', which expire_talkgroup() clears to
+        # None to mean "no call up" -- a distinction the trunking logic depends
+        # on.  The GUI wants the last frequency a talkgroup was heard on, which
+        # has to outlive the call, so it gets its own key.
+        tgs[tgid]['last_freq'] = None
         tgs[tgid]['tdma_slot'] = None
         tgs[tgid]['encrypted'] = 0
         tgs[tgid]['svcopts'] = 0x04
@@ -278,10 +283,51 @@ class rx_ctl(object):
     # ui_command handles all requests from user interface
     def ui_command(self, cmd, data, msgq_id):
         curr_time = time.time()
-        if msgq_id in self.receivers and self.receivers[msgq_id]['rx_rcvr'] is not None:
+        if cmd in ('set_whitelist', 'set_blacklist'):
+            self.set_scan_list(cmd, data, msgq_id, curr_time)
+        elif msgq_id in self.receivers and self.receivers[msgq_id]['rx_rcvr'] is not None:
             self.receivers[msgq_id]['rx_rcvr'].ui_command(cmd = cmd, data = data, curr_time = curr_time)    # Dispatch message to the intended receiver
         # Check for control channel reassignment
         self.check_cc_assignments()
+
+    def set_scan_list(self, cmd, data, msgq_id, curr_time):
+        """Replace a whole whitelist or blacklist in one step.
+
+        Applied to *every* receiver of the system that owns msgq_id (or of every
+        system when msgq_id is negative), because the receivers on a system are
+        all scanning the same traffic and a scan list that only some of them
+        honour is not a scan list.
+
+        Each receiver gets its own dict.  Without a per-channel whitelist file
+        load_bl_wl() hands every receiver the *same* dict object
+        (system.get_whitelist()), while add_whitelist() silently un-shares it by
+        assigning a fresh {} -- so whether a change is seen by the other
+        receivers depends on which call happened to run first.  Copying per
+        receiver makes that irrelevant rather than load-bearing.
+        """
+        tgids = data.get('tgids', []) if isinstance(data, dict) else []
+        if not isinstance(tgids, (list, tuple)):
+            raise TypeError("tgids must be a list")
+        # Screen here rather than in the receiver: add_blacklist/add_whitelist
+        # reject out-of-range ids one at a time with a log line nobody reads.
+        clean = {}
+        for raw in tgids:
+            tgid = int(raw)
+            if tgid < 1 or tgid > 65534:
+                raise ValueError("tgid %d out of range (1-65534)" % tgid)
+            clean[tgid] = None
+
+        if msgq_id in self.receivers:
+            sysnames = [self.receivers[msgq_id]['sysname']]
+        else:
+            sysnames = list(self.systems.keys())
+
+        for sysname in sysnames:
+            for rx in self.systems[sysname]['receivers']:
+                if rx is not None:
+                    rx.set_scan_list(cmd, dict(clean), curr_time)
+        sys.stderr.write("%s %s: %d tgid(s) across %d system(s)\n" % (
+            log_ts.get(), cmd, len(clean), len(sysnames)))
 
     def to_json(self):
         d = {'json_type': 'trunk_update'}
@@ -1652,6 +1698,7 @@ class p25_system(object):
             self.talkgroups[tgid]['time'] = ts
             self.talkgroups[tgid]['counter'] += 1
             self.talkgroups[tgid]['frequency'] = frequency
+            self.talkgroups[tgid]['last_freq'] = frequency
             self.talkgroups[tgid]['tdma_slot'] = tdma_slot
             if svcopts is not None:
                 self.talkgroups[tgid]['svcopts'] = svcopts
@@ -2045,7 +2092,14 @@ class p25_system(object):
 
         # Talkgroup tags: all known TGs with tag, configured flag and trunk
         # priority for the GUI (priority drives mid-call preemption, so it is
-        # worth showing next to the tag rather than hiding it in the tags file)
+        # worth showing next to the tag rather than hiding it in the tags file).
+        #
+        # last_seen / last_freq / count are per-talkgroup and durable for as long
+        # as the process lives.  The GUI used to derive "last activity" from
+        # frequency_data instead, where a talkgroup is only listed while its call
+        # is up (TGID_EXPIRY_TIME, one second) -- so every row read either "Now"
+        # or nothing at all.  last_seen is a raw epoch: formatting a relative
+        # time is the display layer's job, and a number is sortable.
         tgid_tags = {}
         with self.talkgroups_mutex:
             for tgid, tg in self.talkgroups.items():
@@ -2053,6 +2107,10 @@ class p25_system(object):
                     'tag':        tg.get('tag', ''),
                     'configured': tg.get('configured', False),
                     'prio':       tg.get('prio', TGID_DEFAULT_PRIO),
+                    'last_seen':  tg.get('time', 0) or 0,
+                    'last_freq':  tg.get('last_freq', None),
+                    'count':      tg.get('counter', 0),
+                    'encrypted':  tg.get('encrypted', 0),
                 }
         d['tgid_tags'] = tgid_tags
 
@@ -2570,6 +2628,57 @@ class p25_receiver(object):
             self.hold_tgid = None
             self.hold_until = time.time()
 
+    def set_scan_list(self, cmd, tgids, curr_time):
+        """Replace this receiver's whitelist or blacklist wholesale.
+
+        `tgids` is a dict of tgid -> None, already range-checked and owned by
+        this receiver (see p25_rx_ctl.set_scan_list).  An empty whitelist becomes
+        None, which is what the rest of the module reads as "no whitelist, scan
+        everything" -- an empty *dict* would mean "scan nothing".
+        """
+        if cmd == 'set_whitelist':
+            self.whitelist = tgids if tgids else None
+            # Anything now whitelisted cannot also be locked out.  Only the
+            # permanent entries are dropped; a timed skiplist-style blacklist
+            # (end_time set) is transient call-management state, not user intent.
+            if self.blacklist:
+                for tgid in list(self.blacklist.keys()):
+                    if tgid in tgids and self.blacklist[tgid] is None:
+                        self.blacklist.pop(tgid)
+            if self.current_tgid and self.whitelist is not None and self.current_tgid not in self.whitelist:
+                self.expire_talkgroup(reason = "not whitelisted")
+                self.hold_mode = False
+                self.hold_tgid = None
+                self.hold_until = curr_time
+        else:
+            # Preserve any timed blacklist entries -- those are TGID_SKIP_TIME
+            # skips in flight, and dropping them would let a just-skipped call
+            # be picked straight back up.
+            timed = {t: e for t, e in self.blacklist.items() if e is not None} if self.blacklist else {}
+            self.blacklist = {**tgids, **timed}
+            if self.whitelist:
+                for tgid in tgids:
+                    self.whitelist.pop(tgid, None)
+                if not self.whitelist:
+                    self.whitelist = None
+            if self.current_tgid and self.current_tgid in self.blacklist:
+                self.expire_talkgroup(reason = "blacklisted", auto_hold = False)
+                self.hold_mode = False
+        if self.debug > 1:
+            sys.stderr.write("%s [%d] %s: %d entries\n" % (log_ts.get(), self.msgq_id, cmd, len(tgids)))
+
+    def get_scan_lists(self):
+        """Current whitelist / blacklist, for the UI.
+
+        Permanent blacklist entries only: a timed one is a TGID_SKIP_TIME skip
+        that will clear itself in seconds, and showing it as a lockout would make
+        the UI flicker.  `whitelist: None` means no whitelist is in force.
+        """
+        return {
+            'whitelist': None if self.whitelist is None else sorted(self.whitelist.keys()),
+            'blacklist': sorted(t for t, end in self.blacklist.items() if end is None) if self.blacklist else [],
+        }
+
     def blacklist_update(self, start_time):
         expired_tgs = [tg for tg in list(self.blacklist.keys())
                             if self.blacklist[tg] is not None
@@ -2755,5 +2864,9 @@ class p25_receiver(object):
             d['mode'] = None
             d['stream'] = self.meta_stream
             d['msgqid'] = self.msgq_id
+            # So the UI can show which talkgroups are actually being scanned.
+            # Without this a browser could set a scan list but never read one
+            # back, and a whitelist loaded from a file was invisible entirely.
+            d.update(self.get_scan_lists())
             return json.dumps(d)
 

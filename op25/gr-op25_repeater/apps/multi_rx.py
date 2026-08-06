@@ -875,6 +875,10 @@ class rx_block (gr.top_block):
 
     def process_qmsg(self, msg):            # Handle UI requests
         RX_COMMANDS = 'skip lockout hold whitelist reload'.split()
+        # Commands whose argument does not fit in the two floats a gr.message
+        # carries.  These arrive as JSON and the whole decoded dict is handed to
+        # ui_command() as `data`, rather than msg.arg1().
+        RX_LIST_COMMANDS = 'set_whitelist set_blacklist'.split()
         if msg is None:
             return True
         s = msg.to_string()
@@ -882,6 +886,7 @@ class rx_block (gr.top_block):
         if type(s) is not str and isinstance(s, bytes):
             # should only get here if python3
             s = s.decode()
+        d = None
         try:    # See if we can treat the incoming message as JSON format (from HTTP UI)
             d = json.loads(s)
             s = d['command'] if "command" in d and d['command'] is not None else ""
@@ -907,6 +912,22 @@ class rx_block (gr.top_block):
             plot_type = int(msg.arg1())
             msgq_id = int(msg.arg2())
             self.find_channel(msgq_id).toggle_plot(plot_type)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+        elif s == 'close_plots':
+            # Sent by the ws terminal when its last browser client disconnects.
+            # The 'watchdog' path below would eventually do this, but only if
+            # 'update' stops arriving -- and ws_terminal polls at 1 Hz whether
+            # or not anyone is attached (it has a call-log ring to keep filling),
+            # so ui_last_update never goes stale and an enabled plot would run
+            # forever after the last tab closed.
+            msgq_id = int(msg.arg2())
+            if msgq_id < 0:
+                for chan in self.channels:
+                    chan.close_plots()
+            else:
+                chan = self.find_channel(msgq_id)
+                if chan is not None:
+                    chan.close_plots()
             ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s == 'adj_tune':
             freq = msg.arg1()
@@ -987,6 +1008,26 @@ class rx_block (gr.top_block):
             # TODO: find a better way to invoke
             for chan in self.channels:
                 chan.error_tracking()
+        elif s in RX_LIST_COMMANDS:
+            # A batch scan-list change.  Deliberately not N individual
+            # 'whitelist' commands: add_whitelist() expires the current call
+            # whenever the tgid it is on falls outside the new list, so applying
+            # a 50-entry list one entry at a time tears the receiver down
+            # repeatedly on its way to the same end state.
+            if self.trunking is None or self.trunk_rx is None:
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                               'detail': "no trunking module loaded"})
+            elif d is None:
+                # Reachable from the curses/UDP path, which sends bare strings.
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                               'detail': "%s requires a JSON message" % s})
+            else:
+                try:
+                    self.trunk_rx.ui_command(s, d, float(d.get('msgqid', -1)))
+                    ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
+                except (TypeError, ValueError) as e:
+                    ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                                   'detail': "%s: %s" % (s, e)})
         elif s in RX_COMMANDS:
             if self.trunking is not None and self.trunk_rx is not None:
                 self.trunk_rx.ui_command(s, msg.arg1(), msg.arg2())

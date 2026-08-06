@@ -156,8 +156,39 @@ class rx_ctl(object):
     # ui_command handles all requests from user interface
     def ui_command(self, cmd, data, msgq_id):
         curr_time = time.time()
-        if msgq_id in self.receivers and self.receivers[msgq_id]['rx_sys'] is not None:
+        if cmd in ('set_whitelist', 'set_blacklist'):
+            self.set_scan_list(cmd, data, msgq_id, curr_time)
+        elif msgq_id in self.receivers and self.receivers[msgq_id]['rx_sys'] is not None:
             self.receivers[msgq_id]['rx_sys'].ui_command(cmd = cmd, data = data, curr_time = curr_time)    # Dispatch message to the intended receiver
+
+    def set_scan_list(self, cmd, data, msgq_id, curr_time):
+        """Replace a whole scan list across every voice receiver of a system.
+
+        See tk_p25.p25_rx_ctl.set_scan_list -- same contract, same reason for
+        applying system-wide and for giving each receiver its own dict.  Only the
+        voice receivers carry scan lists; the control receiver has none.
+        """
+        tgids = data.get('tgids', []) if isinstance(data, dict) else []
+        if not isinstance(tgids, (list, tuple)):
+            raise TypeError("tgids must be a list")
+        clean = {}
+        for raw in tgids:
+            tgid = int(raw)
+            if tgid < 1 or tgid > 65534:
+                raise ValueError("tgid %d out of range (1-65534)" % tgid)
+            clean[tgid] = None
+
+        if msgq_id in self.receivers:
+            sysnames = [self.receivers[msgq_id]['sysname']]
+        else:
+            sysnames = list(self.systems.keys())
+
+        for sysname in sysnames:
+            for rx in self.systems[sysname]['voice']:
+                if rx is not None:
+                    rx.set_scan_list(cmd, dict(clean), curr_time)
+        sys.stderr.write("%s %s: %d tgid(s) across %d system(s)\n" % (
+            log_ts.get(), cmd, len(clean), len(sysnames)))
 
     def to_json(self):
         d = {'json_type': 'trunk_update'}
@@ -1829,6 +1860,7 @@ class osw_receiver(object):
             self.talkgroups[base_tgid]['time'] = time.time()
             self.talkgroups[base_tgid]['release_time'] = 0
             self.talkgroups[base_tgid]['frequency'] = frequency
+            self.talkgroups[base_tgid]['last_freq'] = frequency
             self.talkgroups[base_tgid]['status'] = tgid_stat
             if srcaddr >= 0:
                 self.talkgroups[base_tgid]['srcaddr'] = srcaddr
@@ -1845,6 +1877,10 @@ class osw_receiver(object):
             self.talkgroups[tgid]['srcaddr'] = 0
             self.talkgroups[tgid]['time'] = 0
             self.talkgroups[tgid]['release_time'] = 0
+            # Last frequency heard, kept for the GUI.  tk_p25 needs this to be
+            # separate from 'frequency' because it clears that on expiry; here it
+            # is only for payload symmetry across the trunking modules.
+            self.talkgroups[tgid]['last_freq'] = None
             self.talkgroups[tgid]['mode'] = -1
             self.talkgroups[tgid]['receiver'] = None
             self.talkgroups[tgid]['status'] = 0
@@ -1982,7 +2018,9 @@ class osw_receiver(object):
 
         # Talkgroup tags: every TG seen or loaded from tgid_tags_file, with the
         # trunk priority.  Same shape tk_p25 publishes, so the UI needs no
-        # per-system-type special case for the talkgroup table.
+        # per-system-type special case for the talkgroup table -- including
+        # last_seen (raw epoch), last_freq and count, which is where the GUI's
+        # last-activity column comes from.
         tgid_tags = {}
         with self.talkgroups_mutex:
             for tgid, tg in self.talkgroups.items():
@@ -1990,6 +2028,14 @@ class osw_receiver(object):
                     'tag':        tg.get('tag', ''),
                     'configured': tg.get('configured', False),
                     'prio':       tg.get('prio', TGID_DEFAULT_PRIO),
+                    'last_seen':  tg.get('time', 0) or 0,
+                    'last_freq':  tg.get('last_freq', None),
+                    'count':      tg.get('counter', 0),
+                    # No 'encrypted': SmartNet carries that as a bit in the tgid
+                    # itself (get_call_options_flags_str, tgid & 0x8) and never
+                    # records it per talkgroup.  talkgroups[tgid]['mode'] is
+                    # analog-vs-digital, not clear-vs-encrypted -- reporting it
+                    # here would mark every digital talkgroup as encrypted.
                 }
         d['tgid_tags'] = tgid_tags
 
@@ -2242,6 +2288,46 @@ class voice_receiver(object):
             self.hold_tgid = None
             self.hold_until = time.time()
 
+    def set_scan_list(self, cmd, tgids, curr_time):
+        """Replace this receiver's whitelist or blacklist wholesale.
+
+        Mirrors tk_p25.p25_receiver.set_scan_list -- see the notes there on why
+        an empty whitelist becomes None and why timed blacklist entries survive.
+        """
+        if cmd == 'set_whitelist':
+            self.whitelist = tgids if tgids else None
+            if self.blacklist:
+                for tgid in list(self.blacklist.keys()):
+                    if tgid in tgids and self.blacklist[tgid] is None:
+                        self.blacklist.pop(tgid)
+            if self.current_tgid and self.whitelist is not None and self.current_tgid not in self.whitelist:
+                self.expire_talkgroup(reason = "not whitelisted")
+                self.hold_mode = False
+                self.hold_tgid = None
+                self.hold_until = curr_time
+        else:
+            timed = {t: e for t, e in self.blacklist.items() if e is not None} if self.blacklist else {}
+            self.blacklist = {**tgids, **timed}
+            if self.whitelist:
+                for tgid in tgids:
+                    self.whitelist.pop(tgid, None)
+                if not self.whitelist:
+                    self.whitelist = None
+            if self.current_tgid and self.current_tgid in self.blacklist:
+                self.expire_talkgroup(reason = "blacklisted")
+                self.hold_mode = False
+                self.hold_tgid = None
+                self.hold_until = curr_time
+        if self.debug > 1:
+            sys.stderr.write("%s [%d] %s: %d entries\n" % (log_ts.get(), self.msgq_id, cmd, len(tgids)))
+
+    def get_scan_lists(self):
+        """Current whitelist / blacklist, for the UI.  See tk_p25 for the rules."""
+        return {
+            'whitelist': None if self.whitelist is None else sorted(self.whitelist.keys()),
+            'blacklist': sorted(t for t, end in self.blacklist.items() if end is None) if self.blacklist else [],
+        }
+
     def blacklist_update(self, start_time):
         expired_tgs = [tg for tg in list(self.blacklist.keys())
                             if self.blacklist[tg] is not None
@@ -2389,4 +2475,5 @@ class voice_receiver(object):
             d['mode'] = self.talkgroups[self.current_tgid]['mode'] if self.current_tgid is not None else -1
             d['stream'] = self.config['meta_stream_name'] if 'meta_stream_name' in self.config else ""
             d['msgqid'] = self.msgq_id
+            d.update(self.get_scan_lists())     # so the UI can read the scan list back
             return json.dumps(d)

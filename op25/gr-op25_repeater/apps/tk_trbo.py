@@ -423,6 +423,10 @@ class dmr_receiver:
         d['mode'] = None
         d['stream'] = ""
         d['msgqid'] = self.msgq_id
+        # Scan lists live on rx_ctl and are shared by both receivers, so both
+        # report the same thing -- which is correct: they scan as one system.
+        if self.rx_ctl is not None:
+            d.update(self.rx_ctl.get_scan_lists())
         return json.dumps(d)
 
 
@@ -492,6 +496,7 @@ class rx_ctl(object):
                 'counter':    0,
                 'lcn':        None,
                 'slot':       None,
+                'last_freq':  None,
                 'configured': False,
             }
 
@@ -531,6 +536,7 @@ class rx_ctl(object):
         tg['lcn']     = lcn
         tg['slot']    = slot
         tg['time']    = time.time()
+        tg['last_freq'] = freq
         tg['counter'] += 1
         self.log_call(msgq_id, freq, slot, tg['prio'], tgid, tg['tag'], srcaddr)
 
@@ -602,6 +608,74 @@ class rx_ctl(object):
         if self.debug >= 1:
             sys.stderr.write("%s whitelisting tgid(%d)\n" % (log_ts.get(), tgid))
 
+    def set_scan_list(self, cmd, data, curr_time):
+        """Replace a whole whitelist or blacklist in one step.
+
+        Simpler than the tk_p25 / tk_smartnet equivalents: Connect+ keeps its
+        scan lists on rx_ctl and shares them across both receivers, so there is
+        exactly one dict and nothing to copy per receiver.
+
+        An empty whitelist becomes None -- `whitelist is not None and tgid not in
+        whitelist` (find_voice_candidate) reads an empty dict as "scan nothing".
+        """
+        tgids = data.get('tgids', []) if isinstance(data, dict) else []
+        if not isinstance(tgids, (list, tuple)):
+            raise TypeError("tgids must be a list")
+        clean = {}
+        for raw in tgids:
+            tgid = int(raw)
+            if tgid < 1 or tgid > 65534:
+                raise ValueError("tgid %d out of range (1-65534)" % tgid)
+            clean[tgid] = None
+
+        if cmd == 'set_whitelist':
+            self.whitelist = clean if clean else None
+            if self.blacklist:
+                for tgid in list(self.blacklist.keys()):
+                    if tgid in clean and self.blacklist[tgid] is None:
+                        self.blacklist.pop(tgid)
+            if self.whitelist is not None:
+                for tgid in self.followed_tgids():
+                    if tgid not in self.whitelist:
+                        self.release_tgid(tgid)
+        else:
+            # Timed entries are skips in flight; releasing them here would let a
+            # just-skipped call be re-acquired immediately.
+            timed = {t: e for t, e in self.blacklist.items() if e is not None} if self.blacklist else {}
+            self.blacklist = {**clean, **timed}
+            if self.whitelist:
+                for tgid in clean:
+                    self.whitelist.pop(tgid, None)
+                if not self.whitelist:
+                    self.whitelist = None
+            for tgid in self.followed_tgids():
+                if tgid in self.blacklist:
+                    self.release_tgid(tgid)
+        sys.stderr.write("%s %s: %d tgid(s)\n" % (log_ts.get(), cmd, len(clean)))
+
+    def followed_tgids(self):
+        """Talkgroups a receiver is actually following right now.
+
+        Not chans[lcn].slot[].grp_addr: that records every grant seen on the
+        control channel, including ones should_follow() rejected, so releasing
+        from it would act on talkgroups this system was never tuned to.
+        """
+        followed = set()
+        for rcvr in self.receivers.values():
+            followed.update(rcvr.active_tgids.keys())
+        return followed
+
+    def get_scan_lists(self):
+        """Current whitelist / blacklist, for the UI.
+
+        Permanent blacklist entries only -- a timed one is a transient skip.
+        `whitelist: None` means no whitelist is in force.
+        """
+        return {
+            'whitelist': None if self.whitelist is None else sorted(self.whitelist.keys()),
+            'blacklist': sorted(t for t, end in self.blacklist.items() if end is None) if self.blacklist else [],
+        }
+
     def add_skiplist(self, tgid, end_time=None):
         if not tgid or tgid <= 0:
             return
@@ -631,7 +705,10 @@ class rx_ctl(object):
         Connect+ state is system-wide rather than per-receiver, so unlike
         tk_p25/tk_smartnet there is nothing to dispatch: apply it directly.
         """
-        self.apply_ui_command(cmd, data, time.time())
+        if cmd in ('set_whitelist', 'set_blacklist'):
+            self.set_scan_list(cmd, data, time.time())
+        else:
+            self.apply_ui_command(cmd, data, time.time())
 
     def apply_ui_command(self, cmd, data, curr_time):
         """hold / skip / lockout / whitelist / reload from the terminal.
@@ -744,12 +821,17 @@ class rx_ctl(object):
             d['frequencies'][chan.frequency] = '- %f  lcn %d  %s' % (
                 chan.frequency / 1e6, lcn, last_activity)
 
+        # Same shape as tk_p25 / tk_smartnet publish: last_seen is a raw epoch so
+        # the UI can format a relative time and sort on it numerically.
         tgid_tags = {}
         for tgid, tg in self.talkgroups.items():
             tgid_tags[str(tgid)] = {
                 'tag':        tg['tag'],
                 'configured': tg['configured'],
                 'prio':       tg['prio'],
+                'last_seen':  tg.get('time', 0) or 0,
+                'last_freq':  tg.get('last_freq', None),
+                'count':      tg.get('counter', 0),
             }
         d['tgid_tags'] = tgid_tags
         return d

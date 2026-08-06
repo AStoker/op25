@@ -27,11 +27,14 @@ app/                        ← this directory
       useAudioSources.ts    /api/audio/channels — selectable streams
       useSystemState.ts     the SYSTEM_STATE health payload
       useIsPhone.ts         drop low-value table columns below sm
+      useTalkgroupFocus.ts  pinned talkgroups (localStorage, per browser)
     components/<Name>Card/  one card per panel, all wrapped in CardShell
     components/ConfigDialog/  Config modal: runtime knobs, display prefs, loaded JSON
     components/AboutDialog/   About modal: what this fork is, how it differs upstream
+    components/TalkgroupBrowser/  pick talkgroups from the full list: regex + batch
     components/common/      the design-system primitives (see below)
     utils/systemKind.ts     P25 / SmartNet / Connect+ branching + safe formatters
+    utils/lastSeen.ts       relative last-heard / frequency formatting
     types/op25.ts           decoder payload shapes
     types/websocket.ts      envelope + upstream/downstream unions
   vite.config.ts            builds to ../dist
@@ -43,8 +46,15 @@ app/                        ← this directory
 cd app/
 yarn install     # first time
 yarn build       # tsc -b && vite build → ../dist
-yarn dev         # Vite dev server
+yarn dev         # Vite dev server, proxying /api and /ws to 127.0.0.1:8080
+
+# …or against the decoder on whichever box has the dongle. The browser still only
+# talks to localhost:5173, so this needs no CORS and no dev-only server code.
+OP25_BACKEND=http://homeassistant.local:8099 yarn dev
 ```
+
+That port is **unauthenticated** (the add-on's ingress is the authenticated path),
+so it is a trusted-LAN convenience, not a way to expose OP25.
 
 `../dist` is a **committed build artifact**. It can drift from `src/` — rebuild
 before testing, or you will be looking at old code and drawing wrong
@@ -108,6 +118,11 @@ nothing.
 `arg2` on a `CALL_CONTROL` command is the channel msgqid; the service resolves
 it from the selected channel.
 
+A command whose argument is a **list** cannot use `arg1`/`arg2` — a `gr.message`
+carries two floats. `setScanList` therefore sends `{command, msgqid, tgids}` and
+the server forwards the whole payload as JSON (see README-new-gui.md). Any
+`CALL_CONTROL` field beyond `command`/`arg1`/`arg2` triggers that.
+
 ---
 
 ## Where a setting goes
@@ -148,6 +163,20 @@ page here. `AppShell` owns which one is open.
 - **Muting is client-side.** Stopping the Web Audio path stops pulling
   `/api/stream`; there is no mute command, and `SYSTEM_CONTROL` only accepts
   `quit`.
+- **Last-heard comes from `tgid_tags`, never from `frequency_data`.** The latter
+  lists a talkgroup against a frequency only while its call is up (one second), so
+  a column fed from it can only ever say "Now" or nothing — which is exactly the
+  bug that was there. `tgid_tags[tgid].last_seen` is a raw epoch (0 = never);
+  format with `utils/lastSeen.ts` and sort on the number.
+- **Pinning and the scan list are different things.** `useTalkgroupFocus` is
+  localStorage and only sorts/filters the table. `setScanList` stops the decoder
+  receiving anything else, so it must stay behind an explicit action — never
+  wire it to a selection change.
+- **The Talkgroup Browser freezes its list while open** on purpose (`systems` is
+  not a loader dependency). Re-sorting it as traffic arrives is the problem it
+  exists to solve.
+- **An invalid live regex must show everything**, not nothing: most keystrokes in
+  a pattern are a syntax error in progress.
 - **Responsive.** Below `md` the layout is tabs (Live / Audio / System /
   Signal); at `md`+ it is the two-column dashboard. Verify with CDP at
   390 / 820 / 1440 px and check

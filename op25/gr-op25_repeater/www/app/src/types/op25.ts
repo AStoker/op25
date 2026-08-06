@@ -17,6 +17,41 @@ export interface FrequencyDataEntry {
   srctags: string[];
 }
 
+/** One entry of a system's `tgid_tags` map.
+ *
+ *  `last_seen` is a raw epoch (seconds), not a preformatted string: the display
+ *  layer formats the relative time, which also makes the column sortable.  It is
+ *  0 for a talkgroup the decoder knows from tgid_tags_file but has never heard.
+ *
+ *  The server merges values from previous decoder runs into these before
+ *  broadcasting (see tg_metadata.py), so `last_seen` can predate the current
+ *  process.  `count` is a lifetime total for the same reason.
+ *
+ *  `last_freq` is the *last* frequency heard, which deliberately outlives the
+ *  call — distinct from the decoder-internal `frequency`, cleared on expiry.
+ */
+export interface TgidTagEntry {
+  tag: string;
+  configured: boolean;
+  prio?: number;
+  last_seen?: number;
+  last_freq?: number | null;
+  count?: number;
+  /** P25 only. SmartNet keeps encryption in a tgid bit, not per talkgroup. */
+  encrypted?: number;
+}
+
+/** A row from `/api/talkgroups` — the durable view, which unlike `tgid_tags`
+ *  includes talkgroups last heard in an earlier run of the decoder. */
+export interface TalkgroupRecord {
+  system: string;
+  tgid: number;
+  tag: string;
+  last_seen: number;
+  last_freq: number | null;
+  count: number;
+}
+
 export interface PatchEntry {
   sg: string;
   sgtag: string;
@@ -76,7 +111,7 @@ export interface TrunkSystem {
    *  entries loaded from tgid_tags_file at startup.  `prio` is the trunk
    *  priority used for mid-call preemption (lower = higher priority,
    *  default 3 when the tags file omits a third column). */
-  tgid_tags?: Record<string, { tag: string; configured: boolean; prio?: number }>;
+  tgid_tags?: Record<string, TgidTagEntry>;
 
   // --- P25-only site details -------------------------------------------
   /** Non-null when the control channel itself is encrypted (P_PARM_BCST). */
@@ -149,6 +184,16 @@ export interface ChannelStatus {
   /** Encryption algorithm / key ids for the current call, when known. */
   algid?: number;
   keyid?: number;
+  /** Talkgroups this channel is restricted to scanning.
+   *
+   *  `null` means no whitelist is in force — scan everything.  An empty array
+   *  would mean scan nothing, so the two are not interchangeable.  Reported so
+   *  the UI can read a scan list back rather than only write one; a whitelist
+   *  loaded from a file used to be invisible entirely. */
+  whitelist?: number[] | null;
+  /** Talkgroups locked out. Permanent entries only — a timed blacklist entry is
+   *  a TGID_SKIP_TIME skip in flight and would make the UI flicker. */
+  blacklist?: number[];
 }
 
 export interface ChannelUpdatePayload {
