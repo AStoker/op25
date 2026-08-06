@@ -741,8 +741,19 @@ def _discover_audio_endpoints(config: dict[str, Any] | None) -> list[dict[str, A
     # has exactly one consumer, so binding these as well would only make
     # whichever thread loses the race go silent.  Compare on port number alone —
     # a destination of 0.0.0.0 and sockaudio's 127.0.0.1 carry the same traffic.
+    #
+    # Only when the audio module is actually loaded, though.  multi_rx's
+    # configure_audio() returns early on an empty "module", so the instances
+    # list is inert and nothing binds those ports — yielding them to the browser
+    # is then correct, and excluding them would silence a config whose only
+    # crime is leaving a stale audio block in place.  The Home Assistant add-on
+    # runs exactly that way by default.
+    audio_cfg = (config or {}).get('audio', {}) or {}
     local: set[int] = set()
-    for inst in (config or {}).get('audio', {}).get('instances', []) or []:
+    instances = audio_cfg.get('instances', []) or []
+    if not str(audio_cfg.get('module', '') or '').strip():
+        instances = []
+    for inst in instances:
         try:
             port = int(inst.get('udp_port', _DEFAULT_AUDIO_PORT))
         except (TypeError, ValueError):

@@ -1,0 +1,61 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Pre-flight: validate the config and show what hardware we can see.
+#
+# Runs once, before the decoder. Everything here is about making the common
+# first-run failures say what is wrong instead of producing a Python traceback
+# or a silent receiver.
+# ==============================================================================
+declare config_file work_dir
+
+config_file=$(bashio::config 'config_file')
+work_dir=$(bashio::config 'work_dir')
+
+if ! bashio::fs.file_exists "${config_file}"; then
+    bashio::log.fatal "Config file not found: ${config_file}"
+    bashio::log.fatal ""
+    bashio::log.fatal "Copy your multi_rx JSON config -- plus any .tsv talkgroup"
+    bashio::log.fatal "tag files it references -- into this add-on's config"
+    bashio::log.fatal "directory, visible over Samba as:"
+    bashio::log.fatal "    addon_configs/<slug>_op25/"
+    bashio::log.fatal ""
+    bashio::log.fatal "A starting point is included in the image at"
+    bashio::log.fatal "    /opt/op25/samples/op25.sample.json"
+    bashio::log.fatal "and the docs are at https://github.com/AStoker/op25"
+    bashio::exit.nok
+fi
+
+if ! jq empty "${config_file}" 2>/dev/null; then
+    bashio::log.fatal "${config_file} is not valid JSON."
+    jq empty "${config_file}" 2>&1 | while read -r line; do
+        bashio::log.fatal "  ${line}"
+    done
+    bashio::exit.nok
+fi
+
+# cwd is load-bearing: tgid_tags_file, rid_tags_file, whitelist/blacklist and
+# crypt_keys are all opened with a bare open() relative to it.
+mkdir -p "${work_dir}" /data/plots
+
+bashio::log.info "Config:   ${config_file}"
+bashio::log.info "Work dir: ${work_dir}"
+
+# ------------------------------------------------------------------ hardware -
+if [ -d /dev/bus/usb ]; then
+    bashio::log.info "USB bus is visible to the container."
+else
+    bashio::log.warning "No /dev/bus/usb -- is 'usb: true' being honoured?"
+    bashio::log.warning "Without it no SDR can be opened."
+fi
+
+bashio::log.info "Enumerating RTL-SDR devices. The serial numbers below are"
+bashio::log.info "what a device's \"args\": \"rtl=<serial>\" must match:"
+# rtl_test -t always ends with "No E4000 tuner found, aborting." -- that is an
+# E4000-only benchmark declining to run, not a failure.
+if ! rtl_test -t 2>&1 | head -n 20 | while read -r line; do
+        bashio::log.info "  ${line}"
+    done; then
+    bashio::log.warning "rtl_test failed; continuing anyway (the config may"
+    bashio::log.warning "use a non-RTL device, or a file/IQ source)."
+fi
