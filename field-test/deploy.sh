@@ -42,7 +42,7 @@ apt-get build-dep -y -qq gnuradio
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     gnuradio gnuradio-dev gr-osmosdr librtlsdr-dev libuhd-dev \
     libhackrf-dev liborc-dev cmake git build-essential pkg-config \
-    python3-pybind11 python3-numpy python3-waitress python3-requests \
+    python3-pybind11 python3-numpy python3-requests \
     libsndfile1-dev libspdlog-dev rtl-sdr alsa-utils ffmpeg
 
 echo "/usr/bin/python3" > "$APPS/op25_python"

@@ -45,7 +45,7 @@ The script must be run from the repository root. It will:
 
 1. Tap `trunkrecorder/install` and install the Homebrew dependencies —
    `gnuradio`, `gr-osmosdr`, `librtlsdr`, `hackrf`, `airspy`, `libsndfile`,
-   `spdlog`, `cmake`, `pybind11`, `cppunit`, `gnuplot`, `doxygen`,
+   `spdlog`, `cmake`, `pybind11`, `cppunit`, `doxygen`,
    `pkg-config`. (`gr-osmosdr` is not in homebrew-core, hence the tap.)
 2. Create a virtualenv at `op25/gr-op25_repeater/apps/.venv`, seeded from the
    Python inside Homebrew's gnuradio formula so the ABI matches.
@@ -54,8 +54,8 @@ The script must be run from the repository root. It will:
    `import gnuradio`, `import osmosdr` and `import gnuradio.op25_repeater` all
    resolve. This path-plumbing is the fiddly part of a Mac install and the most
    likely thing to break after a `brew upgrade`.
-4. `pip install` numpy, waitress, requests, websockets, fastapi,
-   `uvicorn[standard]` and `sounddevice`. The last one provides local speaker
+4. `pip install` numpy, requests, fastapi, `uvicorn[standard]` and
+   `sounddevice`. The last one provides local speaker
    output via PortAudio; its macOS wheel bundles libportaudio, so no Homebrew
    package is needed.
 5. Write the venv's interpreter path into
@@ -83,7 +83,7 @@ Check the Python side:
 ```bash
 cd op25/gr-op25_repeater/apps
 for m in numpy gnuradio osmosdr gnuradio.op25_repeater gnuradio.op25 \
-         waitress requests websockets fastapi uvicorn sounddevice; do
+         requests fastapi uvicorn sounddevice; do
     printf '%-24s ' "$m"
     $(cat op25_python) -c "import $m; print('OK')" 2>&1 | tail -1
 done
@@ -274,6 +274,8 @@ jitter buffer: `OP25_PORTAUDIO_PRIME_MS=240 ./op25.sh`. And check `audio_gain`
 is set — it defaults to `0.0`.
 
 **Signal plots stay empty.** Toggle a mode in the Signal Plots card; the
-decoder only generates a plot once asked. Plots need no `gnuplot` process on
-the `ws:` terminal — the browser draws them from the data stream. If a mode
-stays blank, check `stderr.2` for errors from the plot sink.
+decoder only generates a plot once asked. Plots never involve `gnuplot` — the
+browser draws them from the raw data stream, and the gnuplot subprocess was
+removed along with the legacy UI. If a mode stays blank, check `stderr.2` for
+errors from the plot sink. Plots require the `ws:` terminal; under curses the
+toggle is a no-op and says so.
