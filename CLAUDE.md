@@ -1,10 +1,10 @@
 # CLAUDE.md — op25 modernization
 
 Fork of boatbod/op25 (P25/DMR/SmartNet trunking SDR decoder). Working branch:
-`feature/updated-gui`. The goal of this branch is to replace the legacy web UI +
-WSGI server with a modern React SPA served by a FastAPI/uvicorn backend, and to
-keep the whole thing buildable on both **macOS (Apple Silicon)** and
-**Raspberry Pi 5 (Debian, GNURadio 3.10)**.
+`feature/HA-app`. The React SPA + FastAPI/uvicorn rewrite is merged to `master`;
+the goal of *this* branch is to package OP25 as a **Home Assistant OS add-on**
+(Docker image, s6, ingress) while keeping the standalone install working on
+**macOS (Apple Silicon)** and **Debian / Raspberry Pi 5 (GNURadio 3.10)**.
 
 ## Target platforms
 
@@ -19,15 +19,14 @@ install script. **Always invoke apps with that interpreter**, e.g.
 
 ```bash
 cd op25/gr-op25_repeater/apps
-$(cat op25_python) multi_rx.py -c richland-single.json -v 1
+$(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1
 ```
 
-## Two parallel UI stacks — know which one you're touching
+## The UI stack
 
-The branch currently contains **both** the old and the new stack. They are
-selected entirely by the `terminal` block of the JSON config.
+There is one web UI, selected by the `terminal` block of the JSON config. The
+legacy stack was removed on this branch — see "What was removed" below.
 
-### New stack (the target)
 ```
 op25/gr-op25_repeater/www/app/          React 18 + MUI 6 + Vite  (source)
         └─ yarn build → www/dist/       served by websocket_server.py
@@ -55,30 +54,37 @@ Config selector:
 - Docs: `README-new-gui.md` (protocol + endpoints), `www/app/AGENTS.md`
   (frontend conventions).
 
-### Legacy stack (still present, being replaced)
-```
-op25/gr-op25_repeater/www/react-app-legacy/    older React GUI (source)
-        └─ yarn build → www/www-static/ served by http_server.py
-op25/gr-op25_repeater/apps/http_server.py        waitress WSGI
-```
-Config selector:
-```json
-"terminal": { "module": "terminal.py", "terminal_type": "http:0.0.0.0:8080" }
-```
-- Two ports: HTTP on N, control WebSocket on **N+1**, HTTP POST fallback on N.
-- Documented in `README-websockets.md`, which is explicitly labelled legacy.
-- This is the stack that uses `ws://` audio destinations (websocketpp sinks in
-  `lib/op25_audio.cc`); the new stack ignores them and re-streams UDP instead.
-- `terminal.py` also provides `terminal_type: "curses"` for a TUI.
+`terminal.py` survives, but only for `terminal_type: "curses"` (a TUI) and a
+bare UDP port number (headless, attach `./terminal.py <host> <port>` later —
+that attach mode *is* the remote curses view). A config naming `http:` prints a
+migration message and runs headless rather than tracebacking.
 
-`www/react-app-legacy/AGENTS.md` is the detailed (legacy) protocol reference and is
-still the best description of the underlying `multi_rx.py` JSON message shapes
-(`json_type: channel_update / trunk_update / rx_update / terminal_config`),
-which the new stack reuses.
+### What was removed (and why a grep will mislead you)
+
+Deleted deliberately on this branch. Do not resurrect these when resolving an
+upstream merge:
+
+| Removed | Was |
+|---|---|
+| `apps/http_server.py`, `www/react-app-legacy/`, `www/www-static/`, `www/images/` | the two-port waitress GUI |
+| `apps/rx.py`, `trunking.py`, `p25_decoder.py`, `audio.py`, `p25_demodulator.py`, `cfgtrunk.py` | the pre-`multi_rx` receiver and its trunking module |
+| the `ws://` branch of `lib/op25_audio.cc` + `include/websocketpp/` + `include/asio*` | C++ websocketpp audio sinks (753 files, 7.5 MB) |
+| the gnuplot subprocess in `gr_gnuplot.py` | PNG/x11 plot rendering |
+| liquidsoap/Icecast-era scripts, `op25_stats.sh` | streaming helpers |
+
+**Two survivors look dead to a grep and are not.** Both are loaded by *name*
+from the JSON config via `importlib`, so nothing imports them statically:
+
+- `sockaudio.py` — `"audio": {"module": "sockaudio.py"}`, local speaker output.
+- `icemeta.py` — `"metadata": {"module": "icemeta.py"}`, Icecast metadata. Its
+  only static importer was `rx.py`, so it went from one importer to zero while
+  staying live.
+
+Each carries a comment at the top saying so.
 
 ## Verified working (end-to-end smoke test, 2026-07-30, macOS + RTL-SDR V4)
 
-Live against the real Palmetto 800 system with `richland-single.json`:
+Live against the real Palmetto 800 system with `Palmetto800-single.json`:
 RF lock → control-channel decode → trunk/channel/call state over the WebSocket →
 React UI fully populated → browser audio. Specifically confirmed:
 
@@ -94,8 +100,8 @@ React UI fully populated → browser audio. Specifically confirmed:
 
 ## Audio backends
 
-`sockaudio.py` is the single choke point for local speaker output — `audio.py`,
-`rx.py` and `multi_rx.py` all go through `socket_audio`. It has three backends
+`sockaudio.py` is the single choke point for local speaker output; `multi_rx.py`
+loads it as `audio.module` and goes through `socket_audio`. It has three backends
 behind one duck-typed interface (`open/close/setup/write/drain/drop/dump/check`):
 
 | Backend | Library | Platforms |
@@ -136,7 +142,8 @@ it (`destination` is comma-separated — `op25_audio.cc:143` tokenizes on `,`):
 ```
 
 `terminal.audio_ports` is an explicit override that wins outright.
-`apps/richland-mac.json` is a working example of this dual-audio setup.
+`apps/Palmetto800-single.json` is a working example of this dual-audio setup,
+and the tracked `p25_rtl_example.json` / `smartnet_example.json` now use it too.
 
 ## Call capture, speech-to-text, Home Assistant
 
@@ -246,7 +253,7 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   fields — one oddly-named talkgroup would otherwise break every consumer's
   parsing — and the leading timestamp makes a plain directory listing sort
   chronologically.
-- Tests: `tests/call_capture_spec.py` (116 tests), including HTTP round-trips
+- Tests: `tests/call_capture_spec.py` (170 tests), including HTTP round-trips
   against a stub HA. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s
   per run on this machine.
@@ -293,18 +300,26 @@ The React app is expected to work on a phone as well as a desktop.
 
 ## Signal plots
 
-The new UI renders plots client-side from raw data rather than displaying
-gnuplot images. `wrap_gp.send_plot()` emits `json_type: "plot"` with
+The UI renders plots client-side from raw data. **gnuplot is not involved at
+all** — the subprocess, the PNG writer and the x11 path were deleted with the
+legacy stack, so `gr_gnuplot.py` is now a misnomer (kept, because renaming it
+would churn six imports in `multi_rx.py` for no gain).
+`wrap_gp.send_plot()` emits `json_type: "plot"` with
 `{chan, mode, data: [[x,y],...], xrange, yrange, title}`, matching
 `PlotPayload` in `www/app/src/types/op25.ts`. All six modes work: `fft`,
 `constellation`, `symbol`, `eye`, `mixer`, `fll`.
 
 Things to know:
 
-- `wrap_gp` skips `attach_gp()` when `out_q` is set, and `multi_rx.py` **always**
-  passes `out_q`. So gnuplot is only started if `set_output_dir()` is also
-  called, which the `http` terminal does for its PNGs. `rx.py` passes no
-  `out_q`, so its curses/x11 plots are unaffected.
+- **Plots require the `ws` terminal.** `toggle_plot()` is a no-op elsewhere and
+  says so on stderr. Nothing renders the traces under curses, so building them
+  would be pure CPU burn.
+- `send_plot()` puts a bare **dict** on `ui_in_q`, while `multi_rx` puts a
+  **list** — same message type `-4`. `curses_terminal.process_q_events()`
+  normalises both. It did not use to, and iterating the dict yielded key
+  strings, which `process_json()` then subscripted: a `TypeError` that the bare
+  `except` in `run()` converted into a `quit`. Pressing 1–6 under curses killed
+  the receiver. Keep that normalisation.
 - Payloads are decimated to `PLOT_MAX_POINTS` (1200) by striding, not
   truncating, so a long trace still spans its full range.
 - Eye traces are overlaid by setting x to the position within the trace, which
@@ -338,9 +353,16 @@ Things to know:
 5. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
    path in particular is unchanged in its ALSA/PulseAudio ordering but has only
    been exercised through the fallback chain on macOS.
-6. `add_default_config` (curses `t` key) is rx.py-only; under multi_rx it
-   answers with an explicit "not supported" error, since systems come from the
-   JSON config.
+6. `add_default_config` (curses `t` key) answers with an explicit "not
+   supported" error — systems come from the JSON config. It was only ever
+   implemented in `rx.py`, which is gone.
+7. **The live audio path has not been re-verified since the `ws://` C++
+   transport was removed.** The build is clean from a fresh configure and
+   `enabled()` provably keeps its meaning for any config with a `udp://`
+   destination, but real PCM through `/api/stream` is the check that matters,
+   because a wrong edit there compiles and decodes and is simply silent. The
+   dongle now lives on the Home Assistant NUC, so this closes out as part of
+   add-on testing.
 
 ## Testing the running stack without a browser
 
@@ -373,11 +395,11 @@ cd op25/gr-op25_repeater/www/app && yarn install && yarn build   # → ../dist
 
 # Run
 cd op25/gr-op25_repeater/apps
-$(cat op25_python) multi_rx.py -c richland-single.json -v 1 2> stderr.2
+$(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 213 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 277 tests,
 in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
 `httpx`.
 
@@ -385,7 +407,8 @@ in-process via FastAPI's `TestClient` — no network or dongle needed. Requires
   traversal, method handling, CORS (21).
 - `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
   speech heuristics, hallucination filtering, clip store, keyword matching, HA
-  config, HA HTTP round-trips, REST endpoints, per-port capture (116).
+  config, HA HTTP round-trips, media upload, REST endpoints, per-port
+  capture (170).
 - `tests/protocol_spec.py` — json_type routing, live SYSTEM_STATE, call-log
   ring, capture listing/download, upstream type validation (26).
 - `tests/trunk_json_spec.py` — trunk_update payload shapes for P25 / SmartNet /
@@ -406,10 +429,12 @@ instead (see `tests/audio_streams_spec.py`).
 configs are untracked and live only on the dev machine. Do not assume a clean
 checkout has them.
 
-- `richland-single.json` — one RTL-SDR, Palmetto 800 (SC) P25 trunked system,
-  **new** `ws:` terminal. This is the primary smoke test.
-- `richland.json` — three-dongle version, legacy `http:` terminal.
-- `palmetto_tgs.tsv` — talkgroup tags.
+- `Palmetto800-single.json` — one RTL-SDR, Palmetto 800 (SC) P25 trunked
+  system. This is the primary smoke test. (Tracked, unusually — `apps/.gitignore`
+  re-includes `Palmetto800*`.)
+- `Palmetto800-multi.json` — three-dongle version.
+- `palmetto_tgs.tsv` — talkgroup tags. **Not tracked**, so a clean checkout
+  cannot load it.
 - Tracked examples: `cfg.json`, `p25_single_rtl_example.json`, etc.
 
 ## Hardware notes
@@ -429,7 +454,13 @@ checkout has them.
 
 - Python is 3.10+ only; `websocket_server.py` uses `from __future__ import
   annotations` and PEP 604 unions.
-- Do not add subdirectories to the legacy `www-static/` output — `http_server.py`
-  strips `/` from request paths. (The new `dist/` server has no such limit.)
-- Upstream PRs go to boatbod's `dev` branch; keep fork-specific changes
-  reviewable and separate from upstream syncs.
+- **Upstream merges: the fork has permanently diverged.** The files listed
+  under "What was removed" are deleted on purpose. When `git merge upstream/dev`
+  conflicts in any of them, resolve as *deleted* — do not resurrect. The
+  merge-base is `b2e04c3f`.
+  The still-mergeable surface is: `lib/` (except `op25_audio.*`),
+  `apps/multi_rx.py`, `apps/tk_*.py`, `apps/p25_demodulator_dev.py`,
+  `apps/sockaudio.py`, `apps/icemeta.py`, `apps/helper_funcs.py`,
+  `apps/squelch*`, and `include/gnuradio/`. Anything touching the UI, the
+  terminal or the audio transport is fork-only now, so upstream PRs should be
+  limited to that surface.

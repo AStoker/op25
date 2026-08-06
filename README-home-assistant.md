@@ -10,7 +10,7 @@ It applies to the **new** WebSocket/FastAPI stack only — the one selected by
 "terminal": { "module": "websocket_server.py", "terminal_type": "ws:0.0.0.0:8080" }
 ```
 
-The legacy `http_server.py` terminal has none of this.
+It requires the `ws:` terminal; the removed `http_server.py` terminal never had any of it.
 
 ---
 
@@ -429,8 +429,9 @@ script:
 How well this works depends on the receiver. The stream declares an unknown
 length (the RIFF size field is `0xFFFFFFFF`), which browsers and ffmpeg handle
 correctly but some cast targets do not. If a speaker refuses it, transcode
-through something that re-containerises — Icecast via `example_liquidsoap.liq`
-is the well-trodden path for that, see `README-rpi3-liquidsoap.md`.
+through something that re-containerises — an Icecast relay fed by ffmpeg or
+liquidsoap is the well-trodden path. (OP25's own liquidsoap example scripts
+were removed along with the `rx.py` era.)
 
 **Continuous STT with Stream Assist** (custom integration, via HACS —
 `AlexxIT/StreamAssist`): add it, set the **Stream** source to

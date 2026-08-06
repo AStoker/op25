@@ -1,21 +1,10 @@
 # This is the boatbod fork of op25.  
 
-## `rx.py` capabilities
-
-- P25 Conventional (single frequency)
-- P25 Trunking Phase 1, Phase 2 and TDMA Control Channel
-- P25 Phase 2 tone synthesis
-- Single SDR (dongle) tuning regardless of bandwidth
-- TGID Blacklist, Whitelist with dynamic reloading
-- TGID Priority with mid-call preemption
-- Multi-system scanning (switches between multiple systems sequentially)
-- TGID text tagging and metadata upload to Icecast server for streaming
-- Dynamically controllable real-time plots: FFT, Constellation, Symbol, Datascope, Mixer, Tuning
-- Dynamically controllable log level
-- Curses or HTTP based terminal
-- Demodulator symbol capture and replay
-- Voice Encryption detection and skipping (configurable behavior)
-- Automatic fine tune tracking using Frequency Locked Loop (FLL).
+> **This fork has removed `rx.py`.** `multi_rx.py` is the only receiver app;
+> it is a superset of what `rx.py` did, driven by a JSON config rather than
+> command-line options. The legacy two-port web GUI (`http_server.py` +
+> `www-static`) is gone too. See [CLAUDE.md](CLAUDE.md) for the merge policy
+> this implies.
 
 ## `multi_rx.py` capabilities
 
@@ -73,8 +62,9 @@ Beyond the upstream capabilities above:
 - **macOS (Apple Silicon) support** — a cross-platform PortAudio/CoreAudio
   backend in `sockaudio.py` alongside the existing ALSA and PulseAudio ones,
   and an `install-mac.sh`.
-- The legacy two-port GUI (`terminal.py` + `http_server.py`) and the curses
-  terminal are unchanged and still selectable.
+- The legacy two-port GUI (`terminal.py` + `http_server.py`) has been
+  **removed**, along with `rx.py` and the `ws://` C++ audio transport. The
+  curses terminal is kept and still selectable.
 
 ## Installation
 
@@ -86,8 +76,7 @@ Beyond the upstream capabilities above:
 | Topic | Document |
 |---|---|
 | New GUI: FastAPI server, WebSocket protocol, REST endpoints, audio | [README-new-gui.md](README-new-gui.md) |
-| Legacy GUI: two-port control channel, HTTP POST fallback, `ws://` audio | [README-websockets.md](README-websockets.md) |
-| Browser audio, both stacks | [README-browser-audio.md](README-browser-audio.md) |
+| Browser audio: UDP re-stream, endpoints, port sharing | [README-browser-audio.md](README-browser-audio.md) |
 | Call capture, speech-to-text, Home Assistant | [README-home-assistant.md](README-home-assistant.md) |
 | Config keys, terminal types, command line | [op25/gr-op25_repeater/apps/README.md](op25/gr-op25_repeater/apps/README.md) |
 | NBFM analog and squelch modes | [op25/gr-op25_repeater/apps/README-analog.md](op25/gr-op25_repeater/apps/README-analog.md) |

@@ -12,13 +12,10 @@ Selected by the `terminal` block of the multi_rx JSON config:
 }
 ```
 
-The older two-port stack (`terminal.py` + `http_server.py`, waitress) is still
-present and is documented separately in
-[README-websockets.md](README-websockets.md). They are mutually exclusive and
-share no protocol.
-
-`multi_rx.py` is the only app that can serve this UI — `rx.py` hardcodes
-`from terminal import op25_terminal`.
+The older two-port stack (`terminal.py` + `http_server.py`, waitress) has been
+removed. `terminal.py` survives, but only for its `curses` and bare-UDP-port
+terminals; a config naming `http:` prints a migration message and runs
+headless.
 
 ---
 
@@ -130,8 +127,9 @@ them over HTTP, and (optionally) slices them into per-call clips.
   stream, which is how to reach a DMR slot B. `GET /api/audio/channels` lists
   what is available, with byte counters so a client can hide slots that never
   carry anything.
-- `ws://` destinations are **not** used by this stack. They are the legacy
-  stack's C++ websocketpp sinks; see
+- `ws://` destinations are **not** used. They were the legacy stack's C++
+  websocketpp sinks and that transport has been removed; the decoder now warns
+  about one and carries on. See
   [README-browser-audio.md](README-browser-audio.md).
 
 Slot A and slot B stay separate streams on purpose: on DMR they are two

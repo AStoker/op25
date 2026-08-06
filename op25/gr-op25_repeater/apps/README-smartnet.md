@@ -18,7 +18,7 @@ The `trunking` object must have the appropriate module (`tk_smartnet.py`) set in
 
 ## Blacklist/whitelist
 
-Control over which TGIDs are candidates for monitoring is via the `blacklist` and `whitelist` parameters associated with each of the voice channel(s).  These parameters take the name of a file which contains TGIDs in the same format as used by the rx.py blacklist/whitelist: either a single numeric TGID per line, or a pair of TGIDs separated by a <tab> character, denoting the start and end of a range.  Each voice channel would normally have its own non-overlapping blacklist/whitelist definitions to avoid the same audio being played simultaneously.
+Control over which TGIDs are candidates for monitoring is via the `blacklist` and `whitelist` parameters associated with each of the voice channel(s).  These parameters take the name of a file which contains TGIDs in the usual OP25 blacklist/whitelist format: either a single numeric TGID per line, or a pair of TGIDs separated by a <tab> character, denoting the start and end of a range.  Each voice channel would normally have its own non-overlapping blacklist/whitelist definitions to avoid the same audio being played simultaneously.
 
 ## Audio Player
 
@@ -138,7 +138,7 @@ This is not required for simply listening to a system; the functionality is adde
 
 ## Startup
 
-Much like op25's `rx.py`, `multi_rx.py` is best started using a shell script.
+`multi_rx.py` is best started using a shell script.
 ```
 ./multi_rx.py -v 9 -c smartnet_example.json 2> stderr.2
 ```

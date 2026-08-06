@@ -15,7 +15,7 @@ If you need multiple frequencies because your control channel moves around, plac
 ./setTrunkFreq.sh 773.84375,774.19375
 ```
 
-2. Use the startup script `op25.sh` to run the application (`rx.py`). This can be customized, but the defaults should be appropriate for most stand-alone systems.  If you need streaming or multiple instances you'll need to dig more deeply into the command line options for port numbers.
+2. Use the startup script `op25.sh` to run the application (`multi_rx.py`). This can be customized, but the defaults should be appropriate for most stand-alone systems.  If you need streaming or multiple instances, edit the JSON config.
 ```
 ./op25.sh
 ```
