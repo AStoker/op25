@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.0.14
+
+**Pinned talkgroups and holds now live with the scanner, so they survive a
+restart — and follow you between devices.**
+
+- **Pinned talkgroups are saved on the receiver.** They were kept in the
+  browser, which loses them in two ways that look like a bug: browser storage is
+  per *web address*, so opening OP25 from the Home Assistant sidebar and opening
+  it directly on port 8099 kept two completely separate sets of pins — and a
+  phone never agreed with a desktop. Now there is one set, and it is the
+  scanner's.
+- **Holds survive a restart.** A hold lived only in the decoder's memory, so
+  restarting dropped it — which is most annoying precisely when the restart was
+  to apply a setting you just changed. Holds are now remembered and re-applied
+  once the decoder comes back up.
+
+  If you released the hold yourself, or set a different one in the meantime,
+  nothing is put back over the top of it.
+- Theme, accent colour and which cards are collapsed stay per browser on
+  purpose. Those are genuinely per device — a phone wants dark mode when a desk
+  monitor may not.
+
+Your existing pins are read from the browser once and adopted; nothing to redo.
+
 ## 0.0.13
 
 **Why the live audio is choppy when the recording of the same call is clear** —

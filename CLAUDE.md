@@ -594,6 +594,46 @@ the user's box.
   `GrPybind.cmake` `configure_file()`s for every pybind target. `.dockerignore`
   excludes `docs/` but re-includes that one header.
 
+## Scanner state that outlives a restart
+
+`apps/ui_state.py` is the third small persisted store, beside `tg_metadata`
+(talkgroup history) and `config_store` (the config overlay). It holds pins,
+holds, the selected channel — state that belongs to the *receiver*.
+
+- **Pins used to be `localStorage`, and that lost them two ways.** It is per
+  *origin*, so the same scanner reached through ingress and through port 8099
+  kept two separate sets; and it is per browser, so a phone never agreed with a
+  desktop. The original rationale (two people shouldn't fight over one setting)
+  was real but cost more than it bought.
+- **Display preferences stay in `localStorage` deliberately** — theme, accent,
+  card collapse are per *device*. A phone wants dark and a desk monitor may not.
+- **Not folded into the config overlay.** That is decoder configuration, so a pin
+  toggle there would appear in the editor's diff and version history — pinning a
+  talkgroup would read as reconfiguring the receiver.
+- **`KNOWN_KEYS` is an allow-list, not a free-for-all**, because the endpoint is
+  unauthenticated and must not become a place to park arbitrary data on someone's
+  SD card. Values are coerced on the way in: `bool` is excluded from the tgid
+  list (it is an `int` subclass and would become tgid 1), and a `0` hold is
+  dropped rather than stored — 0 is the decoder's own "release", so storing it
+  would re-apply a hold the user let go.
+- **Holds are keyed by channel *name*, not msgq id.** Ids are positional, so
+  adding a device ahead of a channel would silently move a stored hold onto a
+  different channel.
+- **`/api/ui-state` is not behind the ingress write gate.** Holding a talkgroup
+  and applying a scan list have always been accepted unauthenticated over the
+  WebSocket, so gating the *record* of a hold while leaving the hold itself open
+  buys nothing. Re-pointing the receiver is a different kind of act, and only
+  that is gated.
+- **`_restore_holds` fires on the first `channel_update`, not at startup** — the
+  decoder cannot be told before it has channels — and only once per decoder
+  (`_holds_applied`), because `channel_update` arrives every second and
+  re-sending would fight a user who just released the hold. A channel that
+  already holds the wanted tgid is left alone.
+- `useUiState` is a **module-level singleton**: two components calling it would
+  otherwise each fetch, each hold a copy, and drift apart on the first write.
+  `localStorage` is still written, but only as a first-paint cache and a fallback
+  for a server too old to have the endpoint; the server wins whenever it answers.
+
 ## Editable configuration
 
 `apps/config_store.py` + `apps/config_schema.py` are the fork's config-editing
@@ -783,7 +823,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 573 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 600 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -817,6 +857,9 @@ its `from gnuradio import gr`.
 - `tests/multi_rx_api_spec.py` — parses `multi_rx.py` (it cannot be imported
   without GNU Radio) to reject shadowed methods and pin the two device-lookup
   names apart (8).
+- `tests/ui_state_spec.py` — the persisted scanner state: value coercion and the
+  key allow-list, merge-not-replace, degradation to memory-only, the REST
+  round-trip, and hold record/restore incl. once-per-decoder (27).
 - `tests/config_store_spec.py` — merge/prune/diff primitives, overlay deltas,
   preset drift, rollback replaying intent onto a moved preset, redaction
   round-trip, path resolution, schema live-vs-restart classification, and the

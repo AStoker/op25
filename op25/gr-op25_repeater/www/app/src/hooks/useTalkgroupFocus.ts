@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useUiState } from './useUiState';
 
 /**
  * The set of talkgroups the user has picked out to watch.
@@ -9,34 +10,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
  * deliberate — narrowing what you are *looking at* should not silently narrow
  * what gets recorded and transcribed.
  *
- * Kept in localStorage rather than on the server for the same reason the theme
- * and display preferences are: it is per browser, not per decoder, and two people
- * watching one receiver should not fight over it.
+ * Stored on the receiver via useUiState, not in localStorage.
+ *
+ * It used to be per browser, on the reasoning that two people watching one
+ * receiver should not fight over it. In practice the cost of that outweighed the
+ * benefit: localStorage is per *origin*, so the same scanner reached through Home
+ * Assistant ingress and through port 8099 kept two separate sets of pins, and a
+ * phone never agreed with a desktop. Pins read as scanner state, and they now
+ * are. Display preferences (theme, accent, card collapse) stay per browser,
+ * because those genuinely are per device.
  */
-
-const STORAGE_KEY = 'op25.focusedTalkgroups';
-
-function load(): Set<number> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((t): t is number => Number.isInteger(t) && t > 0));
-  } catch {
-    // Private-mode Safari throws on localStorage, and a hand-edited value can be
-    // anything at all. Neither is worth breaking the table over.
-    return new Set();
-  }
-}
-
-function save(tgids: Set<number>): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...tgids].sort((a, b) => a - b)));
-  } catch {
-    /* nothing we can do, and nothing that needs doing */
-  }
-}
 
 export interface TalkgroupFocus {
   focused: ReadonlySet<number>;
@@ -54,50 +37,47 @@ export interface TalkgroupFocus {
 }
 
 export function useTalkgroupFocus(): TalkgroupFocus {
-  const [focused, setFocused] = useState<Set<number>>(load);
-  const [focusOnly, setFocusOnlyState] = useState(false);
+  const { state, patch } = useUiState();
 
-  useEffect(() => { save(focused); }, [focused]);
+  const focused = useMemo(
+    () => new Set(state.focused_talkgroups ?? []),
+    [state.focused_talkgroups],
+  );
+  const focusOnly = Boolean(state.focus_only) && focused.size > 0;
+
+  const store = useCallback((next: Set<number>) => {
+    patch({ focused_talkgroups: [...next].sort((a, b) => a - b) });
+  }, [patch]);
 
   const toggle = useCallback((tgid: number) => {
-    setFocused((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(tgid)) next.add(tgid);
-      return next;
-    });
-  }, []);
+    const next = new Set(focused);
+    if (!next.delete(tgid)) next.add(tgid);
+    store(next);
+  }, [focused, store]);
 
   const add = useCallback((tgids: Iterable<number>) => {
-    setFocused((prev) => {
-      const next = new Set(prev);
-      for (const t of tgids) next.add(t);
-      return next;
-    });
-  }, []);
+    const next = new Set(focused);
+    for (const t of tgids) next.add(t);
+    store(next);
+  }, [focused, store]);
 
   const remove = useCallback((tgids: Iterable<number>) => {
-    setFocused((prev) => {
-      const next = new Set(prev);
-      for (const t of tgids) next.delete(t);
-      return next;
-    });
-  }, []);
+    const next = new Set(focused);
+    for (const t of tgids) next.delete(t);
+    store(next);
+  }, [focused, store]);
 
   const replace = useCallback((tgids: Iterable<number>) => {
-    setFocused(new Set(tgids));
-  }, []);
+    store(new Set(tgids));
+  }, [store]);
 
-  const clear = useCallback(() => setFocused(new Set()), []);
+  const clear = useCallback(() => store(new Set()), [store]);
 
   // Showing "focused only" with nothing focused would empty the table, which
   // reads as a bug rather than as a filter.
   const setFocusOnly = useCallback((only: boolean) => {
-    setFocusOnlyState(only && focused.size > 0);
-  }, [focused.size]);
-
-  useEffect(() => {
-    if (focused.size === 0) setFocusOnlyState(false);
-  }, [focused.size]);
+    patch({ focus_only: only && focused.size > 0 });
+  }, [patch, focused.size]);
 
   return useMemo(
     () => ({ focused, focusOnly, setFocusOnly, toggle, add, remove, replace, clear }),

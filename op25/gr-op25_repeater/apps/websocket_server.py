@@ -61,6 +61,7 @@ import uvicorn
 
 import config_schema
 import config_store
+import ui_state as ui_state_mod
 from ha_bridge import (
     CallClip,
     CallRecorder,
@@ -99,6 +100,10 @@ _config: dict[str, Any] | None = None
 # "editing unavailable", which is what a standalone run with no overlay path or a
 # deliberately read-only deployment looks like.
 _config_store: config_store.ConfigStore | None = None
+
+# Scanner state that belongs to the receiver rather than to a browser: pins,
+# holds, the selected channel. See ui_state.py for why it is a separate store.
+_ui_state: ui_state_mod.UiState | None = None
 
 # The decoder's command queue, published here so the REST handlers can send it a
 # command. ws_terminal owns it; the WebSocket path reaches it through a closure,
@@ -647,6 +652,61 @@ def _note_channel_state(entry: dict[str, Any]) -> None:
         path = chan.get('capture_file')
         if path and path not in _capture_files:
             _capture_files.append(path)
+
+    _restore_holds(snapshot)
+
+
+def _remember_hold(msgq_id: int, tgid: int) -> None:
+    """Persist a hold against the channel's *name*.
+
+    Names rather than ids: a msgq id is the channel's position in the config, so
+    adding a device ahead of it would silently move a stored hold onto a
+    different talkgroup's channel.
+    """
+    if _ui_state is None:
+        return
+    with _last_channels_lock:
+        chan = _last_channels.get(str(msgq_id)) or {}
+    name = str(chan.get('name') or msgq_id)
+    _ui_state.set_hold(name, tgid)
+
+
+#: Channel names whose stored hold has already been re-applied to this decoder.
+#: Cleared when the decoder goes away, so the next one gets them again.
+_holds_applied: set[str] = set()
+
+
+def _restore_holds(snapshot: dict[str, Any]) -> None:
+    """Re-apply stored holds once the decoder reports its channels.
+
+    A hold lives in the decoder's memory, so a restart drops it -- and the
+    restart is often *because* the user changed a setting, which is exactly when
+    losing their hold is most annoying. The decoder cannot be told before it has
+    channels, so this waits for the first channel_update rather than firing at
+    startup.
+
+    Only applied when the channel currently holds nothing: if the decoder already
+    has a hold, the user set it since, and the stored value is stale.
+    """
+    if _ui_state is None:
+        return
+    holds = _ui_state.get('holds') or {}
+    if not holds:
+        return
+    for cid, chan in snapshot.items():
+        name = str(chan.get('name') or cid)
+        if name in _holds_applied:
+            continue
+        wanted = holds.get(name)
+        if not wanted:
+            continue
+        current = chan.get('hold_tgid') or 0
+        _holds_applied.add(name)
+        if int(current) == int(wanted):
+            continue        # already where we want it
+        if _send_upstream({'command': 'hold', 'arg1': float(wanted),
+                           'arg2': float(cid)}):
+            sys.stderr.write('ui state: restored hold %s on %s\n' % (wanted, name))
 
 
 def _note_trunk_update(entry: dict[str, Any]) -> None:
@@ -1303,6 +1363,11 @@ def register_upstream_handler(msg_type: str, handler: Any) -> None:
 # Editable configuration
 # ---------------------------------------------------------------------------
 
+def _init_ui_state() -> None:
+    global _ui_state
+    _ui_state = ui_state_mod.UiState(ui_state_mod.state_path(_config))
+
+
 def _init_config_store() -> None:
     """(Re)build the config store from the installed config."""
     global _config_store
@@ -1382,6 +1447,44 @@ def _no_store() -> Response:
     return _json({'error': 'config editing is unavailable',
                   'detail': 'No config is loaded, or no overlay path is configured.'},
                  status_code=503)
+
+
+@app.get("/api/ui-state")
+async def get_ui_state() -> Response:
+    """Pins, holds and the like, as the receiver has them.
+
+    Deliberately not behind the ingress write gate that config edits are. Holding
+    a talkgroup and applying a scan list have always been accepted unauthenticated
+    over the WebSocket, so gating the *record* of a hold while leaving the hold
+    itself open would buy nothing and would make the editor unusable under
+    `yarn dev`. Re-pointing the receiver is a different kind of act from pinning a
+    talkgroup, and only the former is gated.
+    """
+    if _ui_state is None:
+        return _json({'persistent': False, 'state': {},
+                      'detail': 'No config loaded, so nothing is persisted.'})
+    return _json({**_ui_state.stats(), 'state': _ui_state.all()})
+
+
+@app.put("/api/ui-state")
+async def put_ui_state(request: Request) -> Response:
+    """Merge a patch into the stored state. Unknown keys are reported, not fatal.
+
+    A merge rather than a replace, so a phone that only knows about pins cannot
+    wipe the hold a desktop set.
+    """
+    if _ui_state is None:
+        return _json({'error': 'ui state is unavailable',
+                      'detail': 'No config is loaded.'}, status_code=503)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _json({'error': 'body is not valid JSON'}, status_code=400)
+    if not isinstance(body, dict):
+        return _json({'error': 'body must be a JSON object'}, status_code=400)
+    rejected = _ui_state.merge(body.get('state', body))
+    return _json({'ok': True, 'rejected': rejected,
+                  **_ui_state.stats(), 'state': _ui_state.all()})
 
 
 @app.get("/api/config/schema")
@@ -2322,6 +2425,11 @@ class ws_terminal(threading.Thread):
                     return
                 arg1 = float(payload.get('arg1', 0.0))
                 arg2 = float(payload.get('arg2', 0.0))
+                if command == 'hold':
+                    # Remember it so a decoder restart can put it back. arg2 is
+                    # the msgq id; the channel *name* is what survives a restart,
+                    # since ids are positional and a config edit can renumber them.
+                    _remember_hold(int(arg2), int(arg1))
                 extra = set(payload) - {'command', 'arg1', 'arg2'}
                 body = json.dumps(payload) if extra else command
                 m = _gr.message().make_from_string(body, -2, arg1, arg2)
@@ -2366,6 +2474,7 @@ def op25_terminal(
     if config is not None:
         _config = config
         _init_config_store()
+        _init_ui_state()
     if terminal_type.startswith('ws:'):
         endpoint = terminal_type[3:]
     else:
@@ -2388,6 +2497,7 @@ class websocket_server:
         if config_file is not None:
             _config = load_config(config_file)
             _init_config_store()
+            _init_ui_state()
             sys.stderr.write('Loaded config from %s\n' % config_file)
 
     def run(self) -> None:
