@@ -278,6 +278,15 @@ export interface CallClip {
   gain_db?: number;
   /** Speech-likeness heuristic, 0–1. Only present when the gate is enabled. */
   voiced_ratio?: number;
+  /** How much of the transmission actually decoded, 0–1.
+   *
+   *  A clip is a concatenation of the PCM that arrived — nothing fills gaps — so
+   *  a call that lost half its frames yields a clip half as long that still
+   *  sounds continuous. The live stream is paced at real time, so it renders
+   *  that same loss as silence, and it is heard as chop. This is why a recording
+   *  can sound clean while the live audio does not: 0.6 here means 40% of the
+   *  transmission never decoded, which is an RF problem, not a streaming one. */
+  continuity?: number;
 
   system?: string;
   channel?: string;

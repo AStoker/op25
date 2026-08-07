@@ -1453,3 +1453,83 @@ class TestServerWiring:
             assert websocket_server._ha_bridge.cfg.public_url == ''
         finally:
             websocket_server.stop_call_capture()
+
+
+class TestContinuity:
+    """Per-call decode completeness.
+
+    A clip is a *concatenation* of the PCM that arrived -- push() extends a
+    buffer and nothing fills gaps -- so a call that lost half its LDUs yields a
+    clip half as long that still sounds continuous. The live stream, paced at
+    real time, renders the same loss as silence. That asymmetry is why "the
+    recording is fine but the live audio is choppy" means lost frames, not a
+    streaming fault, and continuity is the number that says so.
+    """
+
+    def _recorder(self, store: Any) -> Any:
+        return ha_bridge.CallRecorder(store, hang_time_secs=0.05, min_call_secs=0.05,
+                               min_peak=0, normalize=False)
+
+    def _loud(self, ms: int) -> bytes:
+        n = 8_000 * ms // 1_000
+        return struct.pack('<%dh' % n, *([8_000] * n))
+
+    def test_a_complete_call_is_continuity_one(self, monkeypatch: Any) -> None:
+        store = ha_bridge.ClipStore()
+        rec = self._recorder(store)
+        t = [1_000.0]
+        monkeypatch.setattr(ha_bridge.time, 'time', lambda: t[0])
+        # 500 ms of audio pushed over 500 ms of wall clock: nothing lost.
+        for _ in range(5):
+            rec.push(self._loud(100))
+            t[0] += 0.1
+        t[0] += 1.0
+        rec.poll()
+        clip = store.recent()[0]
+        assert clip.metadata['continuity'] >= 0.95
+
+    def test_lost_frames_show_as_reduced_continuity(self, monkeypatch: Any) -> None:
+        store = ha_bridge.ClipStore()
+        rec = self._recorder(store)
+        t = [1_000.0]
+        monkeypatch.setattr(ha_bridge.time, 'time', lambda: t[0])
+        # 500 ms of audio spread over 1000 ms of wall clock: half the LDUs
+        # never decoded, which live playback renders as 500 ms of chop.
+        for _ in range(5):
+            rec.push(self._loud(100))
+            t[0] += 0.2
+        t[0] += 1.0
+        rec.poll()
+        clip = store.recent()[0]
+        assert 0.4 <= clip.metadata['continuity'] <= 0.65, clip.metadata
+
+    def test_continuity_never_exceeds_one(self, monkeypatch: Any) -> None:
+        # A producer ahead of real time (UDP coalescing, a burst of LDUs) must
+        # not report better-than-perfect reception.
+        store = ha_bridge.ClipStore()
+        rec = self._recorder(store)
+        t = [1_000.0]
+        monkeypatch.setattr(ha_bridge.time, 'time', lambda: t[0])
+        for _ in range(5):
+            rec.push(self._loud(100))
+            t[0] += 0.01
+        t[0] += 1.0
+        rec.poll()
+        assert store.recent()[0].metadata['continuity'] == 1.0
+
+    def test_clip_duration_is_the_audio_not_the_wall_clock(
+            self, monkeypatch: Any) -> None:
+        # The property continuity is derived from, pinned so it cannot drift:
+        # the clip holds only what arrived.
+        store = ha_bridge.ClipStore()
+        rec = self._recorder(store)
+        t = [1_000.0]
+        monkeypatch.setattr(ha_bridge.time, 'time', lambda: t[0])
+        for _ in range(4):
+            rec.push(self._loud(100))
+            t[0] += 0.25
+        t[0] += 1.0
+        rec.poll()
+        clip = store.recent()[0]
+        assert 0.35 <= clip.duration <= 0.45      # 400 ms of audio...
+        assert clip.metadata['continuity'] < 0.6   # ...over ~1 s of wall clock

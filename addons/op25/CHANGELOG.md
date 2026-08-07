@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.0.13
+
+**Why the live audio is choppy when the recording of the same call is clear** —
+and a number that tells you how bad it is.
+
+- **Call recordings now show how much of the transmission actually decoded.** A
+  clip below 90% gets a "% decoded" badge in Call Audio & Transcripts.
+
+  This answers a genuinely confusing thing. A recording is built by joining
+  together the audio that arrived, and nothing fills the gaps — so a call that
+  lost half its frames produces a recording half as long that still sounds
+  smooth and clear. Live audio cannot do that: it plays in real time, so those
+  same missing frames are heard as silence, and that is exactly what "choppy"
+  is.
+
+  So a clear recording alongside choppy live audio does **not** mean the
+  streaming is broken. It means frames are being lost off the air, and the
+  recording is hiding it by omission. The new badge makes the loss visible: 60%
+  decoded means 40% of that transmission never arrived.
+
+- Nothing about the live audio path changed, because measurement showed it is
+  not losing anything. Driven against a decoder-shaped source — nine packets per
+  voice frame group, 180 ms apart, with groups deliberately dropped — the player
+  played back every byte it was given, in every case. The silence you hear is
+  the gap, faithfully rendered.
+
+- If you see low percentages, that is the antenna and gain work, not a setting.
+  Watch the badge while you sweep gain: it is a more direct measure of decode
+  quality than the symbol-quality figure, because it counts frames that actually
+  survived rather than how open the signal's eye looked.
+
 ## 0.0.12
 
 Config editor polish.

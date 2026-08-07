@@ -76,6 +76,20 @@ Config selector:
     tone, and got it discarded as "stale". A producer ahead of real time is
     normal — UDP coalescing does it too — and that audio is the start of a
     transmission. Trimming it clips the first word.
+- **A clip and the live stream are NOT comparable, and the difference is not a
+  bug.** `CallRecorder.push` *concatenates* — nothing fills gaps — so a call that
+  lost half its LDUs yields a clip half as long that sounds continuous. The live
+  stream is paced at real time, so the same loss is rendered as silence and heard
+  as chop. "The recording is clean but the live audio is choppy" therefore means
+  **lost frames**, not a streaming fault, and an earlier note here recommending
+  that comparison as a way to isolate jitter from RF was wrong.
+  - Measured against the real `AudioStreamManager` with a P25-shaped producer
+    (9 packets per LDU burst, 180 ms apart, with LDUs dropped): `LOST BY
+    PLAYER = 0` in every case. The stream plays every byte the decoder produced.
+  - `clip.metadata['continuity']` is the number that makes this visible: audio
+    duration ÷ wall-clock span, clamped to 1.0. 0.6 means 40 % of the
+    transmission never decoded. Unlike `symbol_quality` it is a post-FEC figure —
+    it counts frames that actually arrived.
 - **`underruns` means "lost audio that was in flight"; idle silence is
   `silent_chunks`.** They used to be the same counter, which made it useless as
   a diagnostic because idle time dominated it. The 5 s `ws audio:` log line
@@ -299,7 +313,7 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   parsing — and the leading timestamp makes a plain directory listing sort
   chronologically.
 - Tests: `tests/call_capture_spec.py` (170 tests), including HTTP round-trips
-  against a stub HA. The stub uses `_FastHTTPServer` because
+  against a stub HA, plus per-call decode continuity. The stub uses `_FastHTTPServer` because
   `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocked for 35 s
   per run on this machine.
 
@@ -769,7 +783,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 569 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 573 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 

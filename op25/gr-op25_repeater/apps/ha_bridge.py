@@ -556,6 +556,7 @@ class CallRecorder:
         pcm  = bytes(self._buf)
         meta = dict(self._meta)
         started = self._started
+        last_push = self._last_push
         self._buf = bytearray()
         self._meta = {}
         self._started = 0.0
@@ -584,6 +585,29 @@ class CallRecorder:
             pcm, gain_db = normalize_pcm16(
                 pcm, self.sample_rate,
                 target_rms=self.target_rms, max_gain_db=self.max_gain_db)
+
+        # How much of the transmission actually decoded.
+        #
+        # A clip is a *concatenation* of the PCM that arrived -- push() extends a
+        # buffer and nothing fills gaps -- so a call that lost half its LDUs
+        # produces a clip half as long that still sounds continuous. The live
+        # stream cannot do that: it is paced at real time, so the same loss is
+        # rendered as silence and heard as chop. That difference is why "the
+        # recording sounds fine but the live audio is choppy" is a symptom of
+        # lost frames rather than of a streaming fault.
+        #
+        # continuity makes the loss visible: 1.0 means every frame of the
+        # transmission arrived, 0.6 means 40% of it never decoded. It is the
+        # per-call decode-completeness figure the decoder otherwise does not
+        # expose -- unlike symbol_quality, which measures the eye and says
+        # nothing about whether a frame survived FEC.
+        # Clamped at 1.0, so a producer ahead of real time -- UDP coalescing, or
+        # a burst of LDUs decoded back to back -- reads as "nothing lost" rather
+        # than as better-than-perfect reception. Only a single-push call, where
+        # there is no span to divide by, gets no reading.
+        wall = max(0.0, last_push - started)
+        if wall > 0.0:
+            meta['continuity'] = round(min(1.0, duration / wall), 3)
 
         # Levels describe the clip as received, before any normalisation, so
         # they stay meaningful as an RF health indicator.

@@ -150,6 +150,22 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {fmtClock(clip.started)} · {fmtDuration(clip.duration)}
+            {clip.continuity !== undefined && clip.continuity < 0.9 && (
+              <Tooltip
+                title={`Only ${Math.round(clip.continuity * 100)}% of this transmission decoded. `
+                  + 'The recording concatenates what arrived, so it sounds continuous — '
+                  + 'but live playback renders the missing frames as silence, which is '
+                  + 'what "choppy" is. Low values mean marginal reception, not a '
+                  + 'streaming fault.'}
+              >
+                <Chip
+                  variant="outlined"
+                  color={clip.continuity < 0.7 ? 'error' : 'warning'}
+                  label={`${Math.round(clip.continuity * 100)}% decoded`}
+                  sx={{ ml: 0.75 }}
+                />
+              </Tooltip>
+            )}
             {source ? ` · ${source}` : ''}
           </Typography>
           {alert && (
