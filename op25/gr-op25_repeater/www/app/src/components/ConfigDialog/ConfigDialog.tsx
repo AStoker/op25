@@ -22,6 +22,10 @@ import Hint from '../common/Hint';
 import InfoRow from '../common/InfoRow';
 import SectionHeading from '../common/SectionHeading';
 import RunningConfigPanel from './RunningConfigPanel';
+import SettingsTab from './SettingsTab';
+import AdvancedJsonTab from './AdvancedJsonTab';
+import HistoryTab from './HistoryTab';
+import { useConfigEditor } from '../../hooks/useConfigEditor';
 import { useOp25Service } from '../../services/op25Service';
 import { useSmartColorsEnabled } from '../../hooks/useSmartColor';
 import { PRESET_PRIMARY_COLORS, useThemeService } from '../../services/themeService';
@@ -155,10 +159,12 @@ function DecoderTab() {
           />
         </Box>
         <Hint>
-          These come from the JSON config file, which the decoder reads once at
-          startup — changing them means editing the file and restarting. Only the
-          log level above can be changed from here. Per-channel controls (fine
-          tune, symbol capture, list reload) live in Tuning &amp; Diagnostics.
+          These are read once at startup, so changing one takes a restart — but
+          they are editable now: see the <strong>Settings</strong> tab, which
+          marks each field live or restart-required, and <strong>Advanced JSON</strong>
+          for anything the form does not cover. The log level above is applied
+          immediately and is not stored. Per-channel controls (fine tune, symbol
+          capture, list reload) live in Tuning &amp; Diagnostics.
         </Hint>
       </Box>
     </Stack>
@@ -249,11 +255,17 @@ function InterfaceTab() {
 // Dialog
 // ---------------------------------------------------------------------------
 
+/** One editor instance is shared by Settings, Advanced and History: they read
+ *  the same document, and three copies would each re-fetch and then disagree
+ *  about what was saved. */
 const TABS = [
-  { label: 'Decoder',        render: () => <DecoderTab /> },
-  { label: 'Interface',      render: () => <InterfaceTab /> },
-  { label: 'Running config', render: () => <RunningConfigPanel /> },
-];
+  { label: 'Settings',       needsEditor: true  },
+  { label: 'Decoder',        needsEditor: false },
+  { label: 'Interface',      needsEditor: false },
+  { label: 'Advanced JSON',  needsEditor: true  },
+  { label: 'History',        needsEditor: true  },
+  { label: 'Running config', needsEditor: false },
+] as const;
 
 /**
  * Configuration, as far as a browser can go.
@@ -266,6 +278,20 @@ const TABS = [
  */
 export default function ConfigDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [tab, setTab] = useState(0);
+  // Only load while the dialog is open: /api/config/state serialises the whole
+  // config, and nothing here changes on its own.
+  const editor = useConfigEditor(open && TABS[tab].needsEditor);
+
+  const panel = () => {
+    switch (TABS[tab].label) {
+      case 'Settings':       return <SettingsTab editor={editor} />;
+      case 'Decoder':        return <DecoderTab />;
+      case 'Interface':      return <InterfaceTab />;
+      case 'Advanced JSON':  return <AdvancedJsonTab editor={editor} />;
+      case 'History':        return <HistoryTab editor={editor} />;
+      default:               return <RunningConfigPanel />;
+    }
+  };
 
   return (
     <DialogShell
@@ -277,8 +303,9 @@ export default function ConfigDialog({ open, onClose }: { open: boolean; onClose
           value={tab}
           onChange={(_e, v: number) => setTab(v)}
           variant="scrollable"
-          // No scroll buttons: three short tabs fit a 390px phone, and MUI's
-          // "auto" arrows render anyway and sit on top of the first label.
+          // Six tabs no longer fit a 390px phone, so the row does scroll now --
+          // but still without MUI's arrows, which render even when not needed and
+          // sit on top of the first label.
           scrollButtons={false}
           aria-label="configuration sections"
           sx={{ mt: 0.5, minHeight: 40 }}
@@ -289,7 +316,7 @@ export default function ConfigDialog({ open, onClose }: { open: boolean; onClose
     >
       {/* One panel at a time; unmounting the others keeps the JSON block from
           re-serialising while the Interface tab is open. */}
-      <Box role="tabpanel">{TABS[tab].render()}</Box>
+      <Box role="tabpanel">{panel()}</Box>
     </DialogShell>
   );
 }

@@ -365,3 +365,51 @@ class TestExportEndpoint:
         resp = client.post('/api/config/export',
                            json={'path': '../../../../etc/op25-escape.json'})
         assert resp.status_code == 400
+
+
+class TestRestartEndpoint:
+    """Restarting is how a stored-but-not-running field takes effect.
+
+    Gated exactly like a write: "restart the scanner" is not something a stranger
+    on the LAN should be able to do.
+    """
+
+    def test_gated_like_a_write(self, client: Any, monkeypatch: Any) -> None:
+        monkeypatch.setenv('OP25_CONFIG_WRITE', 'ingress')
+        assert client.post('/api/restart').status_code == 403
+        # Reachable via ingress -- 501 here only because there is no Supervisor.
+        assert client.post('/api/restart', headers=INGRESS).status_code != 403
+
+    def test_501_when_not_an_addon(self, client: Any, monkeypatch: Any) -> None:
+        # A standalone install has no Supervisor to ask, so say so rather than
+        # failing in a way that looks like a permission problem.
+        monkeypatch.delenv('SUPERVISOR_TOKEN', raising=False)
+        resp = client.post('/api/restart')
+        assert resp.status_code == 501
+        assert 'add-on' in resp.json()['error']
+
+    def test_supervisor_403_explains_the_missing_permission(
+            self, client: Any, monkeypatch: Any) -> None:
+        # The add-on needs hassio_api + hassio_role: manager; without them
+        # Supervisor answers 403 and names nothing.
+        import urllib.error
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise urllib.error.HTTPError('http://supervisor', 403, 'Forbidden', {}, None)
+
+        monkeypatch.setattr('urllib.request.urlopen', boom)
+        resp = client.post('/api/restart')
+        assert resp.status_code == 502
+        assert 'hassio_role' in resp.json()['detail']
+
+    def test_a_dropped_connection_counts_as_success(self, client: Any,
+                                                   monkeypatch: Any) -> None:
+        # The container going away mid-request IS the restart working.
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise OSError('connection reset')
+
+        monkeypatch.setattr('urllib.request.urlopen', boom)
+        assert client.post('/api/restart').json()['ok'] is True

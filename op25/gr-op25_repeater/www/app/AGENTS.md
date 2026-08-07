@@ -28,8 +28,13 @@ app/                        ← this directory
       useSystemState.ts     the SYSTEM_STATE health payload
       useIsPhone.ts         drop low-value table columns below sm
       useTalkgroupFocus.ts  pinned talkgroups (localStorage, per browser)
+      useConfigEditor.ts    the config REST client + flattened-path helpers
     components/<Name>Card/  one card per panel, all wrapped in CardShell
-    components/ConfigDialog/  Config modal: runtime knobs, display prefs, loaded JSON
+    components/ConfigDialog/  Config modal: the editor, runtime knobs, display prefs
+      SettingsTab.tsx         schema-driven form; edits held local until Save
+      ConfigFieldInput.tsx    one control, rendered from a server field description
+      AdvancedJsonTab.tsx     raw JSON, plus reset-to-preset and export
+      HistoryTab.tsx          versions, field diffs, rollback
     components/AboutDialog/   About modal: what this fork is, how it differs upstream
     components/TalkgroupBrowser/  pick talkgroups from the full list: regex + batch
     components/common/      the design-system primitives (see below)
@@ -184,3 +189,41 @@ page here. `AppShell` owns which one is open.
   the failure that matters. Use real `asyncio.sleep()` waits, never
   `--virtual-time-budget`, which outruns the WebSocket handshake and shows a
   frozen "connecting" state.
+
+
+---
+
+## The config editor
+
+`ConfigDialog`'s Settings / Advanced JSON / History tabs render from
+`/api/config/schema` — **no field is named in this codebase**. Adding a protocol
+is a matter of describing its fields in `apps/config_schema.py`, which is what
+makes this a scanner UI rather than a P25 UI.
+
+- **One `useConfigEditor` instance is shared by all three tabs** (created in
+  `ConfigDialog`). Three copies would each re-fetch and then disagree about what
+  was saved.
+- It is **not** part of `op25Service`. That service is live decoder state
+  arriving at 1 Hz; folding a REST resource into it would re-render the app every
+  second for a panel nobody has open. The hook only loads while the dialog is on
+  a tab that needs it.
+- **Edits are held in local draft state until Save**, so a half-typed frequency
+  is never sent and the recorded version is one deliberate change set rather than
+  one per keystroke.
+- **Every field shows `live` or `restart`**, from the schema. Being optimistic
+  there is the dangerous direction — the user would trust a value the decoder is
+  not running — so the server classifies each save and the banner reports
+  `needs_restart` with a Restart add-on button.
+- `readPath` / `writePath` / `splitPath` handle the server's flattened paths
+  (`devices[sdr0].gains`). **`splitPath` ignores dots inside brackets** because a
+  device may be called `base.station`; the Python side has the same rule for the
+  same reason.
+- The raw editor is a plain `TextField multiline`, not CodeMirror or Monaco:
+  ~300 kB of bundle for syntax colouring on a UI that loads over ingress on a
+  phone, when the thing that actually catches mistakes is the server's
+  validation, which runs either way.
+- `PersistTuningButton` (in `ReceiverCard`) is why fine tuning now survives a
+  restart. `adj_tune` moves ppm in the running decoder and nothing wrote it back,
+  so every restart reverted to the config value. The button does the whole
+  read-modify-write against `/api/config` because the server does not know the
+  live ppm — it arrives in `channel_update`, which only the browser sees.

@@ -644,9 +644,24 @@ not. The effective config is therefore **composed, never stored**:
   `$OP25_CONFIG_HISTORY_DB`. A corrupt overlay is **ignored, not fatal** — the
   preset alone is a working scanner — and a missing history db never blocks a
   save, because losing the audit trail must not stop a config being written.
-- Still to build: the React editor (form from schema, raw-JSON advanced mode,
-  history/rollback panel, restart banner) and the restart button itself, which
-  needs `hassio_api` + a manager role in `config.yaml`.
+- **The UI names no config field.** `ConfigDialog`'s Settings tab renders from
+  `/api/config/schema`; `www/app/AGENTS.md` has the frontend detail. The three
+  tabs share one `useConfigEditor`, which lives outside `op25Service` because
+  that service re-renders at 1 Hz from the WebSocket and this is a REST resource
+  that only changes when someone edits it.
+- **`POST /api/restart` asks Supervisor to restart the add-on**, which is how a
+  restart-required field actually takes effect. It needs `hassio_api` +
+  `hassio_role: manager` (the narrowest role that permits
+  `/addons/self/restart`), and is gated to ingress exactly like a write — a
+  stranger on the LAN restarting the scanner is the thing that gate is for. A
+  dropped connection mid-request is treated as **success**: the container going
+  away is the restart working.
+- **Fine tuning now survives a restart.** `adj_tune` moves `device.ppm` in the
+  running decoder and nothing ever wrote it back, so every restart reverted to
+  the config value — usually 0.0. `ppm` was always a config key; what was missing
+  was a path from the live value into it. `PersistTuningButton` does the
+  read-modify-write from the browser, because the server does not know the live
+  ppm (it arrives in `channel_update`).
 
 ## Known remaining gaps
 
@@ -722,7 +737,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 529 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 533 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -757,8 +772,8 @@ its `from gnuradio import gr`.
   preset drift, rollback replaying intent onto a moved preset, redaction
   round-trip, path resolution, schema live-vs-restart classification (62).
 - `tests/config_api_spec.py` — the write gate (ingress/open/off), config state,
-  schema filtering, validation, history, rollback, reset, export containment
-  (44).
+  schema filtering, validation, history, rollback, reset, export containment,
+  and the restart endpoint's gating and error mapping (48).
 - `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
   fields pinned to `Palmetto800-single.json`, and container-appropriate (no
   pinned serial, no local speaker output, no secrets) (29).

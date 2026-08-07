@@ -15,6 +15,7 @@ import ControlRow from '../common/ControlRow';
 import Hint from '../common/Hint';
 import InfoRow from '../common/InfoRow';
 import SectionHeading from '../common/SectionHeading';
+import PersistTuningButton from './PersistTuningButton';
 import { useOp25Service, useSelectedChannel } from '../../services/op25Service';
 import { apiUrl } from '../../utils/url';
 
@@ -120,6 +121,11 @@ export default function ReceiverCard() {
             <Button onClick={() => adjustTune(tuningStepLarge)}>{`+${tuningStepLarge}`}</Button>
           </ButtonGroup>
           <Hint>Steps come from terminal_config (tuning_step_small / tuning_step_large).</Hint>
+          <PersistTuningButton
+            device={channel?.device}
+            livePpm={channel?.ppm}
+            disabled={disabled}
+          />
         </Box>
 
         <Divider />

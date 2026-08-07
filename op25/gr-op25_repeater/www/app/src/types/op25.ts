@@ -173,6 +173,12 @@ export interface ChannelStatus {
   msgqid: number;
   name: string;
   ppm?: number;
+  /** Device this channel is on (`devices[].name`), so the UI can address it in
+   *  a device-scoped command or config path. Several channels can share one. */
+  device?: string;
+  /** Gain string in force *now* — after a live change this is not what the
+   *  config file says. */
+  gains?: string;
   capture?: boolean;
   /** Path the raw symbol capture is being written to while `capture` is true. */
   capture_file?: string;

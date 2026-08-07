@@ -1562,6 +1562,51 @@ async def post_config_export(request: Request) -> Response:
                           'config_file option at it and set preset: custom to use it.'})
 
 
+@app.post("/api/restart")
+async def post_restart(request: Request) -> Response:
+    """Restart this add-on, so a stored-but-not-running config takes effect.
+
+    Most config fields are read in ``multi_rx``'s constructors, so the only way to
+    apply them is to start again. The add-on cannot restart itself directly --
+    s6's ``finish`` deliberately halts the supervision tree rather than looping,
+    which surfaces a broken flowgraph to Supervisor instead of hiding it -- so
+    this asks Supervisor to do it.
+
+    Gated exactly like a config write: the published port is unauthenticated, and
+    "restart the scanner" is not something a stranger on the LAN should be able to
+    do.
+    """
+    denied = _write_denied(request)
+    if denied is not None:
+        return denied
+    token = os.environ.get('SUPERVISOR_TOKEN')
+    if not token:
+        return _json({
+            'error': 'not running as a Home Assistant add-on',
+            'detail': 'Restart the decoder however you started it.',
+        }, status_code=501)
+    try:
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            'http://supervisor/addons/self/restart', method='POST',
+            headers={'Authorization': 'Bearer %s' % token})
+        # No response body is expected, and the container is about to be killed,
+        # so a short timeout here just means we never see the 200.
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        hint = ('Supervisor refused the restart. The add-on needs hassio_api and '
+                'hassio_role: manager in config.yaml.') if e.code in (401, 403) else ''
+        return _json({'error': 'restart failed', 'status': e.code, 'detail': hint or str(e)},
+                     status_code=502)
+    except OSError as e:
+        # The container going away mid-request looks like a connection error, and
+        # that is the success case.
+        sys.stderr.write('restart request ended with %s (expected if it worked)\n' % e)
+    return _json({'ok': True, 'detail': 'Supervisor was asked to restart the add-on.'})
+
+
 def _export_roots() -> list[str]:
     """Directories an export may be written to.
 

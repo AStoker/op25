@@ -1,6 +1,6 @@
 ---
 name: OP25 Trunking Scanner
-version: "0.0.9"
+version: "0.0.10"
 slug: op25
 description: >-
   P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web
@@ -49,6 +49,16 @@ realtime: true
 # Lets the add-on reach Home Assistant Core's REST API at http://supervisor/core
 # with $SUPERVISOR_TOKEN, so speech-to-text needs no long-lived token.
 homeassistant_api: true
+# Lets the UI restart this add-on after a config change that the decoder can only
+# pick up at startup -- most of them, since device and channel parameters are read
+# in multi_rx's constructors. Without it the config editor can save such a change
+# but not apply it, leaving the user to find the add-on page themselves.
+#
+# `manager` is the narrowest role that permits /addons/self/restart. The restart
+# endpoint is gated to the ingress path exactly like a config write, so the
+# published (unauthenticated) port cannot reach it.
+hassio_api: true
+hassio_role: manager
 map:
   - type: addon_config
     read_only: false

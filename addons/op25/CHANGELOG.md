@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.0.10
+
+**Configuration is editable from the UI.** Config → Settings, Advanced JSON and
+History.
+
+- **Settings** is a form with every field explained, and each one marked *live*
+  or *restart*. Almost nothing about a radio can change while it is running, so
+  that distinction is shown rather than glossed over — a value the scanner is not
+  actually using is worse than one you know you have to restart for.
+- **Gain and frequency correction are live.** They apply the moment you save, so
+  a gain sweep is now something you do while watching the symbol-quality figure,
+  instead of a restart per value.
+- **Fine tuning survives a restart.** This was the bug behind "I keep having to
+  set ppm again": the fine-tune buttons moved it in the running decoder and
+  nothing ever wrote it down, so every restart went back to the config value.
+  There is now a **Save tuning** button next to them in Tuning & Diagnostics.
+- **Only what you change is stored.** Everything you leave alone keeps tracking
+  add-on updates, so a preset fix still reaches you. If one of your overrides is
+  masking a newer preset value, the editor says so and shows both.
+- **History** lists every change with the fields it touched, and restores any of
+  them. Restoring replays *your* changes onto the current preset rather than
+  reinstating an old one wholesale — so a rollback cannot quietly undo an add-on
+  fix you never chose to undo. Resets and restores are themselves recorded, so
+  they can be undone too.
+- **Advanced JSON** edits the config directly, for anything the form does not
+  cover — adding a device or a second system. It also holds **Reset to preset**
+  and **Export**, which writes a complete standalone file for when you want to
+  stop tracking the preset and own the config outright.
+- **Restart from the UI.** A change that needs one gets a Restart add-on button.
+  This is why the add-on now asks for Supervisor access; it is used for nothing
+  else.
+- **Editing requires the sidebar.** The published port (8099) is unauthenticated,
+  so config changes are refused there — anyone on your network could otherwise
+  re-point the scanner or change where it sends recordings. Reading stays open.
+  Set the `config_write` option to `open` if you would rather allow it.
+
 ## 0.0.9
 
 - **Palmetto 800 gain goes back up, to 40.** 0.0.8 lowered it to 30 on the
