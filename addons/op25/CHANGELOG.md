@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.0.7
+
+- **Browser audio no longer chops.** The audio stream had no jitter buffer: the
+  decoder emits one 20 ms frame every 20 ms and the stream consumed one every
+  20 ms, so the cushion was always empty. A packet arriving even slightly late
+  became a 20 ms hole spliced into the middle of a word, and because the cushion
+  could never build, a few percent of scheduling jitter was heard as *continuous*
+  garbling — which sounds exactly like a bad radio signal but was not. The stream
+  now holds 120 ms before playback and rebuilds that cushion when it runs dry.
+  Tunable with `OP25_STREAM_PRIME_MS` if you want less delay or more safety.
+- **Signal quality you can aim an antenna by.** Tuning & Diagnostics now shows a
+  symbol-quality figure from the demodulator's timing-recovery lock detector,
+  which was computed all along and never displayed. Higher is a cleaner signal
+  and it responds as you move an antenna, unlike the frequency-error number next
+  to it. It is not a bit error rate — the decoder does not expose one — and it is
+  blank while a channel is idle or when the demodulator is not `cqpsk`.
+- The audio diagnostics in the log distinguish real dropouts from idle silence,
+  so a rising underrun count now means something.
+- The bundled Palmetto 800 sample config drops its gain from near-maximum (which
+  overloads the tuner on 800 MHz and sounds like garbling) and moves to a sample
+  rate that divides evenly into the decoder's IF rate, removing a resampling
+  stage and widening the tuned window so fewer calls force the radio to retune.
+
 ## 0.0.6
 
 - Persistance of metadata in `op25_metadata.sqlite` across restarts.
