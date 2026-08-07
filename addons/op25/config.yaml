@@ -1,6 +1,6 @@
 ---
 name: OP25 Trunking Scanner
-version: "0.0.6"
+version: "0.0.7"
 slug: op25
 description: >-
   P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web

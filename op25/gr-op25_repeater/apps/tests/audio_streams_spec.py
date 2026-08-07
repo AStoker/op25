@@ -25,7 +25,25 @@ def _pcm(nbytes: int, fill: int = 1) -> bytes:
 
 
 async def _take_chunks(mgr: ws.AudioStreamManager, count: int, **kw: Any) -> list[bytes]:
-    """Pull *count* chunks from a manager's generator, then stop."""
+    """Pull *count* chunks from a manager's generator, then stop.
+
+    The jitter buffer is disabled here so a test can push one chunk and read it
+    back on the next tick.  These cases are about routing and mixing, not
+    pacing; priming has its own class below.
+    """
+    mgr.prime_bytes = 0
+    out: list[bytes] = []
+    gen = mgr.generate(**kw)
+    try:
+        for _ in range(count):
+            out.append(await gen.__anext__())
+    finally:
+        await gen.aclose()
+    return out
+
+
+async def _take_chunks_primed(mgr: ws.AudioStreamManager, count: int, **kw: Any) -> list[bytes]:
+    """Like :func:`_take_chunks` but leaves the jitter buffer in place."""
     out: list[bytes] = []
     gen = mgr.generate(**kw)
     try:
@@ -308,3 +326,68 @@ class TestAggregateMixes:
         chunks = asyncio.run(_take_chunks(mgr, 2, container='raw'))
         assert chunks[0] == _pcm(ws._CHUNK_BYTES, 0x66)
         assert chunks[1] == _pcm(ws._CHUNK_BYTES, 0x77)
+
+
+# ---------------------------------------------------------------------------
+# Jitter buffer
+#
+# The decoder emits one 20 ms frame every 20 ms and the stream consumes one
+# every 20 ms, so without a cushion any late packet finds an empty buffer and
+# the only thing to send is a hole in the middle of a word.  These cases pin the
+# priming behaviour that keeps that from happening; see _STREAM_PRIME_MS.
+# ---------------------------------------------------------------------------
+
+
+class TestJitterBuffer:
+    def _fresh(self) -> ws.AudioStreamManager:
+        mgr = ws.AudioStreamManager()
+        mgr.mock = False
+        return mgr
+
+    def test_prime_is_enabled_by_default(self) -> None:
+        mgr = self._fresh()
+        assert mgr.prime_bytes >= ws._CHUNK_BYTES, \
+            "a zero prime is the chopping bug this exists to prevent"
+
+    def test_playback_waits_for_the_cushion(self) -> None:
+        # One chunk buffered is not enough to start: emitting it immediately is
+        # what stops the cushion from ever building.
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x11))
+        chunks = asyncio.run(_take_chunks_primed(mgr, 1, container='raw'))
+        assert chunks[0] == b'\x00' * ws._CHUNK_BYTES
+        assert mgr.silent_chunks == 1
+        assert mgr.real_chunks == 0
+        # The audio was held, not discarded.
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES
+
+    def test_audio_flows_once_primed(self) -> None:
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(mgr.prime_bytes, 0x22))
+        n = mgr.prime_bytes // ws._CHUNK_BYTES
+        chunks = asyncio.run(_take_chunks_primed(mgr, n, container='raw'))
+        assert chunks == [_pcm(ws._CHUNK_BYTES, 0x22)] * n
+        assert mgr.real_chunks == n
+        assert mgr.underruns == 0
+
+    def test_dropout_re_primes_instead_of_chopping(self) -> None:
+        # Drain the cushion, then push a single chunk.  The stream must rebuild
+        # the cushion rather than hand out the lone chunk and be empty again.
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(mgr.prime_bytes, 0x33))
+        n = mgr.prime_bytes // ws._CHUNK_BYTES
+        asyncio.run(_take_chunks_primed(mgr, n, container='raw'))
+        assert mgr.buffered_bytes() == 0
+
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x44))
+        chunks = asyncio.run(_take_chunks_primed(mgr, 1, container='raw'))
+        assert chunks[0] == b'\x00' * ws._CHUNK_BYTES
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES
+
+    def test_idle_silence_is_not_counted_as_a_dropout(self) -> None:
+        # 'underruns' has to mean "lost audio that was in flight" for it to be
+        # usable as a diagnostic; idle silence must not inflate it.
+        mgr = self._fresh()
+        asyncio.run(_take_chunks_primed(mgr, 3, container='raw'))
+        assert mgr.underruns == 0
+        assert mgr.silent_chunks == 3

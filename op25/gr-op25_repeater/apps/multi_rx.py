@@ -54,7 +54,7 @@ from gnuradio import audio, eng_notation, gr, filter, blocks, fft, analog, digit
 # eng_option (GNURadio engineering-notation CLI helper) was removed in GNURadio
 # 3.10 and is not used by any option defined in this file; all radio parameters
 # (frequencies, sample rates, gains) come from the JSON config file, not CLI flags.
-from math import pi
+from math import pi, isnan, isinf
 import argparse
 
 import gnuradio.op25 as op25
@@ -197,6 +197,8 @@ class channel(object):
         self.crypt_keys_file    = str(from_dict(config, "crypt_keys", ""))
         self.crypt_keys = {}
         self.error = None
+        self.symbol_quality = None
+        self.symbol_locked = None
         self.chan_idle = False
         self.sinks = {}
         self.tdma_state = False
@@ -558,11 +560,35 @@ class channel(object):
     def error_tracking(self):
         if self.chan_idle:
             self.error = None
+            self.symbol_quality = None
+            self.symbol_locked = None
             return
         self.error = self.demod.get_freq_error()
 
+        # Symbol-timing lock quality from gardner_cc -- the Yair Linn lock
+        # detector, averaged over the last 480 symbols, compared against the
+        # block's 0.28 lock threshold.  It is the closest thing the decoder
+        # exposes to a decode-quality figure: OP25 keeps rs_errs/gly_errs in C++
+        # and only writes them to stderr, and 'error' above is an AFC figure in
+        # Hz, not a bit error rate.  Only the cqpsk demodulator has a
+        # gardner_cc, hence the guard -- fsk4 uses a different clock recovery
+        # with no equivalent.
+        if callable(getattr(self.demod, 'quality', None)):
+            q = self.demod.quality()
+            self.symbol_quality = None if (isnan(q) or isinf(q)) else round(q, 4)
+            self.symbol_locked = bool(self.demod.locked())
+        else:
+            self.symbol_quality = None
+            self.symbol_locked = None
+
     def get_error(self):
         return self.error
+
+    def get_symbol_quality(self):
+        return self.symbol_quality
+
+    def get_symbol_locked(self):
+        return self.symbol_locked
 
 class rx_block (gr.top_block):
 
@@ -1055,6 +1081,8 @@ class rx_block (gr.top_block):
             params[rx_id]['capture'] = False if self.find_channel(int(rx_id)).raw_sink is None else True
             params[rx_id]['capture_file'] = self.find_channel(int(rx_id)).raw_sink_file
             params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error()
+            params[rx_id]['symbol_quality'] = self.find_channel(int(rx_id)).get_symbol_quality()
+            params[rx_id]['symbol_locked'] = self.find_channel(int(rx_id)).get_symbol_locked()
             s_name = params[rx_id]['stream']
             if s_name not in self.meta_streams:
                 continue

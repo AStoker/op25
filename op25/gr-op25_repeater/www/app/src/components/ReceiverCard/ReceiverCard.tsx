@@ -96,6 +96,15 @@ export default function ReceiverCard() {
                 <Tooltip title="Demodulator frequency error reported by the FLL. This is an automatic-frequency-control figure in Hz, not a bit error rate.">
                   <Chip variant="outlined" label={`freq error ${formatHz(channel?.error)}`} />
                 </Tooltip>
+                {channel?.symbol_quality != null && (
+                  <Tooltip title="Symbol-timing lock quality (gardner_cc, averaged over 480 symbols; locks above 0.28). Higher is a cleaner eye — watch this while aiming an antenna. Not a bit error rate; the decoder does not expose one.">
+                    <Chip
+                      variant="outlined"
+                      color={channel.symbol_locked ? 'success' : 'warning'}
+                      label={`symbol ${channel.symbol_quality.toFixed(2)}`}
+                    />
+                  </Tooltip>
+                )}
                 {channel?.ppm !== undefined && (
                   <Tooltip title="Device tuning correction currently applied, in parts per million">
                     <Chip variant="outlined" label={`ppm ${channel.ppm.toFixed(2)}`} />

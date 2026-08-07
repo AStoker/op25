@@ -178,6 +178,15 @@ export interface ChannelStatus {
   capture_file?: string;
   /** Demodulator frequency error in Hz (AFC figure — NOT a bit error rate). */
   error?: number;
+  /** Symbol-timing lock quality from the cqpsk demodulator's gardner_cc block:
+   *  the Yair Linn lock detector averaged over the last 480 symbols, against a
+   *  0.28 lock threshold. Higher is a cleaner eye. This is the closest the
+   *  decoder gets to a decode-quality figure — OP25 keeps rs_errs/gly_errs in
+   *  C++ and only writes them to stderr. `null` when the channel is idle or the
+   *  demodulator is not cqpsk (fsk4 has no equivalent). */
+  symbol_quality?: number | null;
+  /** Whether `symbol_quality` is above the lock threshold. */
+  symbol_locked?: boolean | null;
   conventional?: boolean;
   /** Time slot for two-slot DMR; absent/0 elsewhere. */
   slot?: number;

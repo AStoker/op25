@@ -52,6 +52,22 @@ Config selector:
   `127.0.0.1:23456/23457`. There is one manager per port plus an aggregate:
   bare `/api/stream` is the mix, `?channel=N` one channel, `?port=N` one exact
   stream (how to reach a DMR slot B), `/api/audio/channels` lists them.
+- **`AudioStreamManager.generate()` primes a jitter buffer, for exactly the
+  reason `portaudio_sound` does** (`_STREAM_PRIME_MS`, 120 ms, env
+  `OP25_STREAM_PRIME_MS`). The decoder emits one 20 ms frame every 20 ms and the
+  generator consumes one every 20 ms, so the steady-state cushion is zero and
+  any late packet found an empty buffer — the old code spliced a 20 ms silence
+  hole into the middle of a word and never got a chance to build a cushion, so a
+  few percent of scheduling jitter was heard as continuous chopping,
+  indistinguishable by ear from a bad RF decode. Running dry now *re-primes*
+  rather than emitting a hole per late packet: one longer gap, then smooth.
+  Fixing the *drift* (the absolute `next_send` deadline) was a separate,
+  earlier bug — don't mistake one for the other.
+- **`underruns` means "lost audio that was in flight"; idle silence is
+  `silent_chunks`.** They used to be the same counter, which made it useless as
+  a diagnostic because idle time dominated it. The 5 s `ws audio:` log line
+  prints `voice`/`silent`/`underruns`: underruns climbing while `voice` is
+  steady is jitter in this process, not RF.
 - Docs: `README-new-gui.md` (protocol + endpoints), `www/app/AGENTS.md`
   (frontend conventions).
 
@@ -179,10 +195,21 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   clamped so peaks reach but never cross the ceiling, which means levelling
   cannot introduce clipping. `peak`/`rms` in clip metadata are **as received**,
   pre-normalisation, so they stay valid as an RF indicator.
-- **`ChannelStatus.error` is `demod.get_freq_error()` in Hz** (multi_rx.py:551)
-  — an AFC tuning figure, *not* a bit error rate. OP25 does not surface BER to
-  Python (`rs_errs`/`gly_errs` exist in the C++ but only reach stderr at debug
-  level). Don't build decode-quality gating on `error`.
+- **`ChannelStatus.error` is `demod.get_freq_error()` in Hz** — an AFC tuning
+  figure, *not* a bit error rate. OP25 does not surface BER to Python
+  (`rs_errs`/`gly_errs` exist in the C++ but only reach stderr at debug level).
+  Don't build decode-quality gating on `error`.
+- **`symbol_quality` / `symbol_locked` are the nearest available stand-in.**
+  `gardner_cc` runs the Yair Linn timing-lock detector (`gardner_cc_impl.cc:178`)
+  averaged over the last 480 symbols and compared against a 0.28 threshold;
+  `quality()` / `locked()` were already pybind-bound and wrapped in
+  `p25_demodulator_dev.py`, but nothing read them. `error_tracking()` now
+  publishes both in `channel_update` and `ReceiverCard` shows the number, which
+  is what you watch while aiming an antenna. Both are `null` when the channel is
+  idle **and** when the demodulator is not `cqpsk` — the `fsk4` chain uses a
+  different clock recovery with no equivalent, hence the `getattr` guard. It is
+  still not a BER: it measures eye opening, so it degrades with multipath and
+  noise but says nothing about post-FEC frame errors.
 - `voiced_ratio()` is the speech-likeness heuristic used instead; it is
   advisory and its gate (`min_voiced_ratio`) defaults to **off** so it cannot
   silently eat traffic.
@@ -579,7 +606,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 366 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 371 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -608,7 +635,7 @@ its `from gnuradio import gr`.
   reduction, exponential-average compensation, stateless-mode skipping,
   decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
-  `?channel=` / `?port=` selection (31).
+  `?channel=` / `?port=` selection, jitter-buffer priming and re-priming (36).
 - `tests/audio_udp_roundtrip_spec.py` — drives the compiled `analog_udp` block
   and asserts non-silent PCM out of `/api/stream` (3).
 - `tests/squelch_upstream_spec.py` — runs upstream's `squelch_core_test.py` and

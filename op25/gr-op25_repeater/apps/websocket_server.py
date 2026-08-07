@@ -158,6 +158,21 @@ _CHUNK_MS      = 20      # chunk duration — 20 ms matches one P25 voice frame 
 _CHUNK_SAMPLES = _SAMPLE_RATE * _CHUNK_MS // 1_000   # 160 samples
 _CHUNK_BYTES   = _CHUNK_SAMPLES * _SAMPLE_WIDTH       # 320 bytes
 
+# Jitter buffer depth, in ms of audio, held back before playback starts.
+#
+# The decoder produces exactly one 20 ms frame every 20 ms and we consume one
+# every 20 ms, so the steady-state cushion is zero: any packet that arrives even
+# slightly late finds the buffer empty, and without a cushion the only thing to
+# emit is silence.  That splices a 20 ms hole into the middle of a word and the
+# buffer never gets a chance to build up, so at 50 packets/s a few percent of
+# scheduling jitter is heard as continuous chopping — which is indistinguishable
+# by ear from a bad RF decode.  Holding a short prime absorbs the jitter instead.
+#
+# This is the same reasoning (and the same default) as sockaudio.py's
+# PORTAUDIO_PRIME_MS, for the same reason.  Do not "simplify" it away: 120 ms of
+# added latency is imperceptible on scanner audio, the chopping is not.
+_STREAM_PRIME_MS = int(os.environ.get('OP25_STREAM_PRIME_MS', '120'))
+
 
 def _wav_stream_header(sample_rate: int = _SAMPLE_RATE) -> bytes:
     """WAV header for an infinite/unknown-length stream.
@@ -226,11 +241,19 @@ class AudioStreamManager:
         self._mix: bool = mix
         self._mix_buffers: dict[int, bytearray] = {}
 
+        # How much audio to accumulate before playback starts, and again after
+        # the buffer runs dry.  Per-instance so a test can set it to 0 and get
+        # the old push-one-chunk/take-one-chunk behaviour.
+        self.prime_bytes: int = (
+            int(_SAMPLE_RATE * _STREAM_PRIME_MS / 1_000.0) * _SAMPLE_WIDTH
+        )
+
         # Diagnostics
         self.bytes_pushed: int = 0
         self.bytes_yielded: int = 0
         self.bytes_dropped: int = 0
-        self.underruns: int = 0          # chunks padded with silence
+        self.underruns: int = 0          # dropouts: ran dry with a call in progress
+        self.silent_chunks: int = 0      # idle silence, incl. waiting on the prime
         self.real_chunks: int = 0        # chunks fully sourced from real PCM
         self.last_push_ts: float = 0.0
 
@@ -316,6 +339,10 @@ class AudioStreamManager:
         interval = _CHUNK_MS / 1_000.0
         t        = 0.0
         loop     = asyncio.get_event_loop()
+        # False until self.prime_bytes of audio has accumulated.  Reset whenever
+        # the buffer runs dry, which is both the end of a transmission and the
+        # recovery path from a jitter dropout — see _STREAM_PRIME_MS.
+        primed   = False
         # Absolute send schedule.  Sleeping for "interval minus work done" looks
         # right but silently runs slow: asyncio.sleep overshoots by a millisecond
         # or two every iteration and that error accumulates, so the stream
@@ -326,20 +353,34 @@ class AudioStreamManager:
         next_send = loop.time()
 
         while True:
-            real_bytes, real_len = self._take_chunk()
-            if real_len == _CHUNK_BYTES:
-                chunk = real_bytes
-                self.real_chunks += 1
-            elif real_len > 0:
-                # Partial buffer — pad the tail with silence so the chunk
-                # stays exactly _CHUNK_BYTES.  This is normal at the start
-                # and end of a transmission.
-                chunk = real_bytes + b'\x00' * (_CHUNK_BYTES - real_len)
-                self.underruns += 1
-            else:
+            # Hold playback until the cushion is there.  Taking a chunk the
+            # moment one exists consumes it as fast as it arrives, so the
+            # cushion never builds and every late packet is a hole.
+            if not primed and self.buffered_bytes() >= max(self.prime_bytes, _CHUNK_BYTES):
+                primed = True
+
+            if not primed:
                 chunk = _sine_chunk(t) if self.mock else _silence_chunk()
-                self.underruns += 1
+                self.silent_chunks += 1
                 t += interval
+            else:
+                real_bytes, real_len = self._take_chunk()
+                if real_len == _CHUNK_BYTES:
+                    chunk = real_bytes
+                    self.real_chunks += 1
+                elif real_len > 0:
+                    # Partial buffer — pad the tail with silence so the chunk
+                    # stays exactly _CHUNK_BYTES.  Normal at the end of a
+                    # transmission, where the last frame does not land on a
+                    # chunk boundary.
+                    chunk = real_bytes + b'\x00' * (_CHUNK_BYTES - real_len)
+                    self.underruns += 1
+                    primed = False
+                else:
+                    chunk = _sine_chunk(t) if self.mock else _silence_chunk()
+                    self.underruns += 1
+                    t += interval
+                    primed = False
 
             self.bytes_yielded += len(chunk)
             yield resample_pcm16(chunk, _SAMPLE_RATE, out_rate) if out_rate != _SAMPLE_RATE else chunk
@@ -926,14 +967,21 @@ class UdpAudioReceiver(threading.Thread):
         rate_kbps   = (delta_bytes * 8) / (now - self._last_log) / 1000.0
         buffered    = audio_manager.buffered_bytes()
 
+        # 'underruns' counts only dropouts with audio in flight — idle silence is
+        # 'silent'. A rising underrun count against a steady 'voice' count is a
+        # jitter problem in this process, not a bad RF decode; see
+        # _STREAM_PRIME_MS.
         sys.stderr.write(
             'ws audio: rx pcm=%d flag=%d other=%d  in=%d B (+%d, %.1f kbps)  '
-            'buf=%d B  pushed=%d  yielded=%d  underruns=%d  dropped=%d\n' % (
+            'buf=%d B  pushed=%d  yielded=%d  voice=%d  silent=%d  underruns=%d  '
+            'dropped=%d\n' % (
                 self.packets_pcm, self.packets_flag, self.packets_other,
                 self.bytes_in, delta_bytes, rate_kbps,
                 buffered,
                 audio_manager.bytes_pushed,
                 audio_manager.bytes_yielded,
+                audio_manager.real_chunks,
+                audio_manager.silent_chunks,
                 audio_manager.underruns,
                 audio_manager.bytes_dropped,
             )

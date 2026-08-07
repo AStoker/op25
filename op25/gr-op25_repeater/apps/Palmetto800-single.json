@@ -4,11 +4,14 @@
             "name": "sdr0",
             "args": "rtl=00000101",
             "frequency": 859262500,
-            "gains": "LNA:39",
+            "#gains": "R828D steps are discrete (…25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 38.6…) and multi_rx rounds to an int, so 30 lands on 29.7. Was 39 (i.e. 38.6), near max: on 800 MHz that overloads into IMD, which sounds like a bad decode. Sweep this against the symbol_quality chip in Tuning & Diagnostics.",
+            "gains": "LNA:30",
             "gain_mode": false,
             "offset": 0,
+            "#ppm": "Still unmeasured. Read 'freq error' off the UI once the CC is locked and divide by 859.2625 to get ppm.",
             "ppm": 0.0,
-            "rate": 1000000,
+            "#rate": "2400000 is in multi_rx's approved RTL speeds list and divides exactly by if_rate 24000 (decim 100), so the arbitrary resampler in p25_demodulator_dev is skipped entirely. 1000000 gave decim 41 -> 24390 -> arb resample to 24000. Also widens the window to 2.04 MHz, so fewer voice grants force a device retune.",
+            "rate": 2400000,
             "usable_bw_pct": 0.85,
             "tunable": true
         }
