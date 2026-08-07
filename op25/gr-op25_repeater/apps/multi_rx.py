@@ -96,6 +96,10 @@ class device(object):
         self.name = config['name']
         self.args = config['args']
         self.tunable = bool(from_dict(config, 'tunable', False))
+        # Only the real-SDR branch below sets a gain, but get_gains() is called
+        # for every device when the UI reports state -- a file or symbol source
+        # has no tuner, not a missing attribute.
+        self.gains = str(from_dict(config, 'gains', ''))
 
         sys.stderr.write('device: %s\n' % config)
         if config['args'] == 'iqsrc':
@@ -151,6 +155,9 @@ class device(object):
                     self.src.set_gain_mode(False, 0)
                 sys.stderr.write("gr-osmosdr driver gain_mode: %s\n" % self.src.get_gain_mode())
 
+            # Kept so the UI can report and edit the current value; set_gains()
+            # updates it when the gain is changed at runtime.
+            self.gains = str(config['gains'])
             for tup in config['gains'].split(','):
                 name, gain = tup.split(':')
                 # Accept fractional gains ("LNA:49.6") — osmosdr rounds to the
@@ -174,6 +181,62 @@ class device(object):
 
     def get_ppm(self):
         return self.ppm
+
+    def get_gains(self):
+        return self.gains
+
+    def set_gains(self, gains):
+        """Apply a "STAGE:value[,STAGE:value]" gain string at runtime.
+
+        Gain is one of the very few device parameters that really is live:
+        osmosdr passes set_gain() straight through to the tuner, no flowgraph
+        rebuild involved. That matters because gain is also the parameter most
+        worth sweeping -- overload and starvation produce the same symptom, so
+        the only way to find the right value is to try several against a quality
+        figure, and needing a restart per value makes that impractical.
+
+        Raises ValueError on a malformed string, having applied nothing.
+        """
+        parsed = []
+        for tup in str(gains).split(','):
+            if not tup.strip():
+                continue
+            if ':' not in tup:
+                raise ValueError('gain %r is not STAGE:value' % tup.strip())
+            name, value = tup.split(':', 1)
+            if not name.strip():
+                raise ValueError('gain %r has no stage name' % tup.strip())
+            # Same rounding as startup: osmosdr snaps to the nearest step the
+            # tuner supports, and int() alone rejects a perfectly good "49.6".
+            parsed.append((name.strip(), int(round(float(value)))))
+        if not parsed:
+            raise ValueError('no gains given')
+        if self.src is None:
+            return False
+        for name, value in parsed:
+            self.src.set_gain(value, str(name))
+        self.gains = str(gains)
+        sys.stderr.write('%s device %s: gains set to %s\n'
+                         % (log_ts.get(), self.name, self.gains))
+        return True
+
+    def set_ppm(self, ppm):
+        """Set the absolute frequency correction, in ppm.
+
+        The caller is responsible for re-deriving each channel's relative
+        frequency afterwards -- see rx_block.set_device_ppm(), which is the entry
+        point that does. Setting this on the device alone would leave every
+        demodulator offset by the change.
+        """
+        self.ppm = float(ppm)
+        if self.src is None:
+            return False
+        self.src.set_freq_corr(int(round(self.ppm)))
+        self.fractional_corr = int((int(round(self.ppm)) - self.ppm) * (self.frequency / 1e6))
+        self.src.set_center_freq(self.frequency + self.offset)
+        sys.stderr.write('%s device %s: ppm set to %.3f\n'
+                         % (log_ts.get(), self.name, self.ppm))
+        return True
 
     def set_debug(self, dbglvl):
         pass
@@ -905,6 +968,11 @@ class rx_block (gr.top_block):
         # carries.  These arrive as JSON and the whole decoded dict is handed to
         # ui_command() as `data`, rather than msg.arg1().
         RX_LIST_COMMANDS = 'set_whitelist set_blacklist'.split()
+        # Device parameters that really are live. Same JSON-carried form as
+        # RX_LIST_COMMANDS: a gain string does not fit in a gr.message's two
+        # floats, and the device is addressed by name rather than by msgq_id
+        # because several channels can share one.
+        RX_DEVICE_COMMANDS = 'set_device_gains set_device_ppm'.split()
         if msg is None:
             return True
         s = msg.to_string()
@@ -1054,6 +1122,25 @@ class rx_block (gr.top_block):
                 except (TypeError, ValueError) as e:
                     ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
                                    'detail': "%s: %s" % (s, e)})
+        elif s in RX_DEVICE_COMMANDS:
+            # Live device parameters. Everything else about a device (rate, args,
+            # centre frequency) is read in the constructor and needs the
+            # flowgraph rebuilt, so the editor marks those restart-required
+            # rather than pretending they applied -- see config_schema.LIVE_PATHS.
+            if d is None:
+                ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                               'detail': "%s requires a JSON message" % s})
+            else:
+                name = str(d.get('device', ''))
+                if s == 'set_device_gains':
+                    err = self.set_device_gains(name, d.get('gains', ''))
+                else:
+                    err = self.set_device_ppm(name, d.get('ppm', 0.0))
+                if err:
+                    ui_rsp.append({'json_type': "error", 'uuid': m_uuid,
+                                   'detail': "%s: %s" % (s, err)})
+                else:
+                    ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s in RX_COMMANDS:
             if self.trunking is not None and self.trunk_rx is not None:
                 self.trunk_rx.ui_command(s, msg.arg1(), msg.arg2())
@@ -1065,6 +1152,47 @@ class rx_block (gr.top_block):
                 self.ui_in_q.insert_tail(msg)           # send info back to UI as long as queue not full
 
         return False
+
+    def find_device(self, name):
+        for dev in self.devices:
+            if dev.name == name:
+                return dev
+        return None
+
+    def set_device_gains(self, name, gains):
+        """Live gain change. Returns None on success, or an error string."""
+        dev = self.find_device(name)
+        if dev is None:
+            return 'no such device: %s' % name
+        try:
+            dev.set_gains(gains)
+        except (ValueError, TypeError) as e:
+            return str(e)
+        return None
+
+    def set_device_ppm(self, name, ppm):
+        """Live frequency-correction change. Returns None on success, or an error.
+
+        Changing ppm moves the device's centre frequency, so every channel on it
+        has to have its offset from that centre re-derived -- otherwise the
+        correction is applied twice over, once by the tuner and once by the
+        stale freq_xlat offset.  This is the same bookkeeping adj_tune() does for
+        a relative nudge; the difference is only that ppm is absolute here.
+        """
+        dev = self.find_device(name)
+        if dev is None:
+            return 'no such device: %s' % name
+        try:
+            dev.set_ppm(float(ppm))
+        except (ValueError, TypeError) as e:
+            return str(e)
+        for chan in self.channels:
+            if chan.device is not dev:
+                continue
+            chan.demod.set_relative_frequency(
+                dev.offset + dev.frequency + dev.fractional_corr - chan.frequency)
+            chan.demod.reset()
+        return None
 
     def ui_calllog_update(self):
         if self.trunking is None or self.trunk_rx is None:
@@ -1078,6 +1206,10 @@ class rx_block (gr.top_block):
         params = json.loads(self.trunk_rx.get_chan_status())   # extract data from all channels
         for rx_id in params['channels']:                       # iterate and convert stream name to url
             params[rx_id]['ppm'] = self.find_channel(int(rx_id)).device.get_ppm()
+            # Reported so the UI shows the value actually in force, which after a
+            # live set_device_gains is not the one in the config file.
+            params[rx_id]['device'] = self.find_channel(int(rx_id)).device.name
+            params[rx_id]['gains'] = self.find_channel(int(rx_id)).device.get_gains()
             params[rx_id]['capture'] = False if self.find_channel(int(rx_id)).raw_sink is None else True
             params[rx_id]['capture_file'] = self.find_channel(int(rx_id)).raw_sink_file
             params[rx_id]['error'] = self.find_channel(int(rx_id)).get_error()

@@ -615,6 +615,11 @@ class CallRecorder:
 #: of which are unauthenticated — so anything secret has to be stripped there.
 SECRET_KEYS = ('token',)
 
+#: What a masked secret reads as. Named because it is not only written here: the
+#: config editor has to recognise it on the way *back* in, or a read-modify-write
+#: from the browser would persist the mask as the token.
+REDACTED = '***redacted***'
+
 
 def _read_token_file(path: str) -> str:
     """Read a long-lived access token from *path*, or '' if unreadable.
@@ -643,7 +648,7 @@ def redact_config(config: Any) -> Any:
     value is replaced.
     """
     if isinstance(config, dict):
-        return {k: ('***redacted***' if k in SECRET_KEYS and v else redact_config(v))
+        return {k: (REDACTED if k in SECRET_KEYS and v else redact_config(v))
                 for k, v in config.items()}
     if isinstance(config, list):
         return [redact_config(v) for v in config]

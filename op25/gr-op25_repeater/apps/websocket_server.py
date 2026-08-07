@@ -54,11 +54,13 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 import uvicorn
 
+import config_schema
+import config_store
 from ha_bridge import (
     CallClip,
     CallRecorder,
@@ -92,6 +94,39 @@ _DIST_DIR = os.path.realpath(
 # ---------------------------------------------------------------------------
 
 _config: dict[str, Any] | None = None
+
+# The editable-config layer. None until a config is installed; None also means
+# "editing unavailable", which is what a standalone run with no overlay path or a
+# deliberately read-only deployment looks like.
+_config_store: config_store.ConfigStore | None = None
+
+# The decoder's command queue, published here so the REST handlers can send it a
+# command. ws_terminal owns it; the WebSocket path reaches it through a closure,
+# but a REST handler is a module-level function with no such context.
+_output_q: Any = None
+
+
+def _send_upstream(payload: dict[str, Any]) -> bool:
+    """Send a decoder UI command. Returns False if there is nothing to send to.
+
+    Uses the JSON form unconditionally: every caller here has an argument that
+    does not fit a gr.message's two floats (a gain string, a device name), and
+    multi_rx.process_qmsg has always tried json.loads() before the bare-string
+    form.
+    """
+    if _gr is None or _output_q is None:
+        return False
+    try:
+        arg1 = float(payload.get('arg1', 0.0))
+        arg2 = float(payload.get('arg2', 0.0))
+        msg = _gr.message().make_from_string(json.dumps(payload), -2, arg1, arg2)
+        if _output_q.full_p():
+            return False
+        _output_q.insert_tail(msg)
+        return True
+    except Exception:
+        sys.stderr.write('_send_upstream failed:\n%s\n' % traceback.format_exc())
+        return False
 
 
 def load_config(path: str) -> dict[str, Any]:
@@ -1264,6 +1299,367 @@ def register_upstream_handler(msg_type: str, handler: Any) -> None:
 # Config endpoint
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Editable configuration
+# ---------------------------------------------------------------------------
+
+def _init_config_store() -> None:
+    """(Re)build the config store from the installed config."""
+    global _config_store
+    if _config_store is not None:
+        _config_store.close()
+        _config_store = None
+    if _config is None:
+        return
+    base_id = str(((_config.get('terminal') or {}).get('config_base_id')
+                   or os.environ.get('OP25_CONFIG_BASE_ID') or 'config'))
+    _config_store = config_store.ConfigStore(
+        _config,
+        overlay_file=config_store.overlay_path(_config),
+        history_file=config_store.history_db_path(_config),
+        base_id=base_id,
+    )
+
+
+def _write_policy() -> str:
+    """``'ingress'``, ``'open'`` or ``'off'`` -- who may change the config.
+
+    Writing the config from an unauthenticated port is a real escalation, not a
+    theoretical one: port 8099 has ``allow_origins=["*"]`` and no token, so
+    anyone on the LAN could re-point the receiver or change the Home Assistant
+    webhook. Ingress is the authenticated path, so in the add-on that is the only
+    one permitted.
+
+    The default is therefore ``ingress`` when running as an add-on and ``open``
+    otherwise. ``$SUPERVISOR_TOKEN`` is what distinguishes the two -- bashio
+    exports it in the container and nothing else sets it -- because a standalone
+    install has no ingress to require, and defaulting to ``ingress`` there would
+    make the editor permanently unreachable rather than secure.
+    """
+    env = os.environ.get('OP25_CONFIG_WRITE')
+    if env:
+        return env.strip().lower()
+    terminal = (_config or {}).get('terminal', {}) or {}
+    configured = terminal.get('config_write')
+    if configured:
+        return str(configured).strip().lower()
+    return 'ingress' if os.environ.get('SUPERVISOR_TOKEN') else 'open'
+
+
+def _write_denied(request: Any) -> Response | None:
+    """None if this request may write, else the Response to return."""
+    policy = _write_policy()
+    if policy == 'open':
+        return None
+    if policy == 'ingress':
+        # Supervisor's ingress proxy sets this on every request it forwards, and
+        # it cannot be reached from the published port.
+        if request is not None and request.headers.get('x-ingress-path') is not None:
+            return None
+        return Response(
+            content=json.dumps({
+                'error': 'config writes require the Home Assistant ingress path',
+                'detail': 'Open OP25 from the Home Assistant sidebar rather than '
+                          'via port 8099, which is unauthenticated. Set the '
+                          'config_write option to "open" to allow it anyway.',
+                'policy': policy,
+            }),
+            status_code=403, media_type='application/json',
+            headers={'Cache-Control': 'no-store'})
+    return Response(
+        content=json.dumps({'error': 'config editing is disabled', 'policy': policy}),
+        status_code=403, media_type='application/json',
+        headers={'Cache-Control': 'no-store'})
+
+
+def _json(payload: Any, status_code: int = 200) -> Response:
+    return Response(content=json.dumps(payload), status_code=status_code,
+                    media_type='application/json',
+                    headers={'Cache-Control': 'no-store'})
+
+
+def _no_store() -> Response:
+    return _json({'error': 'config editing is unavailable',
+                  'detail': 'No config is loaded, or no overlay path is configured.'},
+                 status_code=503)
+
+
+@app.get("/api/config/schema")
+async def get_config_schema(
+    protocol: str | None = Query(None, description="Filter to one trunking module"),
+) -> Response:
+    """Field metadata the editor renders itself from.
+
+    Filtering by protocol is what keeps this from being a P25 form: a field that
+    means nothing for SmartNet is not shown for SmartNet.
+    """
+    if protocol is None and _config is not None:
+        protocol = ((_config.get('trunking') or {}).get('module')) or None
+    return _json(config_schema.schema(protocol))
+
+
+@app.get("/api/config/state")
+async def get_config_state() -> Response:
+    """Everything the editor needs to render: effective config, overlay, drift."""
+    if _config_store is None:
+        return _no_store()
+    return _json({
+        # stats() is spread FIRST so the computed keys below win. It carries its
+        # own 'editable' -- meaning only "an overlay path exists" -- and spreading
+        # it last silently replaced the write-policy-aware value with that one.
+        # Same trap as tg_metadata.stats() vs /api/talkgroups.
+        **_config_store.stats(),
+        'editable': _config_store.editable and _write_policy() != 'off',
+        'write_policy': _write_policy(),
+        'effective': redact_config(_config_store.effective()),
+        'base': redact_config(_config_store.base),
+        'overlay': redact_config(_config_store.overlay()),
+        'preset_drift': _config_store.preset_drift(),
+    })
+
+
+@app.get("/api/config/history")
+async def get_config_history(
+    limit: int = Query(50, ge=1, le=config_store.MAX_VERSIONS),
+) -> Response:
+    if _config_store is None:
+        return _no_store()
+    return _json({'versions': [
+        {**v, 'overlay': redact_config(v['overlay'])}
+        for v in _config_store.history(limit)
+    ]})
+
+
+def _apply_and_classify(changes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Dispatch the live half of a diff to the decoder; report the rest.
+
+    Returning ``needs_restart`` honestly is the point. Reporting a
+    restart-required change as applied would leave the user trusting a value the
+    decoder is not running -- and gain, the field most worth changing, is one of
+    the few that *is* live, so the distinction is visible immediately.
+    """
+    verdict = config_schema.classify(changes)
+    applied: list[str] = []
+    for change in verdict['live']:
+        path, new = change['path'], change.get('new')
+        device = None
+        if path.startswith('devices[') and '].' in path:
+            device = path[len('devices['):path.index('].')]
+        if device is None:
+            continue
+        if path.endswith('.gains'):
+            _send_upstream({'command': 'set_device_gains', 'device': device,
+                            'gains': new})
+            applied.append(path)
+        elif path.endswith('.ppm'):
+            _send_upstream({'command': 'set_device_ppm', 'device': device,
+                            'ppm': new})
+            applied.append(path)
+    verdict['applied'] = applied
+    return verdict
+
+
+@app.put("/api/config")
+async def put_config(request: Request) -> Response:
+    """Save a full effective config as overrides of the preset.
+
+    The body is what the caller wants to be running, not a patch -- that is what
+    a form or a JSON editor naturally produces, and the delta is computed here so
+    a field set back to the preset value stops being an override.
+    """
+    denied = _write_denied(request)
+    if denied is not None:
+        return denied
+    if _config_store is None or not _config_store.editable:
+        return _no_store()
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return _json({'error': 'body is not valid JSON'}, status_code=400)
+    if not isinstance(body, dict):
+        return _json({'error': 'body must be a JSON object'}, status_code=400)
+    proposed = body.get('config', body)
+    if not isinstance(proposed, dict):
+        return _json({'error': '"config" must be a JSON object'}, status_code=400)
+    problems = _validate_config(proposed)
+    if problems:
+        return _json({'error': 'config is not valid', 'problems': problems},
+                     status_code=422)
+    try:
+        version = _config_store.save(proposed, source=str(body.get('source', 'gui')),
+                                     summary=str(body.get('summary', '')))
+    except (OSError, RuntimeError) as e:
+        return _json({'error': 'could not write the overlay', 'detail': str(e)},
+                     status_code=500)
+    return _json({'ok': True,
+                  'version': {**version, 'overlay': redact_config(version['overlay'])},
+                  **_apply_and_classify(version['diff'])})
+
+
+@app.post("/api/config/rollback/{version_id}")
+async def post_config_rollback(version_id: int, request: Request) -> Response:
+    denied = _write_denied(request)
+    if denied is not None:
+        return denied
+    if _config_store is None or not _config_store.editable:
+        return _no_store()
+    try:
+        version = _config_store.rollback(version_id)
+    except KeyError:
+        return _json({'error': 'no such config version', 'id': version_id},
+                     status_code=404)
+    except (OSError, RuntimeError) as e:
+        return _json({'error': 'could not write the overlay', 'detail': str(e)},
+                     status_code=500)
+    return _json({'ok': True,
+                  'version': {**version, 'overlay': redact_config(version['overlay'])},
+                  **_apply_and_classify(version['diff'])})
+
+
+@app.post("/api/config/reset")
+async def post_config_reset(request: Request) -> Response:
+    """Discard every override and run the preset as shipped."""
+    denied = _write_denied(request)
+    if denied is not None:
+        return denied
+    if _config_store is None or not _config_store.editable:
+        return _no_store()
+    try:
+        version = _config_store.reset_to_preset()
+    except (OSError, RuntimeError) as e:
+        return _json({'error': 'could not write the overlay', 'detail': str(e)},
+                     status_code=500)
+    return _json({'ok': True, 'version': version, **_apply_and_classify(version['diff'])})
+
+
+@app.post("/api/config/export")
+async def post_config_export(request: Request) -> Response:
+    """Write the effective config out as a standalone, fully-owned file.
+
+    The result stops tracking the preset, which is the trade being made: this is
+    for graduating to ``preset: custom``.
+    """
+    denied = _write_denied(request)
+    if denied is not None:
+        return denied
+    if _config_store is None:
+        return _no_store()
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        body = {}
+    path = str((body or {}).get('path') or 'op25.exported.json')
+    allowed = _export_denied(path)
+    if allowed is not None:
+        return allowed
+    try:
+        written = _config_store.export(path)
+    except OSError as e:
+        return _json({'error': 'could not write the export', 'detail': str(e)},
+                     status_code=500)
+    return _json({'ok': True, 'path': written,
+                  'note': 'This file no longer tracks the preset. Point the '
+                          'config_file option at it and set preset: custom to use it.'})
+
+
+def _export_roots() -> list[str]:
+    """Directories an export may be written to.
+
+    The working directory is included because that *is* the data directory: it is
+    where multi_rx resolves tag files, where tg_metadata puts its database, and on
+    a standalone install it is the only writable location that exists. Restricting
+    to /share, /config and /data alone would refuse every legitimate path outside
+    the add-on. ``$OP25_EXPORT_ROOTS`` overrides for an unusual layout.
+    """
+    env = os.environ.get('OP25_EXPORT_ROOTS')
+    if env:
+        return [p for p in (part.strip() for part in env.split(':')) if p]
+    roots = [os.getcwd()]
+    roots.extend(d for d in ('/share', '/config', '/data') if os.path.isdir(d))
+    return roots
+
+
+def _export_denied(path: str) -> Response | None:
+    """None if *path* is inside an allowed root, else the Response to return.
+
+    Defence in depth -- writes are already gated to ingress. This is here so a
+    path traversal in an export request cannot drop a file anywhere on the
+    filesystem, which matters because the config it writes is attacker-chosen.
+    """
+    roots = [os.path.realpath(r) for r in _export_roots()]
+    target = os.path.realpath(os.path.join(os.getcwd(), path))
+    if any(target == r or target.startswith(r + os.sep) for r in roots):
+        return None
+    return _json({'error': 'refusing to write outside the allowed directories',
+                  'path': path, 'allowed': roots}, status_code=400)
+
+
+def _validate_config(cfg: dict[str, Any]) -> list[str]:
+    """Cheap structural validation. Not a schema check -- a footgun check.
+
+    Only rules whose violation would stop the decoder starting, or would start it
+    in a state with no way back through the UI. Everything subtler is left to the
+    decoder, which reports it in the log.
+    """
+    problems: list[str] = []
+    devices = cfg.get('devices')
+    channels = cfg.get('channels')
+    if not isinstance(devices, list) or not devices:
+        problems.append('devices must be a non-empty list')
+        devices = []
+    if not isinstance(channels, list) or not channels:
+        problems.append('channels must be a non-empty list')
+        channels = []
+
+    names = set()
+    for i, dev in enumerate(devices):
+        if not isinstance(dev, dict):
+            problems.append('devices[%d] is not an object' % i)
+            continue
+        name = dev.get('name')
+        if not name:
+            problems.append('devices[%d] has no name' % i)
+        elif name in names:
+            problems.append('duplicate device name %r' % name)
+        else:
+            names.add(name)
+        rate, if_rate = dev.get('rate'), None
+        for ch in channels if isinstance(channels, list) else []:
+            if isinstance(ch, dict) and ch.get('device') == name:
+                if_rate = ch.get('if_rate')
+                break
+        if isinstance(rate, (int, float)) and isinstance(if_rate, (int, float)) \
+                and if_rate and rate % if_rate:
+            # Not fatal -- an arbitrary resampler covers it -- so this is a
+            # warning in problems' clothing only if it were fatal. Keep it out.
+            pass
+        if 'gains' in dev and dev['gains']:
+            try:
+                for tup in str(dev['gains']).split(','):
+                    if tup.strip():
+                        stage, value = tup.split(':', 1)
+                        if not stage.strip():
+                            raise ValueError
+                        float(value)
+            except ValueError:
+                problems.append('devices[%s].gains is not STAGE:value' % (name or i))
+
+    for i, ch in enumerate(channels):
+        if not isinstance(ch, dict):
+            problems.append('channels[%d] is not an object' % i)
+            continue
+        if ch.get('device') and names and ch['device'] not in names:
+            problems.append('channels[%d].device %r matches no device'
+                            % (i, ch['device']))
+        if not ch.get('if_rate'):
+            problems.append('channels[%d] has no if_rate' % i)
+
+    terminal = cfg.get('terminal')
+    if terminal is not None and not isinstance(terminal, dict):
+        problems.append('terminal must be an object')
+    return problems
+
+
 @app.get("/api/config")
 async def get_config() -> Response:
     """Return the loaded config JSON, or 404 when no config file was supplied.
@@ -1659,6 +2055,8 @@ class ws_terminal(threading.Thread):
         self.input_q  = input_q
         self.output_q = output_q
         self.keep_running = True
+        global _output_q
+        _output_q = output_q
         # None == clients attached; a timestamp == idle since then; -1 == idle
         # and the decoder has already been told to close its plots.
         self._idle_since: float | None = None
@@ -1897,6 +2295,7 @@ def op25_terminal(
     global _config
     if config is not None:
         _config = config
+        _init_config_store()
     if terminal_type.startswith('ws:'):
         endpoint = terminal_type[3:]
     else:
@@ -1918,6 +2317,7 @@ class websocket_server:
         self._port = int(port_str)
         if config_file is not None:
             _config = load_config(config_file)
+            _init_config_store()
             sys.stderr.write('Loaded config from %s\n' % config_file)
 
     def run(self) -> None:

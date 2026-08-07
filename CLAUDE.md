@@ -580,6 +580,74 @@ the user's box.
   `GrPybind.cmake` `configure_file()`s for every pybind target. `.dockerignore`
   excludes `docs/` but re-includes that one header.
 
+## Editable configuration
+
+`apps/config_store.py` + `apps/config_schema.py` are the fork's config-editing
+layer. The design exists because two wants are in tension: a config shipped in
+the add-on image keeps receiving fixes on update, and a config the user owns does
+not. The effective config is therefore **composed, never stored**:
+
+    preset (read-only, in the image)  +  overlay (only what the user changed)
+
+- **The overlay holds deltas only**, which is what makes the three operations the
+  user asked for fall out for free: roll back to preset = discard the overlay;
+  adopt preset changes = nothing to do, because unoverridden fields already track
+  it (`preset_drift()` reports the short list where an override now masks a
+  *moved* preset value); export = compose and write a standalone file for
+  `preset: custom`.
+- **`deep_merge` merges lists of dicts element-wise by `name`** (or `sysname` /
+  `instance_name`), unlike the add-on run script's `jq *`, which replaces arrays.
+  Replacement would force an overlay to restate a whole device to change one
+  field of it — and then a preset fix to a *different* field could never arrive,
+  which is the staleness the module exists to prevent.
+- **`dict(base)` is a shallow copy and that was a real bug.** `effective()`
+  handed out references into the preset, so a caller editing the returned config
+  rewrote the base; the overlay then looked empty and the diff looked empty,
+  because the "before" had already moved. `deep_merge` deep-copies untouched
+  subtrees.
+- **`prune_overlay` drops anything equal to the base**, so a field set back to
+  the preset value stops being an override instead of silently pinning itself.
+- **A masked secret means "unchanged".** `/api/config*` redacts
+  `ha_bridge.SECRET_KEYS`, so a read-modify-write from the browser would persist
+  the literal `***redacted***` as the token and surface much later as an HA 401.
+  `unredact()` substitutes the live value; `ha_bridge.REDACTED` is a named
+  constant precisely because it is recognised on the way back in.
+- **`config_schema` is what makes this multi-protocol.** The editor renders from
+  field metadata, so adding a protocol is field descriptions rather than another
+  React form. `applies_to` hides fields that mean nothing for the loaded trunking
+  module (`nac` is P25-only, `bandplan` SmartNet-only).
+- **`live` vs restart-required is the load-bearing flag.** Almost nothing is live:
+  device and channel parameters are read in `multi_rx`'s constructors. Being
+  optimistic here is the dangerous direction — the UI would report success while
+  the decoder ran the old value. `classify()` splits a diff and the API returns
+  `needs_restart` honestly.
+- **Gain and ppm *are* live, and that is new.** `osmosdr` passes `set_gain()` /
+  `set_freq_corr()` straight to the tuner, so `set_device_gains` /
+  `set_device_ppm` (multi_rx `RX_DEVICE_COMMANDS`) apply without a rebuild. This
+  matters because gain is the parameter most worth sweeping — overload and
+  starvation produce identical symptoms — and a restart per value makes that
+  impractical. `set_device_ppm` re-derives every affected channel's relative
+  frequency, or the correction is applied twice (once by the tuner, once by a
+  stale `freq_xlat` offset).
+- **Writes are gated to the ingress path.** Port 8099 is unauthenticated, so
+  config *writes* there would let anyone on the LAN re-point the receiver.
+  `_write_policy()` is `ingress` when `$SUPERVISOR_TOKEN` is set (the add-on) and
+  `open` otherwise — a standalone install has no ingress to require, and
+  defaulting to `ingress` there would make the editor permanently unreachable
+  rather than secure. Reads stay open so `yarn dev` still works.
+- `stats()` is spread **before** the computed keys in `/api/config/state`: it
+  carries its own `editable` (meaning only "an overlay path exists") and
+  spreading it last silently replaced the policy-aware value. Same trap as
+  `tg_metadata.stats()` vs `/api/talkgroups`.
+- Paths: `$OP25_CONFIG_OVERLAY` / `terminal.config_overlay` /
+  `op25_config_overlay.json` in the cwd; history likewise via
+  `$OP25_CONFIG_HISTORY_DB`. A corrupt overlay is **ignored, not fatal** — the
+  preset alone is a working scanner — and a missing history db never blocks a
+  save, because losing the audit trail must not stop a config being written.
+- Still to build: the React editor (form from schema, raw-JSON advanced mode,
+  history/rollback panel, restart banner) and the restart button itself, which
+  needs `hassio_api` + a manager role in `config.yaml`.
+
 ## Known remaining gaps
 
 1. `www/dist` is a **committed build artifact**. It can drift from `www/app/src`
@@ -596,9 +664,12 @@ the user's box.
    system in range here. Two real bugs were fixed blind in `tk_trbo.py` (slot
    state aliasing, and `current_chan` never advancing during a CC hunt) — treat
    both as needing an on-air confirmation.
-4. `set_full_config` still does nothing. It now returns an explicit error rather
-   than a false `ok`, and the UI can display the config read-only. Writing the
-   user's JSON from an unauthenticated browser is a deliberate non-goal.
+4. `set_full_config` (the decoder's own upstream command) still does nothing and
+   returns an explicit error. It is **superseded, not pending**: config editing
+   goes through the REST layer in "Editable configuration" above, which writes an
+   overlay rather than the user's JSON and is gated to the ingress path. The old
+   objection — writing config from an unauthenticated browser — is what that gate
+   answers. The remaining work there is the React editor, not the backend.
 5. Nothing here has been verified on the **Raspberry Pi 5**. The Linux audio
    path in particular is unchanged in its ALSA/PulseAudio ordering but has only
    been exercised through the fallback chain on macOS.
@@ -651,7 +722,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 423 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 529 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -682,6 +753,12 @@ its `from gnuradio import gr`.
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
   `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, and
   the idle-vs-attached buffer bound (44).
+- `tests/config_store_spec.py` — merge/prune/diff primitives, overlay deltas,
+  preset drift, rollback replaying intent onto a moved preset, redaction
+  round-trip, path resolution, schema live-vs-restart classification (62).
+- `tests/config_api_spec.py` — the write gate (ingress/open/off), config state,
+  schema filtering, validation, history, rollback, reset, export containment
+  (44).
 - `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
   fields pinned to `Palmetto800-single.json`, and container-appropriate (no
   pinned serial, no local speaker output, no secrets) (29).
