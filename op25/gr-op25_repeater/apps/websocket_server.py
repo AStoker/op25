@@ -1414,8 +1414,30 @@ async def get_config_state() -> Response:
         'effective': redact_config(_config_store.effective()),
         'base': redact_config(_config_store.base),
         'overlay': redact_config(_config_store.overlay()),
-        'preset_drift': _config_store.preset_drift(),
+        'preset_drift': _trim_drift(_config_store.preset_drift()),
     })
+
+
+def _trim_drift(drift: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Round the values a drift report shows, per the field's declared precision.
+
+    This is display data, not stored data. Saving rounds on the way in, but an
+    overlay written before that existed still holds 2.3749999999999996 -- and the
+    alert that tells you the preset moved is a bad place to show sixteen digits.
+    Rounding here rather than rewriting the file keeps startup from silently
+    editing something the user did not ask it to.
+    """
+    out = []
+    for entry in drift:
+        places = config_schema.precision_for(entry['path'])
+        if places is None:
+            out.append(entry)
+            continue
+        out.append({**entry, **{
+            k: (round(v, places) if isinstance(v, float) and not isinstance(v, bool) else v)
+            for k, v in entry.items() if k in ('preset', 'override')
+        }})
+    return out
 
 
 @app.get("/api/config/history")
@@ -1481,6 +1503,9 @@ async def put_config(request: Request) -> Response:
     proposed = body.get('config', body)
     if not isinstance(proposed, dict):
         return _json({'error': '"config" must be a JSON object'}, status_code=400)
+    # Trim declared floats before anything else sees them, so 2.3749999999999996
+    # never reaches the overlay regardless of which client sent it.
+    proposed = config_schema.round_floats(proposed)
     problems = _validate_config(proposed)
     if problems:
         return _json({'error': 'config is not valid', 'problems': problems},

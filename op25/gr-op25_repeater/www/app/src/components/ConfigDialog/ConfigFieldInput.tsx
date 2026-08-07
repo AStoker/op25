@@ -1,11 +1,14 @@
 import Box from '@mui/material/Box';
-import Chip from '@mui/material/Chip';
+import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import BoltIcon from '@mui/icons-material/Bolt';
+import EditIcon from '@mui/icons-material/Edit';
+import LockIcon from '@mui/icons-material/Lock';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
 import Field from '../common/Field';
 import type { ConfigField } from '../../types/config';
 
@@ -13,17 +16,23 @@ import type { ConfigField } from '../../types/config';
  * One control, rendered from the server's field description.
  *
  * Nothing here knows what a gain or a NAC is — the label, help text, units,
- * bounds and choices all come from `config_schema.py`, which is what lets a
- * protocol other than P25 appear without editing this file.
+ * bounds, precision and choices all come from `config_schema.py`, which is what
+ * lets a protocol other than P25 appear without editing this file.
+ *
+ * The status badges are icons rather than text chips: every field carries at
+ * least one, and three words repeated down a column of twenty fields drowns out
+ * the labels they are attached to. `FieldLegend` in SettingsTab names them once.
  */
 
 interface Props {
   field: ConfigField;
   value: unknown;
-  /** Value the preset would give, shown when an override is masking it. */
+  /** Value the preset would give. Undefined when the preset has no such key. */
   presetValue?: unknown;
   overridden: boolean;
   onChange: (value: unknown) => void;
+  /** Revert to `presetValue`. Absent when the field is not overridden. */
+  onReset?: () => void;
   disabled?: boolean;
 }
 
@@ -34,35 +43,86 @@ function toNumber(raw: string): number | '' {
   return Number.isFinite(n) ? n : '';
 }
 
+/**
+ * Trim a float to the precision the field declares.
+ *
+ * `adj_tune` works in fractional ppm and lands on values like
+ * `2.3749999999999996`. Those digits are noise — at 859 MHz the smallest tuning
+ * step is about 0.116 ppm — but they make the value unreadable. Rounds rather
+ * than truncating, and leaves the value alone when no precision is declared.
+ */
+export function trimFloat(value: unknown, precision?: number): unknown {
+  if (precision === undefined || typeof value !== 'number' || !Number.isFinite(value)) {
+    return value;
+  }
+  return Number(value.toFixed(precision));
+}
+
+/** How a value reads in a tooltip: quoted strings, `unset` for absent. */
+export function describeValue(value: unknown): string {
+  if (value === undefined) return 'unset';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value === '' ? '(empty)' : `"${value}"`;
+  return JSON.stringify(value);
+}
+
+const BADGE_SX = { fontSize: 15, verticalAlign: 'text-bottom' } as const;
+
 export default function ConfigFieldInput({
-  field, value, presetValue, overridden, onChange, disabled = false,
+  field, value, presetValue, overridden, onChange, onReset, disabled = false,
 }: Props) {
   const ro = disabled || field.readonly;
-
-  const meta = (
-    <>
-      {field.live ? (
-        <Tooltip title="Applies immediately — no restart needed">
-          <Chip icon={<BoltIcon />} label="live" variant="outlined" color="success" />
-        </Tooltip>
-      ) : (
-        <Tooltip title="Read by the decoder at startup — saving stores it, but it takes a restart to take effect">
-          <Chip icon={<RestartAltIcon />} label="restart" variant="outlined" />
-        </Tooltip>
-      )}
-      {overridden && (
-        <Tooltip title={`Overriding the preset, which has ${JSON.stringify(presetValue)}`}>
-          <Chip label="overridden" variant="outlined" color="warning" />
-        </Tooltip>
-      )}
-    </>
-  );
+  const shown = field.type === 'number' ? trimFloat(value, field.precision) : value;
 
   const label = (
-    <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+    <Box
+      component="span"
+      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}
+    >
       {field.label}
       {field.unit && <Box component="span" sx={{ opacity: 0.7 }}>({field.unit})</Box>}
-      {meta}
+
+      {field.live ? (
+        <Tooltip title="Live — applies as soon as you save, no restart">
+          <BoltIcon color="success" sx={BADGE_SX} aria-label="live" />
+        </Tooltip>
+      ) : (
+        <Tooltip title="Restart required — saved straight away, but the decoder only reads this at startup">
+          <RestartAltIcon color="disabled" sx={BADGE_SX} aria-label="restart required" />
+        </Tooltip>
+      )}
+
+      {field.readonly && (
+        <Tooltip title="Read-only — changing it would break references elsewhere in the config">
+          <LockIcon color="disabled" sx={BADGE_SX} aria-label="read-only" />
+        </Tooltip>
+      )}
+
+      {overridden && (
+        <Tooltip title={`Overriding the preset, which has ${describeValue(trimFloat(presetValue, field.precision))}`}>
+          <EditIcon color="warning" sx={BADGE_SX} aria-label="overridden" />
+        </Tooltip>
+      )}
+
+      {overridden && onReset && !ro && (
+        <Tooltip
+          title={presetValue === undefined
+            ? 'Remove this override — the preset does not set this field'
+            : `Reset to the preset value: ${describeValue(trimFloat(presetValue, field.precision))}`}
+        >
+          {/* Small, and inline with the caption rather than beside the control:
+              it belongs to the label's status row, and putting it next to the
+              input would shorten every input by its width. */}
+          <IconButton
+            size="small"
+            aria-label={`reset ${field.label} to the preset value`}
+            onClick={onReset}
+            sx={{ p: 0.25, ml: -0.25 }}
+          >
+            <SettingsBackupRestoreIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+      )}
     </Box>
   );
 
@@ -130,10 +190,10 @@ export default function ConfigFieldInput({
       <Field label={label} hint={field.help}>
         <TextField
           type="number"
-          value={value === undefined || value === null ? '' : String(value)}
+          value={shown === undefined || shown === null ? '' : String(shown)}
           disabled={ro}
           placeholder={field.placeholder}
-          onChange={(e) => onChange(toNumber(e.target.value))}
+          onChange={(e) => onChange(trimFloat(toNumber(e.target.value), field.precision))}
           slotProps={{
             htmlInput: {
               'aria-label': field.label,

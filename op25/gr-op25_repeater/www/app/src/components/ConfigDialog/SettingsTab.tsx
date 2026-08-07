@@ -16,6 +16,7 @@ import Hint from '../common/Hint';
 import InsetPanel from '../common/InsetPanel';
 import SectionHeading from '../common/SectionHeading';
 import ConfigFieldInput from './ConfigFieldInput';
+import FieldLegend from './FieldLegend';
 import type { UseConfigEditor } from '../../hooks/useConfigEditor';
 import { concretePath, listKeys, readPath, writePath } from '../../hooks/useConfigEditor';
 import type { ConfigField, ConfigSection } from '../../types/config';
@@ -102,16 +103,25 @@ export default function SettingsTab({ editor }: Props) {
 
   const renderField = (field: ConfigField, key?: string | number) => {
     const path = key === undefined ? field.path : concretePath(field.path, key);
+    const presetValue = readPath(state.base, path);
+    // Overridden against what is *saved*, not against the draft: an unsaved edit
+    // is already flagged by the dirty count, and showing it as an override would
+    // claim something is stored that is not.
     const overridden = readPath(state.overlay, path) !== undefined;
     return (
       <ConfigFieldInput
         key={path}
         field={field}
         value={readPath(draft, path)}
-        presetValue={readPath(state.base, path)}
+        presetValue={presetValue}
         overridden={overridden}
         disabled={readOnly}
         onChange={(v) => setValue(path, v)}
+        // Writing the preset value back is all a reset needs to be: the server
+        // prunes anything equal to the base, so saving drops the override. When
+        // the preset has no such key, undefined removes it from the submitted
+        // JSON, which has the same effect.
+        onReset={() => setValue(path, presetValue)}
       />
     );
   };
@@ -234,6 +244,8 @@ export default function SettingsTab({ editor }: Props) {
         alone keeps tracking add-on updates.
         {state.overrides > 0 && ` Currently overriding ${state.overrides} value(s).`}
       </Hint>
+
+      <FieldLegend />
 
       {schema.sections.map((section) => {
         const visible = fieldsFor(section, advanced);

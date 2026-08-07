@@ -34,6 +34,13 @@ export interface ConfigField {
   min?: number;
   max?: number;
   step?: number;
+  /** Decimal places worth keeping for a float.
+   *
+   *  `adj_tune` works in fractional ppm and produces values like
+   *  `2.3749999999999996`. Those digits are below what the hardware can act on —
+   *  at 859 MHz the smallest tuning step is ~0.116 ppm — but they make the value
+   *  unreadable, and the config is something a human reads. */
+  precision?: number;
 }
 
 export interface ConfigSection {

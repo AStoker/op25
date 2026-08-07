@@ -669,6 +669,13 @@ not. The effective config is therefore **composed, never stored**:
   The by-name lookup is `find_device_by_name`. `tests/multi_rx_api_spec.py` parses
   the source (it cannot import `multi_rx` without GNU Radio) and fails on any
   duplicate method in any class there.
+- **`config_schema` also owns float precision.** `round_floats()` is applied on
+  save, so `2.3749999999999996` from `adj_tune` never reaches the overlay
+  whichever client sent it, and `_trim_drift()` rounds the drift report because an
+  overlay written before that existed still holds the long value. Only paths with
+  a declared `precision` are touched — a frequency in Hz is left exactly as given
+  — and `bool` is excluded explicitly, since it is an `int` subclass and would
+  otherwise round to 1.
 - **The UI names no config field.** `ConfigDialog`'s Settings tab renders from
   `/api/config/schema`; `www/app/AGENTS.md` has the frontend detail. The three
   tabs share one `useConfigEditor`, which lives outside `op25Service` because
@@ -762,7 +769,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 553 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 569 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -799,10 +806,12 @@ its `from gnuradio import gr`.
 - `tests/config_store_spec.py` — merge/prune/diff primitives, overlay deltas,
   preset drift, rollback replaying intent onto a moved preset, redaction
   round-trip, path resolution, schema live-vs-restart classification, and the
-  startup overlay application incl. editor/startup agreement (74).
+  startup overlay application incl. editor/startup agreement, float
+  precision and reset-to-preset semantics (84).
 - `tests/config_api_spec.py` — the write gate (ingress/open/off), config state,
   schema filtering, validation, history, rollback, reset, export containment,
-  and the restart endpoint's gating and error mapping (48).
+  the restart endpoint's gating and error mapping, and float precision
+  over the API (54).
 - `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
   fields pinned to `Palmetto800-single.json`, and container-appropriate (no
   pinned serial, no local speaker output, no secrets) (29).

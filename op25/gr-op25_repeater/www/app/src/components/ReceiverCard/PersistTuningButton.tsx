@@ -9,6 +9,12 @@ import Hint from '../common/Hint';
 import { apiUrl } from '../../utils/url';
 import { readPath, writePath } from '../../hooks/useConfigEditor';
 
+/** Decimal places to store ppm at. Mirrors the `precision` on `devices[*].ppm`
+ *  in config_schema.py; at 859 MHz one ppm is 859 Hz, so three decimals is
+ *  already finer than the 100 Hz small tuning step. Rounding here is what keeps
+ *  2.3749999999999996 out of the config file in the first place. */
+const PPM_PRECISION = 3;
+
 /**
  * Persist the fine-tuned ppm so it survives a restart.
  *
@@ -53,14 +59,15 @@ export default function PersistTuningButton({ device, livePpm, disabled = false 
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // A float compare with a tolerance: adj_tune works in fractional ppm, so an
-  // exact === would call a saved value dirty forever.
+  // Compare at the precision we store at. adj_tune works in fractional ppm, so
+  // an exact === against a rounded stored value would read as dirty forever.
   const differs = typeof livePpm === 'number' && savedPpm !== null
-    && Math.abs(livePpm - savedPpm) > 1e-6;
+    && Number(livePpm.toFixed(PPM_PRECISION)) !== Number(savedPpm.toFixed(PPM_PRECISION));
   const unsaved = typeof livePpm === 'number' && (savedPpm === null || differs);
 
   const persist = async () => {
     if (!device || typeof livePpm !== 'number') return;
+    const rounded = Number(livePpm.toFixed(PPM_PRECISION));
     setBusy(true);
     setResult(null);
     try {
@@ -68,21 +75,21 @@ export default function PersistTuningButton({ device, livePpm, disabled = false 
       if (!stateResp.ok) throw new Error(`could not read the config (${stateResp.status})`);
       const state = await stateResp.json();
 
-      const next = writePath(state.effective, `devices[${device}].ppm`, livePpm);
+      const next = writePath(state.effective, `devices[${device}].ppm`, rounded);
       const resp = await fetch(apiUrl('api/config'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           config: next,
           source: 'fine-tune',
-          summary: `ppm ${livePpm.toFixed(3)} for ${device}`,
+          summary: `ppm ${rounded} for ${device}`,
         }),
       });
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
         throw new Error(String(body.detail ?? body.error ?? `HTTP ${resp.status}`));
       }
-      setResult({ ok: true, message: `Saved ppm ${livePpm.toFixed(3)}` });
+      setResult({ ok: true, message: `Saved ppm ${rounded}` });
       await refresh();
     } catch (e) {
       setResult({ ok: false, message: e instanceof Error ? e.message : 'save failed' });
@@ -105,7 +112,7 @@ export default function PersistTuningButton({ device, livePpm, disabled = false 
         </Button>
         {savedPpm !== null && (
           <Tooltip title="ppm currently stored in the config, which is what a restart will use">
-            <Chip variant="outlined" label={`saved ${savedPpm.toFixed(2)}`} />
+            <Chip variant="outlined" label={`saved ${Number(savedPpm.toFixed(PPM_PRECISION))}`} />
           </Tooltip>
         )}
         {unsaved && <Chip variant="outlined" color="warning" label="unsaved" />}

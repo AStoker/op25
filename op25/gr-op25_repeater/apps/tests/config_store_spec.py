@@ -622,3 +622,97 @@ class TestApplyOverlayStream:
 
         at_startup = json.loads(cs.apply_overlay_stream(json.dumps(BASE), overlay_path))
         assert at_startup == store.effective()
+
+
+# ---------------------------------------------------------------------------
+# Float precision
+#
+# adj_tune works in fractional ppm and lands on 2.3749999999999996. Those digits
+# are below what the hardware can act on -- at 859 MHz the smallest tuning step is
+# ~0.116 ppm -- but the config is something a human reads.
+# ---------------------------------------------------------------------------
+
+
+class TestRoundFloats:
+    def test_declared_precision_is_applied(self) -> None:
+        cfg = {'devices': [{'name': 'sdr0', 'ppm': 2.3749999999999996}]}
+        assert config_schema.round_floats(cfg)['devices'][0]['ppm'] == 2.375
+
+    def test_fields_without_a_precision_are_untouched(self) -> None:
+        # A frequency in Hz has no business being rounded.
+        cfg = {'devices': [{'name': 'sdr0', 'frequency': 859262500.5}]}
+        assert config_schema.round_floats(cfg)['devices'][0]['frequency'] == 859262500.5
+
+    def test_booleans_survive(self) -> None:
+        # bool is an int subclass; a careless isinstance would turn True into 1.
+        cfg = {'devices': [{'name': 'sdr0', 'gain_mode': False, 'tunable': True}]}
+        out = config_schema.round_floats(cfg)['devices'][0]
+        assert out['gain_mode'] is False and out['tunable'] is True
+
+    def test_strings_and_ints_survive(self) -> None:
+        cfg = {'devices': [{'name': 'sdr0', 'gains': 'LNA:40', 'rate': 2400000}]}
+        out = config_schema.round_floats(cfg)['devices'][0]
+        assert out['gains'] == 'LNA:40' and out['rate'] == 2400000
+
+    def test_nested_sections_are_walked(self) -> None:
+        cfg = {'terminal': {'http_plot_interval': 1.00000000001}}
+        assert config_schema.round_floats(cfg)['terminal']['http_plot_interval'] == 1.0
+
+    def test_list_elements_are_addressed_by_identity(self) -> None:
+        cfg = {'devices': [{'name': 'a', 'ppm': 1.11111111},
+                           {'name': 'b', 'ppm': 2.22222222}]}
+        out = config_schema.round_floats(cfg)['devices']
+        assert [d['ppm'] for d in out] == [1.111, 2.222]
+
+    def test_precision_lookup_matches_patterns(self) -> None:
+        assert config_schema.precision_for('devices[sdr0].ppm') == 3
+        assert config_schema.precision_for('devices[base.station].ppm') == 3
+        assert config_schema.precision_for('devices[sdr0].frequency') is None
+
+
+class TestResetSemantics:
+    """Resetting a field to the preset value must drop the override.
+
+    The UI's per-field reset writes the preset value back and saves; nothing
+    special happens server-side, which is the point -- prune_overlay already
+    drops anything equal to the base.
+    """
+
+    def test_writing_the_preset_value_back_clears_the_override(
+            self, store: cs.ConfigStore) -> None:
+        eff = store.effective()
+        eff['devices'][0]['gains'] = 'LNA:42'
+        store.save(eff)
+        assert store.overlay() != {}
+
+        back = store.effective()
+        back['devices'][0]['gains'] = store.base['devices'][0]['gains']
+        store.save(back)
+        assert store.overlay() == {}
+
+    def test_resetting_one_field_leaves_the_others_overridden(
+            self, store: cs.ConfigStore) -> None:
+        eff = store.effective()
+        eff['devices'][0]['gains'] = 'LNA:42'
+        eff['devices'][0]['ppm'] = 1.5
+        store.save(eff)
+
+        back = store.effective()
+        back['devices'][0]['gains'] = store.base['devices'][0]['gains']
+        store.save(back)
+        assert cs.flatten(store.overlay()).get('devices[sdr0].ppm') == 1.5
+        assert 'devices[sdr0].gains' not in cs.flatten(store.overlay())
+
+    def test_removing_a_key_the_preset_lacks_clears_it(
+            self, store: cs.ConfigStore) -> None:
+        # A field added by the user has no preset value, so reset means remove --
+        # which is what an absent key in the submitted JSON does.
+        eff = store.effective()
+        eff['devices'][0]['offset'] = 1200
+        store.save(eff)
+        assert 'devices[sdr0].offset' in cs.flatten(store.overlay())
+
+        back = store.effective()
+        del back['devices'][0]['offset']
+        store.save(back)
+        assert 'devices[sdr0].offset' not in cs.flatten(store.overlay())

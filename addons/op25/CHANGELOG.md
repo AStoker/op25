@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.0.12
+
+Config editor polish.
+
+- **Reset a single setting to its preset value.** Any setting you have changed
+  gets a small reset button, and its tooltip names the value it would put back —
+  so you can see what the preset says without clearing anything to find out.
+  Resetting one setting leaves your other changes alone.
+- **Frequency correction is no longer a sixteen-digit number.** Fine tuning works
+  in fractions of a ppm and was landing on values like `2.3749999999999996`.
+  Those digits are far below anything the radio can act on — at 859 MHz the
+  smallest tuning step is about a tenth of a ppm — so they are now trimmed to
+  three decimals. Existing saved values are shown trimmed and get tidied on the
+  next save.
+- **The status labels on each setting are icons now,** with a legend at the top
+  of the Settings tab. Every setting carries at least one, and the words
+  "restart, restart, restart" down a column of twenty was drowning out the labels
+  they belonged to. Hovering any icon still spells it out.
+
 ## 0.0.11
 
 **Fixes two bugs introduced in 0.0.10. If you are on 0.0.10, update — it does not

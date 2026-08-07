@@ -16,6 +16,13 @@ Two properties of a field matter more than its type:
     this wrong in the optimistic direction is the bad one: the UI would report
     success and the decoder would keep running the old value.
 
+``precision``
+    Decimal places a float is worth keeping. ``adj_tune`` works in fractional ppm
+    and lands on values like ``2.3749999999999996``, which is noise: at 859 MHz
+    1 ppm is 859 Hz, so the smallest tuning step is ~0.116 ppm and three decimals
+    is already finer than the hardware. Long floats are only a readability
+    problem, but the config is something a human reads.
+
 ``applies_to``
     Which trunking modules the field is meaningful for. ``encrypted`` is
     P25-only in the payload, SmartNet keeps encryption in a tgid bit, and
@@ -70,7 +77,7 @@ DEVICE_FIELDS = [
            help='Hand gain control to the tuner. Manual (off) plus a swept value '
                 'is usually better on a trunked system.'),
     _field('devices[*].ppm', 'Frequency correction', 'number', live=True,
-           unit='ppm', min=-200, max=200, step=0.1,
+           unit='ppm', min=-200, max=200, step=0.1, precision=3,
            help='Read "freq error" in Tuning & Diagnostics once the control '
                 'channel locks and divide by the tuned frequency in MHz.'),
     _field('devices[*].frequency', 'Centre frequency', 'number',
@@ -84,7 +91,7 @@ DEVICE_FIELDS = [
                 'skips an arbitrary resampler in the demod chain. A wider rate '
                 'also covers more voice channels without retuning the device.'),
     _field('devices[*].usable_bw_pct', 'Usable bandwidth', 'number',
-           min=0.1, max=1.0, step=0.05,
+           min=0.1, max=1.0, step=0.05, precision=3,
            help='Fraction of the sample rate treated as usable. The edges of an '
                 'RTL-SDR\'s span are not.'),
     _field('devices[*].tunable', 'Allow retuning', 'boolean',
@@ -119,7 +126,7 @@ CHANNEL_FIELDS = [
            help='Matched filter shape. Only consulted by the fsk4 chain; under '
                 'cqpsk it affects baseband gain and the FLL only.'),
     _field('channels[*].excess_bw', 'Excess bandwidth', 'number',
-           min=0.05, max=0.5, step=0.05, advanced=True,
+           min=0.05, max=0.5, step=0.05, precision=3, advanced=True,
            help='Filter rolloff, and the FLL band-edge width.'),
     _field('channels[*].if_rate', 'IF rate', 'number', unit='Hz',
            suggestions=[24000, 25000, 32000],
@@ -184,7 +191,7 @@ TRUNKING_FIELDS = [
 
 TERMINAL_FIELDS = [
     _field('terminal.http_plot_interval', 'Plot interval', 'number',
-           unit='s', min=0.1, max=60, step=0.1,
+           unit='s', min=0.1, max=60, step=0.1, precision=2,
            help='How often signal plots are sent. The demodulator reduces its '
                 'transform rate to match, so a longer interval really is less '
                 'CPU.'),
@@ -292,6 +299,53 @@ def _matches(pattern: str, path: str) -> bool:
 def is_live(path: str) -> bool:
     """Whether a changed field takes effect without a restart."""
     return any(_matches(p, path) for p in LIVE_PATHS)
+
+
+#: Declared decimal places, by path pattern.
+PRECISION_PATHS = {f['path']: f['precision'] for section in SECTIONS
+                   for f in section['fields'] if 'precision' in f}
+
+
+def precision_for(path: str) -> int | None:
+    """Declared precision for a concrete flattened path, if any."""
+    for pattern, places in PRECISION_PATHS.items():
+        if _matches(pattern, path):
+            return places
+    return None
+
+
+def round_floats(config: Any, _prefix: str = '') -> Any:
+    """Round every float to the precision its field declares.
+
+    Applied on save, so the value is clean whichever client produced it -- the
+    form, the raw JSON editor, or the Save-tuning button. Without it a ppm of
+    2.3749999999999996 goes straight into the config file, and the file is
+    something a human reads.
+
+    Only touches paths the schema gives a precision, so nothing else is silently
+    altered. A frequency in Hz has no precision declared and is left exactly as
+    given.
+    """
+    if isinstance(config, dict):
+        return {k: round_floats(v, f'{_prefix}.{k}' if _prefix else str(k))
+                for k, v in config.items()}
+    if isinstance(config, list):
+        out = []
+        for i, item in enumerate(config):
+            label: Any = i
+            if isinstance(item, dict):
+                for candidate in ('name', 'sysname', 'instance_name'):
+                    if candidate in item:
+                        label = item[candidate]
+                        break
+            out.append(round_floats(item, f'{_prefix}[{label}]'))
+        return out
+    # bool is an int subclass; rounding it would turn True into 1.
+    if isinstance(config, float) and not isinstance(config, bool):
+        places = precision_for(_prefix)
+        if places is not None:
+            return round(config, places)
+    return config
 
 
 def classify(changes: list[dict[str, Any]]) -> dict[str, Any]:

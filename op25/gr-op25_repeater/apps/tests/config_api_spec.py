@@ -413,3 +413,60 @@ class TestRestartEndpoint:
 
         monkeypatch.setattr('urllib.request.urlopen', boom)
         assert client.post('/api/restart').json()['ok'] is True
+
+
+class TestFloatPrecisionOverTheApi:
+    def test_a_long_float_is_trimmed_on_save(self, client: Any) -> None:
+        # Whatever the client sends -- the form, the raw editor, or Save tuning --
+        # the stored value is clean.
+        _put(client, lambda c: c['devices'][0].update(ppm=2.3749999999999996))
+        assert ws._config_store is not None
+        assert ws._config_store.effective()['devices'][0]['ppm'] == 2.375
+
+    def test_the_diff_reports_the_trimmed_value(self, client: Any) -> None:
+        # Or the history would show digits the config does not contain.
+        resp = _put(client, lambda c: c['devices'][0].update(ppm=1.23456789))
+        change = next(c for c in resp.json()['live'] if c['path'].endswith('.ppm'))
+        assert change['new'] == 1.235
+
+    def test_untrimmed_fields_are_unchanged(self, client: Any) -> None:
+        _put(client, lambda c: c['devices'][0].update(frequency=859262501))
+        assert ws._config_store is not None
+        assert ws._config_store.effective()['devices'][0]['frequency'] == 859262501
+
+    def test_schema_advertises_precision(self, client: Any) -> None:
+        body = client.get('/api/config/schema').json()
+        ppm = next(f for s in body['sections'] for f in s['fields']
+                   if f['path'] == 'devices[*].ppm')
+        assert ppm['precision'] == 3
+
+
+class TestDriftDisplayPrecision:
+    def test_drift_values_are_trimmed(self, client: Any, monkeypatch: Any) -> None:
+        # An overlay written before rounding existed still holds the long float;
+        # the alert saying the preset moved is a bad place to show 16 digits.
+        _put(client, lambda c: c['devices'][0].update(gains='LNA:30'))
+        assert ws._config_store is not None
+        ws._config_store._overlay['devices'][0]['ppm'] = 2.3749999999999996
+
+        newer = copy.deepcopy(BASE)
+        newer['devices'][0]['gains'] = 'LNA:44'
+        newer['devices'][0]['ppm'] = 1.1111111111
+        monkeypatch.setattr(ws, '_config', newer)
+        store = ws._config_store
+        monkeypatch.setattr(store, 'base', ws.config_store.strip_doc_keys(newer))
+
+        drift = {d['path']: d for d in client.get('/api/config/state').json()['preset_drift']}
+        assert drift['devices[sdr0].ppm']['override'] == 2.375
+        assert drift['devices[sdr0].ppm']['preset'] == 1.111
+
+    def test_fields_without_precision_are_left_alone(self, client: Any,
+                                                     monkeypatch: Any) -> None:
+        _put(client, lambda c: c['devices'][0].update(frequency=859262501))
+        newer = copy.deepcopy(BASE)
+        newer['devices'][0]['frequency'] = 859262502
+        monkeypatch.setattr(ws, '_config', newer)
+        monkeypatch.setattr(ws._config_store, 'base',
+                            ws.config_store.strip_doc_keys(newer))
+        drift = {d['path']: d for d in client.get('/api/config/state').json()['preset_drift']}
+        assert drift['devices[sdr0].frequency']['override'] == 859262501

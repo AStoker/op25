@@ -210,6 +210,23 @@ makes this a scanner UI rather than a P25 UI.
 - **Edits are held in local draft state until Save**, so a half-typed frequency
   is never sent and the recorded version is one deliberate change set rather than
   one per keystroke.
+- **Field status is icons, not text chips**, with `FieldLegend` naming them once
+  at the top. Every field carries at least one badge, so "restart" repeated down
+  a column of twenty fields buries the labels it is attached to.
+- **Overridden fields get a per-field reset**, whose tooltip names the preset
+  value it would restore. It needs no server support: writing the preset value
+  back is enough, because `prune_overlay` drops anything equal to the base. When
+  the preset has no such key, `undefined` removes it from the submitted JSON,
+  which has the same effect.
+- **`overridden` is computed against the saved overlay, not the draft.** An
+  unsaved edit is already covered by the dirty count; flagging it as an override
+  would claim something is stored that is not.
+- **Floats are trimmed to the schema's `precision`.** `adj_tune` works in
+  fractional ppm and produces `2.3749999999999996`; at 859 MHz the smallest
+  tuning step is ~0.116 ppm, so the extra digits are below what the hardware can
+  act on. Rounding happens on save (server, `config_schema.round_floats`), at
+  input (`trimFloat`), and in the drift report — the last because an overlay
+  written before rounding existed still holds the long value.
 - **Every field shows `live` or `restart`**, from the schema. Being optimistic
   there is the dangerous direction — the user would trust a value the decoder is
   not running — so the server classifies each save and the banner reports
