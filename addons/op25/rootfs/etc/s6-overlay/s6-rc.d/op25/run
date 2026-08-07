@@ -32,6 +32,39 @@ verbosity=$(bashio::config 'verbosity')
 overrides=$(bashio::config 'device_overrides')
 extra=$(bashio::config 'extra_json')
 
+# --------------------------------------------------------------- base config -
+# A preset lives in the image, so fixes to it arrive with an add-on update. A
+# config_file cannot: init-op25 writes one only when it is absent, because
+# overwriting the user's edits would be worse -- which means a file seeded once
+# stays as it was seeded forever. That is why a preset is the default, and why
+# per-install differences belong in add-on options (device_overrides,
+# home_assistant, audio_output, extra_json) rather than in a copied file.
+declare preset base_config
+preset=$(bashio::config 'preset')
+
+if [ "${preset}" = "custom" ]; then
+    base_config="${config_file}"
+    bashio::log.info "Config:   ${base_config} (preset: custom)"
+else
+    base_config="/opt/op25/presets/${preset}.json"
+    if [ ! -f "${base_config}" ]; then
+        bashio::log.fatal "No built-in preset named '${preset}'. Available:"
+        for p in /opt/op25/presets/*.json; do
+            bashio::log.fatal "    $(basename "${p}" .json)"
+        done
+        bashio::exit.nok
+    fi
+    bashio::log.info "Config:   built-in preset '${preset}'"
+    # Say so loudly, or a user who spent an afternoon editing a file will spend
+    # another one wondering why none of it took effect.
+    if bashio::fs.file_exists "${config_file}"; then
+        bashio::log.warning "${config_file} exists but is NOT being used, because"
+        bashio::log.warning "the 'preset' option is set to '${preset}'. Either set"
+        bashio::log.warning "preset to 'custom' to use that file, or move your"
+        bashio::log.warning "changes into the add-on options and delete it."
+    fi
+fi
+
 # ------------------------------------------------------------ audio backend -
 # "browser" (the default) leaves audio.module empty so nothing claims the UDP
 # port: a unicast port has one consumer, and websocket_server needs it to serve
@@ -89,8 +122,15 @@ rendered=$(jq \
             + (if  $o.ppm    != null      then {ppm:   $o.ppm}               else {} end)
           end)
     | . * $extra
-    ' "${config_file}") \
-    || bashio::exit.nok "Failed to render the effective config from ${config_file}"
+    # Drop "#"-prefixed documentation keys at every level. multi_rx ignores
+    # unknown keys, but /api/config serves this JSON to the browser and the UI
+    # renders it, so the prose belongs in the preset file rather than in the
+    # effective config.
+    | walk(if type == "object"
+           then with_entries(select(.key | startswith("#") | not))
+           else . end)
+    ' "${base_config}") \
+    || bashio::exit.nok "Failed to render the effective config from ${base_config}"
 
 # cwd is load-bearing -- see init-op25.
 cd "${work_dir}" || bashio::exit.nok "Cannot cd to ${work_dir}"

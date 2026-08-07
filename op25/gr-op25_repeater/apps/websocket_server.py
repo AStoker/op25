@@ -1474,16 +1474,53 @@ def _resolve_dist_path(url_path: str) -> str | None:
     return candidate
 
 
+# Extensions that are files on disk, never client-side routes.  A request for
+# one of these that does not exist has to 404: handing back index.html instead
+# makes the browser report
+#
+#   'text/html' is not a valid JavaScript MIME type for module script
+#
+# and renders a blank page, which says nothing about the real problem (the
+# client asked for a build artifact this server does not have).  SPA routes are
+# always extensionless, so this cannot swallow one.
+_ASSET_SUFFIXES = frozenset((
+    '.js', '.mjs', '.css', '.map', '.json', '.wasm',
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif', '.ico',
+    '.woff', '.woff2', '.ttf', '.otf', '.eot',
+))
+
+
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str) -> Response:
     if full_path and full_path != "/":
         resolved = _resolve_dist_path(full_path)
         if resolved and os.path.isfile(resolved):
-            return FileResponse(resolved)
+            # Vendor chunks and assets carry a content hash, so the URL changes
+            # whenever the bytes do and they can be cached hard.  The entry
+            # chunk is hashed too (vite.config.ts) precisely so this is safe.
+            return FileResponse(resolved, headers={
+                'Cache-Control': 'public, max-age=31536000, immutable',
+            })
+
+        suffix = os.path.splitext(full_path)[1].lower()
+        if suffix in _ASSET_SUFFIXES:
+            return Response(
+                content='Not found: %s\n\nThis is a build artifact, not a route. '
+                        'If the browser asked for it, it is running a stale '
+                        'index.html — reload.\n' % full_path,
+                status_code=404,
+                media_type='text/plain',
+                headers={'Cache-Control': 'no-store'},
+            )
 
     index_path = os.path.join(_DIST_DIR, "index.html")
     if os.path.isfile(index_path):
-        return FileResponse(index_path, media_type="text/html")
+        # Never cache the entry document.  It is the only file whose URL is
+        # stable across builds, so a cached copy pairs a new deployment's
+        # chunk list with the old one's filenames and the app fails to boot --
+        # which is exactly what an add-on update used to do to an open tab.
+        return FileResponse(index_path, media_type="text/html",
+                            headers={'Cache-Control': 'no-store'})
 
     return Response(
         content="Frontend not built. Run 'yarn build' inside www/app.",

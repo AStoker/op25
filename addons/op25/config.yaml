@@ -1,6 +1,6 @@
 ---
 name: OP25 Trunking Scanner
-version: "0.0.7"
+version: "0.0.8"
 slug: op25
 description: >-
   P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web
@@ -63,7 +63,13 @@ map:
 # cannot express -- max nesting depth 2, no unions. So only the things that
 # change when hardware or credentials change are first-class options; the rest
 # lives in a JSON file the user drops in the add-on's config directory.
+#
+# `preset` names a config shipped inside the image, so improvements to it arrive
+# with an add-on update. A config_file cannot do that: init-op25 only writes one
+# when it is absent, because overwriting the user's edits would be worse -- so a
+# file seeded once stays as it was seeded forever.
 options:
+  preset: palmetto800
   config_file: /config/op25.json
   work_dir: /config
   verbosity: 1
@@ -76,6 +82,7 @@ options:
   dev_source_dir: ""
   extra_json: "{}"
 schema:
+  preset: list(palmetto800|custom)
   config_file: str
   work_dir: str
   verbosity: int(0,10)

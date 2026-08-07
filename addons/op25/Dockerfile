@@ -114,15 +114,43 @@ COPY op25/gr-op25_repeater/apps  /opt/op25/apps
 COPY --from=webui /dist          /opt/op25/www/dist
 COPY addons/op25/rootfs          /
 
-# Sample config for a first run, referenced by the fatal-error message in
-# init-op25 when the user has not supplied one yet.
-COPY addons/op25/samples         /opt/op25/samples
+# Built-in configs, selected by the `preset` add-on option. These ship in the
+# image rather than being copied to the user's config directory precisely so a
+# fix to one reaches every install on update -- a seeded file is written once
+# and never touched again, so it can never receive one.
+COPY addons/op25/presets         /opt/op25/presets
 
 # Fail the build here rather than at 3am on someone's NUC.
+#
+# The asset check does two things a `grep` for a fixed filename could not, now
+# that every emitted file is content-hashed. It asserts the references are
+# *relative* (`./op25-...`), which is what makes the UI work under an ingress
+# path prefix, and that every referenced file is actually present -- an
+# index.html pointing at a chunk that did not ship is a blank page with only a
+# MIME-type error in the browser console to explain it.
 RUN python3 -c 'import gnuradio.op25, gnuradio.op25_repeater' \
     && python3 -c 'import fastapi, uvicorn, numpy, packaging' \
     && test -f /opt/op25/www/dist/index.html \
-    && grep -q './op25-react.js' /opt/op25/www/dist/index.html
+    && python3 - <<'PY'
+import os, re, sys
+
+dist = '/opt/op25/www/dist'
+html = open(os.path.join(dist, 'index.html')).read()
+
+refs = re.findall(r'(?:src|href)="([^"]+\.(?:js|css))"', html)
+if not refs:
+    sys.exit('index.html references no js/css at all')
+
+bad = [r for r in refs if not r.startswith('./')]
+if bad:
+    sys.exit('index.html has non-relative asset refs (breaks ingress): %s' % bad)
+
+missing = [r for r in refs if not os.path.isfile(os.path.join(dist, r[2:]))]
+if missing:
+    sys.exit('index.html references files that did not ship: %s' % missing)
+
+print('dist ok: %d asset refs, all relative and present' % len(refs))
+PY
 
 LABEL io.hass.type="addon"
 

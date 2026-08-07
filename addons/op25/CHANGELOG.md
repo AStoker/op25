@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.0.8
+
+**Fixes a blank OP25 panel after updating to 0.0.7.** If you are seeing one,
+this release fixes it — and a hard reload (Ctrl/Cmd-Shift-R) fixes it on 0.0.7.
+
+- **An update no longer breaks an open tab.** Every file the UI loads is named
+  after a hash of its contents, so those names all change when the add-on
+  updates. `index.html` is the one file whose address stays the same, it was
+  being served without any cache instruction, and so a browser could keep an old
+  copy — one that asks for files the new version does not have. The only clue was
+  a MIME-type error in the browser console. `index.html` is now marked
+  never-cache, and the files that *are* content-addressed are marked
+  cache-forever, which is both correct and faster than before.
+- **A missing file now says so.** Any address the server did not recognise
+  returned the app's own HTML page, including requests for scripts. A browser
+  asked for JavaScript, got HTML, and rendered nothing. Those requests now
+  return a plain 404 that names the problem and says to reload.
+- **Built-in system presets.** The new `preset` option selects a config that
+  ships inside the add-on, and defaults to `palmetto800`. Nothing to place, no
+  file to edit, and — the point — fixes to it reach you when the add-on updates.
+  Set `preset: custom` to go back to editing your own `config_file`; that is
+  still fully supported, and a first run copies the preset there to start from.
+
+  This is the answer to "I updated and my config did not change." A config file
+  is only ever written when it is absent, because overwriting your edits would
+  be worse — which means a file seeded once could never receive a fix. The
+  0.0.7 gain and sample-rate corrections, for instance, only reached people who
+  installed fresh. With a preset they arrive on update.
+
+  Per-install differences belong in add-on options rather than a copied file:
+  `device_overrides` for the dongle serial, gain and ppm, plus
+  `home_assistant`, `audio_output` and `extra_json`.
+- The Palmetto 800 preset carries the 0.0.7 RF corrections that the old shipped
+  sample missed: gain down from near-maximum, and a sample rate that divides
+  evenly into the decoder's IF rate. A test now pins the preset and the
+  standalone config together so they cannot drift apart again.
+- Every field in a preset carries a note explaining why it is set that way.
+  These are stripped before the decoder reads the config.
+
 ## 0.0.7
 
 - **Browser audio no longer chops.** The audio stream had no jitter buffer: the

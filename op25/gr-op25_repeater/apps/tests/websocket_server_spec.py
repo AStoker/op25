@@ -148,3 +148,62 @@ class TestUnbuiltFrontend:
     def test_missing_dist_body_has_hint(self, empty_dist_dir: Any) -> None:
         resp = empty_dist_dir.get("/")
         assert b"yarn build" in resp.content
+
+
+# ---------------------------------------------------------------------------
+# Stale-asset handling and caching
+#
+# An add-on update changes every content-hashed filename. A browser holding a
+# cached index.html then asks for chunks that no longer exist, and the SPA
+# fallback used to answer those with index.html -- so the browser reported
+# "'text/html' is not a valid JavaScript MIME type for module script" and
+# rendered nothing, with no hint that the real problem was a stale document.
+# ---------------------------------------------------------------------------
+
+
+class TestStaleAssetRequests:
+    def test_missing_js_returns_404_not_index(self, client: Any) -> None:
+        resp = client.get("/op25-vendor-mui-DEADBEEF.js")
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].split(";")[0] != "text/html"
+
+    def test_missing_css_returns_404(self, client: Any) -> None:
+        assert client.get("/op25-react-DEADBEEF.css").status_code == 404
+
+    @pytest.mark.parametrize("path", [
+        "/assets/gone.mjs", "/assets/gone.map", "/assets/gone.woff2",
+        "/assets/gone.png", "/assets/gone.svg", "/assets/gone.wasm",
+    ])
+    def test_other_asset_suffixes_also_404(self, client: Any, path: str) -> None:
+        assert client.get(path).status_code == 404
+
+    def test_404_body_explains_the_stale_document(self, client: Any) -> None:
+        # The whole point is that the failure names its own cause.
+        body = client.get("/op25-vendor-mui-DEADBEEF.js").text.lower()
+        assert "stale" in body and "reload" in body
+
+    def test_extensionless_routes_still_reach_the_spa(self, client: Any) -> None:
+        # The asset rule must not swallow client-side routing.
+        for path in ("/talkgroups/42", "/a/b/c", "/settings"):
+            resp = client.get(path)
+            assert resp.status_code == 200, path
+            assert resp.headers["content-type"].split(";")[0] == "text/html"
+
+
+class TestCacheHeaders:
+    def test_index_is_never_cached(self, client: Any) -> None:
+        # index.html is the only URL that is stable across builds, so a cached
+        # copy is what pairs new chunk files with an old chunk list.
+        assert "no-store" in client.get("/").headers["cache-control"]
+
+    def test_spa_route_fallback_is_never_cached(self, client: Any) -> None:
+        assert "no-store" in client.get("/talkgroups/42").headers["cache-control"]
+
+    def test_hashed_assets_are_immutable(self, client: Any) -> None:
+        cc = client.get("/assets/app-abc123.js").headers["cache-control"]
+        assert "immutable" in cc and "max-age=31536000" in cc
+
+    def test_asset_404_is_not_cached(self, client: Any) -> None:
+        # Caching this would outlive the reload that fixes it.
+        resp = client.get("/op25-vendor-mui-DEADBEEF.js")
+        assert "no-store" in resp.headers["cache-control"]

@@ -55,11 +55,20 @@ export default defineConfig({
     // assetsDir: '',      // No assets/ subdirectory – all output lands in dist root
     rollupOptions: {
       output: {
-        entryFileNames: 'op25-react.js',
+        // Everything is content-hashed, including the entry and the CSS.
+        //
+        // They used to be the stable names op25-react.js / op25-react.css, and
+        // that is a cache-correctness bug: a URL that serves different bytes
+        // after an update is one a browser can hold a stale copy of forever.
+        // Hashing every emitted file means a stale URL 404s (loudly, see
+        // _ASSET_SUFFIXES in websocket_server.py) instead of silently pairing
+        // old code with a new index.html, and lets the server mark them all
+        // immutable.
+        //
         // Safe names only: alphanumeric + dash + dot. [hash] is hex-only = safe.
+        entryFileNames: 'op25-[name]-[hash].js',
         chunkFileNames: 'op25-[name]-[hash].js',
-        assetFileNames: (info) =>
-          info.name?.endsWith('.css') ? 'op25-react.css' : 'op25-[name]-[hash][extname]',
+        assetFileNames: 'op25-[name]-[hash][extname]',
         manualChunks: {
           // Group vendor deps into predictably-named chunks with safe filenames
           'vendor-react': ['react', 'react-dom'],

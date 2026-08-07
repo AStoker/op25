@@ -7,45 +7,58 @@
 # first-run failures say what is wrong instead of producing a Python traceback
 # or a silent receiver.
 # ==============================================================================
-declare config_file work_dir
+declare config_file work_dir preset base_config
 
 config_file=$(bashio::config 'config_file')
 work_dir=$(bashio::config 'work_dir')
+preset=$(bashio::config 'preset')
 
-mkdir -p "$(dirname "${config_file}")" 2>/dev/null || true
+# ------------------------------------------------------------------- config --
+# With a preset selected the config comes from inside the image, so there is
+# nothing to seed and nothing on disk that can go stale -- which is the point:
+# a seeded file is written once and then never touched again (overwriting the
+# user's edits would be worse), so it cannot receive a fix. Only `custom` uses a
+# file, and only then is a first-run copy worth making: getting a file into an
+# add-on's config directory on Home Assistant OS is the single most awkward step
+# of installing this. There is no host shell, and the addon_configs share only
+# appears if the Samba add-on is recent enough and the user knows to look.
+if [ "${preset}" = "custom" ]; then
+    mkdir -p "$(dirname "${config_file}")" 2>/dev/null || true
 
-# Seed a working config on first run rather than refusing to start.
-#
-# Getting a file into an add-on's config directory on Home Assistant OS is the
-# single most awkward step of installing this: there is no host shell, and the
-# addon_configs share only appears if the Samba add-on is recent enough and the
-# user knows to look for it.  So write the sample out ourselves.  The user can
-# then edit it in place through whatever file access they do have -- and if
-# they have none yet, the add-on still starts and the UI still comes up.
-if ! bashio::fs.file_exists "${config_file}"; then
-    if cp /opt/op25/samples/op25.sample.json "${config_file}" 2>/dev/null; then
-        bashio::log.warning "No config found, so a sample was written to:"
-        bashio::log.warning "    ${config_file}"
-        bashio::log.warning ""
-        bashio::log.warning "It is set up for the Palmetto 800 P25 system in South"
-        bashio::log.warning "Carolina.  If that is not your system, edit the"
-        bashio::log.warning "control_channel_list and frequencies -- otherwise the"
-        bashio::log.warning "receiver will run but never lock."
-        bashio::log.warning ""
-        bashio::log.warning "Talkgroup names need a .tsv alongside it (see"
-        bashio::log.warning "trunking.chans[].tgid_tags_file).  Without one you get"
-        bashio::log.warning "talkgroup numbers, which is harmless."
-    else
-        bashio::log.fatal "No config at ${config_file}, and the sample could not"
-        bashio::log.fatal "be written there -- is the directory writable?"
-        bashio::log.fatal "See https://github.com/AStoker/op25/blob/main/addons/op25/DOCS.md"
+    if ! bashio::fs.file_exists "${config_file}"; then
+        if cp /opt/op25/presets/palmetto800.json "${config_file}" 2>/dev/null; then
+            bashio::log.warning "preset is 'custom' but ${config_file} did not exist,"
+            bashio::log.warning "so the palmetto800 preset was copied there as a"
+            bashio::log.warning "starting point. Edit it for your system --"
+            bashio::log.warning "control_channel_list and nac at minimum, or the"
+            bashio::log.warning "receiver will run but never lock."
+            bashio::log.warning ""
+            bashio::log.warning "This copy will NOT track add-on updates. If you do"
+            bashio::log.warning "monitor Palmetto 800, delete it and set preset back"
+            bashio::log.warning "to 'palmetto800'."
+        else
+            bashio::log.fatal "preset is 'custom' but there is no config at"
+            bashio::log.fatal "${config_file}, and a starting point could not be"
+            bashio::log.fatal "written there -- is the directory writable?"
+            bashio::log.fatal "See https://github.com/AStoker/op25/blob/main/addons/op25/DOCS.md"
+            bashio::exit.nok
+        fi
+    fi
+    base_config="${config_file}"
+else
+    base_config="/opt/op25/presets/${preset}.json"
+    if [ ! -f "${base_config}" ]; then
+        bashio::log.fatal "No built-in preset named '${preset}'. Available:"
+        for p in /opt/op25/presets/*.json; do
+            bashio::log.fatal "    $(basename "${p}" .json)"
+        done
         bashio::exit.nok
     fi
 fi
 
-if ! jq empty "${config_file}" 2>/dev/null; then
-    bashio::log.fatal "${config_file} is not valid JSON."
-    jq empty "${config_file}" 2>&1 | while read -r line; do
+if ! jq empty "${base_config}" 2>/dev/null; then
+    bashio::log.fatal "${base_config} is not valid JSON."
+    jq empty "${base_config}" 2>&1 | while read -r line; do
         bashio::log.fatal "  ${line}"
     done
     bashio::exit.nok
@@ -58,7 +71,11 @@ fi
 # reinstall, same as the user's config; it is a cache and safe to delete.
 mkdir -p "${work_dir}" /data/plots
 
-bashio::log.info "Config:   ${config_file}"
+if [ "${preset}" = "custom" ]; then
+    bashio::log.info "Config:   ${config_file} (preset: custom)"
+else
+    bashio::log.info "Config:   built-in preset '${preset}'"
+fi
 bashio::log.info "Work dir: ${work_dir}"
 
 # ------------------------------------------------------------------ hardware -

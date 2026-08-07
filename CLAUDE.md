@@ -498,6 +498,19 @@ the user's box.
   are *server*-generated and root-absolute (`/api/stream?port=N` from
   `/api/audio/channels`, `audio_url` on a clip), which is why `apiUrl()` strips
   a leading slash rather than assuming a relative input.
+- **Every emitted frontend file is content-hashed, and `index.html` is
+  `no-store`.** The entry chunk and CSS used to be the stable names
+  `op25-react.js` / `op25-react.css`; a URL that serves different bytes after an
+  update is one a browser can hold a stale copy of forever. What that actually
+  produced was a blank panel after an add-on update, explained only by
+  `'text/html' is not a valid JavaScript MIME type for module script` in the
+  console: the cached `index.html` asked for the *previous* build's hashed vendor
+  chunk, and `serve_spa` answered every unknown path with `index.html`. So
+  `_ASSET_SUFFIXES` now 404s anything that looks like a build artifact — handing
+  HTML to a script request is never right, and the 404 body says "reload" — while
+  hashed files are `immutable, max-age=31536000`. `addons/op25/Dockerfile` also
+  asserts at build time that every asset `index.html` references is relative
+  (ingress) *and* actually shipped.
 - **Never point a Home Assistant media player at an ingress URL.** Those carry
   a rotating per-session token only an authenticated browser holds. That is
   what the published port 8099 is for.
@@ -514,6 +527,25 @@ the user's box.
   `/api/config` serves (it goes via `$OP25_HA_TOKEN`), and leaves their file
   untouched. **The Home Assistant injection is confined to one commented block
   there** so the pending transcription/alerts schema split is a one-place edit.
+- **The base config is a shipped preset by default, not a file on disk.**
+  `addons/op25/presets/*.json` are baked into the image at `/opt/op25/presets/`
+  and chosen by the `preset` option (`palmetto800` default, `custom` to read
+  `config_file` instead). This exists because a seeded file *cannot receive a
+  fix*: `init-op25` writes one only when it is absent — overwriting the user's
+  edits would be worse — so the 0.0.7 gain/rate corrections reached only fresh
+  installs. A preset ships with the image, so it updates.
+  - Per-install differences go in add-on options (`device_overrides`,
+    `home_assistant`, `audio_output`, `extra_json`), *not* in a copied preset.
+    Copying one to change a single value re-creates the staleness.
+  - When a preset is selected and a `config_file` also exists, the run script
+    warns loudly that the file is being ignored. Silence there costs someone an
+    afternoon.
+  - `#`-prefixed keys are documentation and are stripped recursively by `jq`
+    `walk()` before the decoder sees them — `/api/config` serves the effective
+    config to the browser and the UI renders it.
+  - **The RF facts are stated twice** (preset and `apps/Palmetto800-single.json`)
+    and drifted apart once already, which is what shipped `LNA:39` / `1000000`
+    to every add-on install. `tests/addon_preset_spec.py` pins them together.
 - **`usb: true` + `udev: true` is sufficient.** `usb: true` bind-mounts
   `/dev/bus/usb` *and* adds the USB device-cgroup rules, which is all libusb
   needs; RTL-SDR has no `/dev` node, so no `devices:` entry, and `full_access`
@@ -606,7 +638,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 371 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 414 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -616,7 +648,7 @@ Without GNU Radio installed the `trunk_json_spec` (via `tk_trbo`/`tk_smartnet`),
 its `from gnuradio import gr`.
 
 - `tests/websocket_server_spec.py` — static file serving, SPA fallback, path
-  traversal, method handling, CORS (21).
+  traversal, method handling, CORS, stale-asset 404s and cache headers (35).
 - `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
   speech heuristics, hallucination filtering, clip store, keyword matching, HA
   config, HA HTTP round-trips, media upload, REST endpoints, per-port
@@ -636,6 +668,9 @@ its `from gnuradio import gr`.
   decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
   `?channel=` / `?port=` selection, jitter-buffer priming and re-priming (36).
+- `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
+  fields pinned to `Palmetto800-single.json`, and container-appropriate (no
+  pinned serial, no local speaker output, no secrets) (29).
 - `tests/audio_udp_roundtrip_spec.py` — drives the compiled `analog_udp` block
   and asserts non-silent PCM out of `/api/stream` (3).
 - `tests/squelch_upstream_spec.py` — runs upstream's `squelch_core_test.py` and

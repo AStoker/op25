@@ -20,15 +20,31 @@ inside the add-on.
 
 ## Setup
 
-**1. Install and start it.** On first run the add-on writes a working sample
-config for you, so there is nothing to place beforehand. It is set up for the
-**Palmetto 800** P25 system in South Carolina — if that is not your system it
-will run without locking, which is harmless.
+**1. Install and start it.** There is nothing to place beforehand. The add-on
+ships with a built-in config selected by the `preset` option, which defaults to
+`palmetto800` — the **Palmetto 800** P25 system in South Carolina.
 
-**2. Edit that config for your system.** It lands at `/config/op25.json`
-*inside* the add-on. Reaching it from outside is the genuinely awkward part of
-Home Assistant OS, because there is no host shell. Pick whichever of these you
-already have:
+**If that is your system, you are done.** Set your dongle's serial under
+`device_overrides` if you have more than one SDR (step 3), and skip the rest.
+Because the preset lives inside the image rather than in a file on disk, fixes
+to it — gain, sample rate, control-channel list — reach you when the add-on
+updates.
+
+**2. If you monitor something else,** set `preset: custom`. The add-on then
+reads `config_file`, and on first run copies the palmetto800 preset there as a
+starting point so you have something valid to edit. Change
+`trunking.chans[].control_channel_list` and `nac` at minimum, or the receiver
+runs without ever locking.
+
+> A `custom` config is **yours**, which means the add-on never rewrites it — so
+> it also never receives a fix. That is the trade: a preset tracks updates, a
+> file does not. Prefer the add-on options (`device_overrides`,
+> `home_assistant`, `audio_output`, `extra_json`) over copying a preset just to
+> change one value.
+
+The file lands at `/config/op25.json` *inside* the add-on. Reaching it from
+outside is the genuinely awkward part of Home Assistant OS, because there is no
+host shell. Pick whichever of these you already have:
 
 | Method | Where the file appears |
 |---|---|
@@ -53,11 +69,14 @@ Whichever you choose, **`.tsv` talkgroup tag files must sit in `work_dir`** —
 paths inside the config resolve against it, not against the config file. Without
 them you get talkgroup numbers instead of names, which is a soft failure.
 
-The pristine sample is always in the image at
-`/opt/op25/samples/op25.sample.json`.
+The built-in presets are always in the image at `/opt/op25/presets/`. Reading
+one is the quickest way to see what a working config looks like; every field
+carries a `#`-prefixed note explaining why it is set the way it is. Those
+`#` keys are documentation only and are stripped before the decoder sees
+them.
 
 **3. Only if you have more than one SDR: pin the serial.** With a single
-dongle the sample's `"args": "rtl"` selects it and there is nothing to do. With
+dongle the preset's `"args": "rtl"` selects it and there is nothing to do. With
 several, read the log — the pre-flight runs `rtl_test -t` and prints each
 device's serial — then set:
 
@@ -80,7 +99,8 @@ JSON, which is handy when hardware moves between machines.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `config_file` | `/config/op25.json` | The multi_rx JSON config |
+| `preset` | `palmetto800` | Use a config built into the image, which therefore tracks add-on updates. `custom` reads `config_file` instead |
+| `config_file` | `/config/op25.json` | The multi_rx JSON config. Only read when `preset` is `custom` |
 | `work_dir` | `/config` | Working directory. Tag files, whitelists and crypt keys resolve against this |
 | `verbosity` | `1` | Decoder log level, 0–10 |
 | `audio_output` | `browser` | `browser` streams audio to the UI. `alsa` sends it to a local sound device instead, which needs one mapped in. `none` disables it |
