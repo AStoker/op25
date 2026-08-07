@@ -644,6 +644,31 @@ not. The effective config is therefore **composed, never stored**:
   `$OP25_CONFIG_HISTORY_DB`. A corrupt overlay is **ignored, not fatal** — the
   preset alone is a working scanner — and a missing history db never blocks a
   save, because losing the audit trail must not stop a config being written.
+- **The overlay is applied at startup by the add-on run script, not by the web
+  server.** `config_store.py --apply-overlay` sits in the render pipeline between
+  the add-on options and the forced terminal settings. Without that step the
+  overlay was written and read *only* by `websocket_server`, so
+  `/api/config/state` reported the user's override while `multi_rx` ran the preset
+  value — a saved gain looked saved and reverted on every restart.
+  - **Not done in `jq`.** `jq`'s `*` replaces arrays, so an overlay of
+    `{"devices":[{"name":"sdr0","gains":"LNA:39"}]}` would replace the whole
+    device and lose `args`, `rate` and `frequency`. `deep_merge` merges by name,
+    and reusing the function the editor previews with is the only thing that
+    guarantees the decoder runs what the UI called effective —
+    `test_what_the_editor_previews_is_what_startup_produces` pins that.
+  - Order is **preset → add-on options → overlay → `extra_json` → forced
+    terminal**. The overlay is after the options because it is the layer the user
+    is actively driving; before the forced terminal so it can never lock them out
+    of the UI that produced it.
+- **Never add a method to `rx_block` without grepping for the name first.** A
+  second `find_device` was added for the live gain commands and shadowed the
+  existing `find_device(chan)`, which resolves a *channel config dict* to a
+  device. Python keeps the later definition, so `configure_channels` compared
+  `dev.name` against a dict, matched nothing, and dropped every channel with
+  `not attached to any device - ignoring!` — RF fine, decoder running, zero calls.
+  The by-name lookup is `find_device_by_name`. `tests/multi_rx_api_spec.py` parses
+  the source (it cannot import `multi_rx` without GNU Radio) and fails on any
+  duplicate method in any class there.
 - **The UI names no config field.** `ConfigDialog`'s Settings tab renders from
   `/api/config/schema`; `www/app/AGENTS.md` has the frontend detail. The three
   tabs share one `useConfigEditor`, which lives outside `op25Service` because
@@ -737,7 +762,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 533 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 553 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -768,9 +793,13 @@ its `from gnuradio import gr`.
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
   `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, and
   the idle-vs-attached buffer bound (44).
+- `tests/multi_rx_api_spec.py` — parses `multi_rx.py` (it cannot be imported
+  without GNU Radio) to reject shadowed methods and pin the two device-lookup
+  names apart (8).
 - `tests/config_store_spec.py` — merge/prune/diff primitives, overlay deltas,
   preset drift, rollback replaying intent onto a moved preset, redaction
-  round-trip, path resolution, schema live-vs-restart classification (62).
+  round-trip, path resolution, schema live-vs-restart classification, and the
+  startup overlay application incl. editor/startup agreement (74).
 - `tests/config_api_spec.py` — the write gate (ingress/open/off), config state,
   schema filtering, validation, history, rollback, reset, export containment,
   and the restart endpoint's gating and error mapping (48).

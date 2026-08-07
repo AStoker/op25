@@ -100,14 +100,23 @@ fi
 export OP25_HA_TOKEN="${ha_token}"
 
 # -------------------------------------------------------------- render ------
+#
+# Three layers, in this order:
+#
+#   1. the preset (or the user's config_file)
+#   2. add-on options -- device_overrides, Home Assistant, audio_output
+#   3. the GUI's overlay, then extra_json, then the settings the add-on forces
+#
+# The overlay comes *after* the add-on options deliberately. It is the layer the
+# user is actively driving from the UI, and if an option won instead, a saved gain
+# would silently revert on the next restart -- exactly the bug this ordering
+# fixes. It comes *before* the forced terminal settings so an overlay can never
+# lock the user out of the web UI that produced it.
 rendered=$(jq \
     --argjson overrides "${overrides:-[]}" \
-    --argjson extra "${extra:-\{\}}" \
     --arg ha_url "${ha_url}" \
     --arg audio "${audio_module}" '
-      .terminal.module              = "websocket_server.py"
-    | .terminal.terminal_type       = "ws:0.0.0.0:8099"
-    | .audio.module                 = $audio
+      .audio.module = $audio
     | (if $ha_url != ""
        then .terminal.home_assistant.url     = $ha_url
           | .terminal.home_assistant.enabled = true
@@ -121,7 +130,35 @@ rendered=$(jq \
             + (if ($o.gains  // "") != "" then {gains: $o.gains}             else {} end)
             + (if  $o.ppm    != null      then {ppm:   $o.ppm}               else {} end)
           end)
-    | . * $extra
+    ' "${base_config}") \
+    || bashio::exit.nok "Failed to render the effective config from ${base_config}"
+
+# cwd is load-bearing -- see init-op25. It also resolves the overlay path, so the
+# cd has to happen before the overlay is applied.
+cd "${work_dir}" || bashio::exit.nok "Cannot cd to ${work_dir}"
+
+# Apply the GUI's saved changes.
+#
+# This is NOT done in jq: jq's `*` replaces arrays, so an overlay of
+# {"devices":[{"name":"sdr0","gains":"LNA:39"}]} would replace the whole device
+# and lose args, rate and frequency. config_store.deep_merge merges list elements
+# by name, and using the same function the editor previews with is the only way
+# the decoder is guaranteed to run what the UI said was effective.
+overlay_file="${OP25_CONFIG_OVERLAY:-op25_config_overlay.json}"
+if [ -n "${overlay_file}" ] && [ -f "${overlay_file}" ]; then
+    rendered=$(printf '%s' "${rendered}" \
+        | python3 "${apps_dir}/config_store.py" --apply-overlay "${overlay_file}") \
+        || bashio::exit.nok "Failed to apply the config overlay ${overlay_file}"
+fi
+
+# Finally the escape hatch and the settings the add-on insists on. Forcing the
+# terminal last means neither extra_json nor an overlay can point the UI
+# somewhere unreachable and leave no way back.
+rendered=$(printf '%s' "${rendered}" | jq \
+    --argjson extra "${extra:-\{\}}" '
+      . * $extra
+    | .terminal.module        = "websocket_server.py"
+    | .terminal.terminal_type = "ws:0.0.0.0:8099"
     # Drop "#"-prefixed documentation keys at every level. multi_rx ignores
     # unknown keys, but /api/config serves this JSON to the browser and the UI
     # renders it, so the prose belongs in the preset file rather than in the
@@ -129,11 +166,7 @@ rendered=$(jq \
     | walk(if type == "object"
            then with_entries(select(.key | startswith("#") | not))
            else . end)
-    ' "${base_config}") \
-    || bashio::exit.nok "Failed to render the effective config from ${base_config}"
-
-# cwd is load-bearing -- see init-op25.
-cd "${work_dir}" || bashio::exit.nok "Cannot cd to ${work_dir}"
+    ') || bashio::exit.nok "Failed to apply extra_json / terminal settings"
 
 bashio::log.info "Starting OP25 (source ${apps_dir}, cwd ${work_dir}, verbosity ${verbosity})"
 

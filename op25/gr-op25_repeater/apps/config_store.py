@@ -576,6 +576,69 @@ class ConfigStore:
             }
 
 
+def apply_overlay_stream(base_text: str, overlay_file: str | None) -> str:
+    """Merge *overlay_file* onto the JSON in *base_text*. Used at startup.
+
+    The decoder is started from a rendered config, and until this existed nothing
+    applied the overlay to it: the web server loaded the overlay afterwards, so
+    ``/api/config/state`` reported the user's override while ``multi_rx`` ran the
+    preset value. A saved gain looked saved and reverted on every restart.
+
+    This is a thin CLI over :func:`deep_merge` rather than the same logic
+    reimplemented in ``jq``, for two reasons. ``jq``'s ``*`` *replaces* arrays, so
+    an overlay of ``{"devices":[{"name":"sdr0","gains":"LNA:39"}]}`` would replace
+    the whole device and lose ``args``, ``rate`` and ``frequency``. And the merge
+    the editor previews has to be the merge the decoder gets, which is only
+    guaranteed if it is the same function.
+
+    Never raises on a bad overlay: the base config alone is a working scanner, so
+    a malformed override degrades to "ignored" with a message on stderr.
+    """
+    # Strip up front, so this function behaves identically whether or not an
+    # overlay exists. Having the no-overlay path pass doc keys through while the
+    # merge path removed them is the kind of difference that only shows up as a
+    # confusing diff much later.
+    base = strip_doc_keys(json.loads(base_text))
+    if not overlay_file or not os.path.isfile(overlay_file):
+        return json.dumps(base)
+    try:
+        with open(overlay_file) as fh:
+            overlay = json.load(fh)
+        if not isinstance(overlay, dict):
+            raise ValueError('overlay must be a JSON object')
+    except (OSError, ValueError) as e:
+        sys.stderr.write('config overlay ignored (%s: %s)\n' % (overlay_file, e))
+        return json.dumps(base)
+
+    overlay = strip_doc_keys(overlay)
+    merged = deep_merge(base, overlay)
+    for path in sorted(flatten(overlay)):
+        sys.stderr.write('config overlay: %s = %s\n'
+                         % (path, json.dumps(flatten(overlay)[path])))
+    return json.dumps(merged)
+
+
+def _main(argv: list[str]) -> int:
+    """``config_store.py --apply-overlay <file>``: stdin -> stdout.
+
+    Deliberately tiny. The add-on's run script pipes its rendered config through
+    this so the decoder starts from what the editor says is effective.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--apply-overlay', metavar='FILE', default=None,
+                        help='overlay to merge onto the config read from stdin')
+    args = parser.parse_args(argv)
+    try:
+        sys.stdout.write(apply_overlay_stream(sys.stdin.read(), args.apply_overlay))
+    except ValueError as e:
+        # The *base* being unparseable is fatal: there is nothing to fall back to.
+        sys.stderr.write('config_store: base config is not valid JSON (%s)\n' % e)
+        return 1
+    return 0
+
+
 def _summarise(changes: list[dict[str, Any]]) -> str:
     if not changes:
         return 'no change'
@@ -585,3 +648,7 @@ def _summarise(changes: list[dict[str, Any]]) -> str:
             return '%s: %s -> %s' % (c['path'], c.get('old'), c.get('new'))
         return '%s %s' % (c['op'], c['path'])
     return '%d field(s) changed' % len(changes)
+
+
+if __name__ == '__main__':
+    raise SystemExit(_main(sys.argv[1:]))

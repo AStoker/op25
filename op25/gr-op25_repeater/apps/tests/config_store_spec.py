@@ -519,3 +519,106 @@ class TestLiveClassification:
 
     def test_an_empty_diff_needs_no_restart(self) -> None:
         assert config_schema.classify([])['needs_restart'] is False
+
+
+# ---------------------------------------------------------------------------
+# Startup overlay application
+#
+# The overlay was written and read by the *web server*, but nothing applied it to
+# the config the decoder was started from -- so /api/config/state reported the
+# user's override while multi_rx ran the preset value, and a saved gain reverted
+# on every restart. This is the missing startup step.
+# ---------------------------------------------------------------------------
+
+
+class TestApplyOverlayStream:
+    def test_overlay_is_merged_onto_the_base(self, tmp_path: Any) -> None:
+        overlay = tmp_path / 'o.json'
+        overlay.write_text(json.dumps({'devices': [{'name': 'sdr0', 'gains': 'LNA:39'}]}))
+        out = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(overlay)))
+        assert out['devices'][0]['gains'] == 'LNA:39'
+
+    def test_untouched_device_fields_survive(self, tmp_path: Any) -> None:
+        """The bug jq's `*` would have caused.
+
+        Replacing the array would leave a device with only name and gains -- no
+        args, no rate, no frequency -- and the receiver would not start.
+        """
+        overlay = tmp_path / 'o.json'
+        overlay.write_text(json.dumps({'devices': [{'name': 'sdr0', 'gains': 'LNA:39'}]}))
+        dev = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(overlay)))['devices'][0]
+        for field in ('args', 'rate', 'frequency', 'ppm'):
+            assert field in dev, f'{field} lost merging the overlay'
+        assert dev['rate'] == 2400000
+
+    def test_other_sections_survive(self, tmp_path: Any) -> None:
+        overlay = tmp_path / 'o.json'
+        overlay.write_text(json.dumps({'devices': [{'name': 'sdr0', 'ppm': 1.0}]}))
+        out = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(overlay)))
+        assert out['channels'][0]['if_rate'] == 24000
+        assert out['trunking']['chans'][0]['nac'] == '0x1D1'
+
+    def test_a_missing_overlay_is_a_passthrough(self, tmp_path: Any) -> None:
+        out = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(tmp_path / 'nope.json')))
+        assert out == cs.strip_doc_keys(BASE)
+
+    def test_no_overlay_path_is_a_passthrough(self) -> None:
+        assert json.loads(cs.apply_overlay_stream(json.dumps(BASE), None)) \
+            == cs.strip_doc_keys(BASE)
+
+    def test_a_corrupt_overlay_degrades_to_the_base(self, tmp_path: Any) -> None:
+        # The base alone is a working scanner; refusing to start because an
+        # override is malformed would be the worse failure.
+        overlay = tmp_path / 'o.json'
+        overlay.write_text('{not json')
+        out = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(overlay)))
+        assert out['devices'][0]['gains'] == 'LNA:40'
+
+    def test_a_non_object_overlay_degrades_to_the_base(self, tmp_path: Any) -> None:
+        overlay = tmp_path / 'o.json'
+        overlay.write_text('[1,2,3]')
+        out = json.loads(cs.apply_overlay_stream(json.dumps(BASE), str(overlay)))
+        assert out['devices'][0]['gains'] == 'LNA:40'
+
+    def test_doc_keys_are_stripped(self, tmp_path: Any) -> None:
+        base = dict(BASE)
+        base['#note'] = 'prose'
+        out = json.loads(cs.apply_overlay_stream(json.dumps(base), None))
+        assert '#note' not in out
+
+    def test_a_bad_base_is_fatal(self) -> None:
+        # Unlike a bad overlay: there is nothing to fall back to.
+        with pytest.raises(ValueError):
+            cs.apply_overlay_stream('{not json', None)
+
+    def test_cli_round_trips_stdin_to_stdout(self, tmp_path: Any,
+                                            monkeypatch: Any, capsys: Any) -> None:
+        overlay = tmp_path / 'o.json'
+        overlay.write_text(json.dumps({'devices': [{'name': 'sdr0', 'ppm': 3.5}]}))
+        monkeypatch.setattr('sys.stdin', __import__('io').StringIO(json.dumps(BASE)))
+        assert cs._main(['--apply-overlay', str(overlay)]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out['devices'][0]['ppm'] == 3.5
+
+    def test_cli_reports_failure_on_a_bad_base(self, monkeypatch: Any,
+                                               capsys: Any) -> None:
+        monkeypatch.setattr('sys.stdin', __import__('io').StringIO('{nope'))
+        assert cs._main([]) == 1
+
+    def test_what_the_editor_previews_is_what_startup_produces(self,
+                                                              tmp_path: Any) -> None:
+        """The property that matters: one merge function, two call sites.
+
+        If these could disagree, the UI would show a config the decoder is not
+        running -- which is the failure mode the whole overlay design exists to
+        avoid.
+        """
+        overlay_path = str(tmp_path / 'o.json')
+        store = cs.ConfigStore(copy.deepcopy(BASE), overlay_file=overlay_path)
+        proposed = store.effective()
+        proposed['devices'][0]['gains'] = 'LNA:39'
+        proposed['devices'][0]['ppm'] = 2.5
+        store.save(proposed)
+
+        at_startup = json.loads(cs.apply_overlay_stream(json.dumps(BASE), overlay_path))
+        assert at_startup == store.effective()

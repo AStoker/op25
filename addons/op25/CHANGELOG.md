@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.0.11
+
+**Fixes two bugs introduced in 0.0.10. If you are on 0.0.10, update — it does not
+receive calls.**
+
+- **0.0.10 stopped decoding entirely.** Adding the live gain controls introduced a
+  second method with the same name as an existing one, and the new one silently
+  replaced it. The replaced method was the one that matches a channel to its
+  radio, so every channel was discarded at startup with *"not attached to any
+  device - ignoring!"* in the log. The radio tuned, the decoder ran, the web UI
+  loaded — and there was no receiver behind any of it.
+
+  A test now parses the decoder source and fails on any duplicated method, in any
+  class. It was verified to fail on this exact bug before being kept.
+- **Saved settings were ignored at startup.** Changes made in the UI were stored
+  correctly and the editor showed them, but the decoder was started from the
+  preset alone — so a saved gain applied immediately and then reverted on the next
+  restart. The startup path now applies your saved changes, in a defined order:
+  preset, then add-on options, then your UI changes, so what the editor shows as
+  effective is what actually runs.
+
+  Your existing saved changes are picked up automatically; nothing to redo.
+
 ## 0.0.10
 
 **Configuration is editable from the UI.** Config → Settings, Advanced JSON and

@@ -1153,7 +1153,18 @@ class rx_block (gr.top_block):
 
         return False
 
-    def find_device(self, name):
+    def find_device_by_name(self, name):
+        """Look a device up by its configured name.
+
+        NOT called find_device: that name is already taken by the method above,
+        which takes a whole *channel config dict* and resolves it to a device
+        (by name, else by which device's spectrum covers its frequency). Defining
+        a second find_device here shadowed it -- Python keeps the later definition
+        -- so configure_channels() started comparing dev.name against a dict,
+        matched nothing, and dropped every channel with
+        "not attached to any device - ignoring!". The receiver came up with no
+        channels at all.
+        """
         for dev in self.devices:
             if dev.name == name:
                 return dev
@@ -1161,7 +1172,7 @@ class rx_block (gr.top_block):
 
     def set_device_gains(self, name, gains):
         """Live gain change. Returns None on success, or an error string."""
-        dev = self.find_device(name)
+        dev = self.find_device_by_name(name)
         if dev is None:
             return 'no such device: %s' % name
         try:
@@ -1179,7 +1190,7 @@ class rx_block (gr.top_block):
         stale freq_xlat offset.  This is the same bookkeeping adj_tune() does for
         a relative nudge; the difference is only that ppm is absolute here.
         """
-        dev = self.find_device(name)
+        dev = self.find_device_by_name(name)
         if dev is None:
             return 'no such device: %s' % name
         try:
