@@ -63,6 +63,19 @@ Config selector:
   rather than emitting a hole per late packet: one longer gap, then smooth.
   Fixing the *drift* (the absolute `next_send` deadline) was a separate,
   earlier bug — don't mistake one for the other.
+- **Audio buffered while nobody is listening is history, not buffering.**
+  `push_audio` bounds each source to `_IDLE_KEEP_MS` (120 ms) when
+  `_consumers == 0` and to `_MAX_BUFFERED_BYTES` (4 s) when a `generate()` is
+  attached. Without that an idle server filled to 4 s and a client attaching
+  inherited that lag *for as long as it listened* — drained at real time,
+  refilled at real time. Seen live as `buf=64000 pushed=181440 yielded=0
+  dropped=117440`.
+  - **The discriminator is who is attached, not how deep the buffer is.** A
+    first attempt trimmed any backlog past a lag threshold, which broke
+    `audio_udp_roundtrip_spec`: its producer is not real-time, bursts 2 s of
+    tone, and got it discarded as "stale". A producer ahead of real time is
+    normal — UDP coalescing does it too — and that audio is the start of a
+    transmission. Trimming it clips the first word.
 - **`underruns` means "lost audio that was in flight"; idle silence is
   `silent_chunks`.** They used to be the same counter, which made it useless as
   a diagnostic because idle time dominated it. The 5 s `ws audio:` log line
@@ -638,7 +651,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 414 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 423 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -667,7 +680,8 @@ its `from gnuradio import gr`.
   reduction, exponential-average compensation, stateless-mode skipping,
   decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
-  `?channel=` / `?port=` selection, jitter-buffer priming and re-priming (36).
+  `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, and
+  the idle-vs-attached buffer bound (44).
 - `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
   fields pinned to `Palmetto800-single.json`, and container-appropriate (no
   pinned serial, no local speaker output, no secrets) (29).

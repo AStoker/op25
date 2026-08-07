@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.0.9
+
+- **Palmetto 800 gain goes back up, to 40.** 0.0.8 lowered it to 30 on the
+  theory that near-maximum gain overloads the tuner on 800 MHz. On air that was
+  wrong: the log showed a receiver starved of signal, not overloaded — 44
+  control-channel timeouts hunting all four frequencies, and voice frames with
+  8–13 bit errors against a repair threshold of about 10. Overload and starvation
+  produce the same symptom, so this is a per-site measurement rather than a
+  setting with a right answer. Sweep it with the `device_overrides` option and
+  watch the symbol-quality figure in Tuning & Diagnostics; no need to change any
+  file to try a value.
+- **Audio no longer plays several seconds late.** The decoder feeds the audio
+  buffer whether or not anyone is listening, so an idle scanner accumulated four
+  seconds of it — and opening the UI inherited that as a permanent delay, because
+  the buffer was drained and refilled at the same rate. You would hear the reply
+  before the call. With nobody listening the buffer now keeps only a fraction of
+  a second, so opening the UI starts you live.
+
+  Once you *are* listening nothing is discarded early, which matters: audio can
+  legitimately arrive in bursts, and throwing that away clips the first word of a
+  transmission.
+
 ## 0.0.8
 
 **Fixes a blank OP25 panel after updating to 0.0.7.** If you are seeing one,

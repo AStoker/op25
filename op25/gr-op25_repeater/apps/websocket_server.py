@@ -173,6 +173,23 @@ _CHUNK_BYTES   = _CHUNK_SAMPLES * _SAMPLE_WIDTH       # 320 bytes
 # added latency is imperceptible on scanner audio, the chopping is not.
 _STREAM_PRIME_MS = int(os.environ.get('OP25_STREAM_PRIME_MS', '120'))
 
+# Audio buffered while nobody is listening is not buffered audio, it is history.
+#
+# The UDP thread pushes whether or not a client is attached, so an idle server
+# used to fill to _MAX_BUFFERED_BYTES (4 s) and then shed the oldest bytes to
+# stay there -- observed live as `buf=64000 pushed=181440 yielded=0
+# dropped=117440`. A listener attaching then inherited that 4 s backlog and,
+# being drained at real time and refilled at real time, stayed 4 s behind for as
+# long as it listened. Live scanner audio 4 s late is worse than useless: you
+# hear the reply before the call.
+#
+# So with no consumer the buffer keeps only a rolling prime's worth, and a
+# listener starts live. Note this is decided by *who is attached*, not by how
+# deep the buffer is: a producer that bursts ahead of real time is normal (UDP
+# coalescing does it, and so does a non-real-time source), and its audio is the
+# start of a transmission, not staleness. Discarding it clips the first word.
+_IDLE_KEEP_MS = int(os.environ.get('OP25_STREAM_IDLE_KEEP_MS', '120'))
+
 
 def _wav_stream_header(sample_rate: int = _SAMPLE_RATE) -> bytes:
     """WAV header for an infinite/unknown-length stream.
@@ -247,6 +264,12 @@ class AudioStreamManager:
         self.prime_bytes: int = (
             int(_SAMPLE_RATE * _STREAM_PRIME_MS / 1_000.0) * _SAMPLE_WIDTH
         )
+        # What to retain while no consumer is attached -- see _IDLE_KEEP_MS.
+        self.idle_keep_bytes: int = (
+            int(_SAMPLE_RATE * _IDLE_KEEP_MS / 1_000.0) * _SAMPLE_WIDTH
+        )
+        # Number of live generate() consumers. Guarded by _lock.
+        self._consumers: int = 0
 
         # Diagnostics
         self.bytes_pushed: int = 0
@@ -276,8 +299,13 @@ class AudioStreamManager:
             self.bytes_pushed += len(pcm_chunk)
             self.last_push_ts = time.time()
             # Bound each source independently, so one channel falling behind
-            # cannot evict another channel's audio.
-            overflow = len(buf) - self._MAX_BUFFERED_BYTES
+            # cannot evict another channel's audio.  With nobody listening the
+            # bound is a rolling live window instead of the full 4 s, so a client
+            # that attaches starts live rather than inheriting history --
+            # see _IDLE_KEEP_MS.
+            cap = self._MAX_BUFFERED_BYTES if self._consumers \
+                else max(self.idle_keep_bytes, _CHUNK_BYTES)
+            overflow = len(buf) - cap
             if overflow > 0:
                 del buf[:overflow]
                 self.bytes_dropped += overflow
@@ -285,6 +313,32 @@ class AudioStreamManager:
     # ------------------------------------------------------------------
     # Consumer side (called from the asyncio event loop)
     # ------------------------------------------------------------------
+
+    def drop_stale(self, keep_bytes: int) -> int:
+        """Discard all but the newest *keep_bytes* from each source. Returns bytes dropped.
+
+        The UDP thread pushes whether or not anyone is listening, so with no
+        client attached the buffer sits at ``_MAX_BUFFERED_BYTES`` (4 s) and
+        sheds the oldest audio to stay there.  A listener attaching then finds a
+        full backlog, primes off it instantly, and -- because it is drained at
+        real time and refilled at real time -- stays 4 s behind for as long as it
+        listens.  Live scanner audio 4 s late is worse than useless: you hear the
+        reply before the call.
+
+        So priming trims to the cushion it actually wants rather than adopting
+        whatever happens to be queued.  Call recording is unaffected: clips come
+        from ``CallCapture``, which the UDP thread feeds separately.
+        """
+        dropped = 0
+        with self._lock:
+            bufs = list(self._mix_buffers.values()) if self._mix else [self._buffer]
+            for buf in bufs:
+                excess = len(buf) - keep_bytes
+                if excess > 0:
+                    del buf[:excess]          # keep the tail: newest audio
+                    dropped += excess
+            self.bytes_dropped += dropped
+        return dropped
 
     def _take_chunk(self) -> tuple[bytes, int]:
         """Pop up to one full chunk from the buffer.
@@ -321,6 +375,18 @@ class AudioStreamManager:
                 return max((len(b) for b in self._mix_buffers.values()), default=0)
             return len(self._buffer)
 
+    def _attach(self) -> None:
+        with self._lock:
+            self._consumers += 1
+
+    def _detach(self) -> None:
+        with self._lock:
+            self._consumers = max(0, self._consumers - 1)
+
+    @property
+    def consumers(self) -> int:
+        return self._consumers
+
     async def generate(
         self,
         out_rate: int = _SAMPLE_RATE,
@@ -333,6 +399,21 @@ class AudioStreamManager:
         here saves every consumer from having to.  *container* may be
         ``'wav'`` (default) or ``'raw'`` for headerless PCM.
         """
+        # Registering as a consumer switches push_audio from "keep a rolling live
+        # window" to "buffer properly", so audio queued before anyone was
+        # listening is never inherited as latency. See _IDLE_KEEP_MS.
+        self._attach()
+        try:
+            async for chunk in self._generate(out_rate, container):
+                yield chunk
+        finally:
+            self._detach()
+
+    async def _generate(
+        self,
+        out_rate: int,
+        container: str,
+    ) -> AsyncGenerator[bytes, None]:
         if container != 'raw':
             yield _wav_stream_header(out_rate)
 

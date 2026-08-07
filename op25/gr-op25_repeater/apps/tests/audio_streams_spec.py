@@ -303,13 +303,20 @@ class TestAggregateMixes:
 
     def test_ports_are_bounded_independently(self) -> None:
         # One channel running away must not evict another channel's audio.
+        # A consumer is attached so the bound under test is the full 4 s one --
+        # with nobody listening the bound is a short live window instead, see
+        # TestIdleBacklogIsNotInherited.
         mgr = self._fresh()
-        cap = ws.AudioStreamManager._MAX_BUFFERED_BYTES
-        mgr.push_audio(_pcm(cap * 2, 0x44), port=23458)
-        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x55), port=23462)
-        assert mgr.bytes_dropped == cap
-        # 23462's chunk survived and is still mixed in.
-        assert mgr.buffered_bytes() == cap
+        mgr._attach()
+        try:
+            cap = ws.AudioStreamManager._MAX_BUFFERED_BYTES
+            mgr.push_audio(_pcm(cap * 2, 0x44), port=23458)
+            mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x55), port=23462)
+            assert mgr.bytes_dropped == cap
+            # 23462's chunk survived and is still mixed in.
+            assert mgr.buffered_bytes() == cap
+        finally:
+            mgr._detach()
 
     def test_buffered_bytes_is_the_worst_port_not_the_sum(self) -> None:
         mgr = self._fresh()
@@ -391,3 +398,101 @@ class TestJitterBuffer:
         asyncio.run(_take_chunks_primed(mgr, 3, container='raw'))
         assert mgr.underruns == 0
         assert mgr.silent_chunks == 3
+
+
+class TestIdleBacklogIsNotInherited:
+    """A listener must start live, not behind whatever queued while it was away.
+
+    The UDP thread pushes whether or not anyone is listening, so an idle server
+    filled to _MAX_BUFFERED_BYTES and a client attaching inherited a 4 s lag for
+    as long as it listened. Observed live: buf=64000 pushed=181440 yielded=0
+    dropped=117440.
+
+    The discriminator is *who is attached*, not how deep the buffer is -- a
+    producer bursting ahead of real time is normal, and its audio is the start of
+    a transmission rather than staleness.
+    """
+
+    def _fresh(self, mix: bool = False) -> ws.AudioStreamManager:
+        mgr = ws.AudioStreamManager(mix=mix)
+        mgr.mock = False
+        return mgr
+
+    def test_idle_buffer_is_bounded_to_a_live_window(self) -> None:
+        mgr = self._fresh()
+        assert mgr.consumers == 0
+        mgr.push_audio(_pcm(ws.AudioStreamManager._MAX_BUFFERED_BYTES, 0x11))
+        assert mgr.buffered_bytes() <= max(mgr.idle_keep_bytes, ws._CHUNK_BYTES)
+
+    def test_idle_window_keeps_the_newest_audio(self) -> None:
+        mgr = self._fresh()
+        mgr.idle_keep_bytes = ws._CHUNK_BYTES
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0xAA))
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0xBB))
+        assert bytes(mgr._buffer) == _pcm(ws._CHUNK_BYTES, 0xBB)
+
+    def test_a_listener_starts_from_the_live_edge(self) -> None:
+        mgr = self._fresh()
+        mgr.idle_keep_bytes = ws._CHUNK_BYTES
+        mgr.prime_bytes = ws._CHUNK_BYTES
+        mgr.push_audio(_pcm(ws.AudioStreamManager._MAX_BUFFERED_BYTES, 0x11))  # history
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x22))                            # live edge
+        first = asyncio.run(_take_chunks_primed(mgr, 1, container='raw'))[0]
+        assert first == _pcm(ws._CHUNK_BYTES, 0x22)
+
+    def test_an_attached_consumer_gets_the_full_buffer(self) -> None:
+        # Once someone is listening, nothing may be discarded early: a burst is
+        # the start of a transmission, and trimming it clips the first word.
+        mgr = self._fresh()
+        mgr._attach()
+        try:
+            mgr.push_audio(_pcm(mgr.idle_keep_bytes * 4, 0x33))
+            assert mgr.buffered_bytes() == mgr.idle_keep_bytes * 4
+            assert mgr.bytes_dropped == 0
+        finally:
+            mgr._detach()
+
+    def test_generate_registers_and_deregisters_as_a_consumer(self) -> None:
+        mgr = self._fresh()
+        seen = []
+
+        async def drive() -> None:
+            gen = mgr.generate(container='raw')
+            try:
+                await gen.__anext__()
+                seen.append(mgr.consumers)
+            finally:
+                await gen.aclose()
+
+        asyncio.run(drive())
+        assert seen == [1], 'generate() did not register as a consumer'
+        assert mgr.consumers == 0, 'consumer count leaked after aclose()'
+
+    def test_detach_never_goes_negative(self) -> None:
+        mgr = self._fresh()
+        mgr._detach()
+        assert mgr.consumers == 0
+
+    def test_drop_stale_keeps_the_tail(self) -> None:
+        mgr = self._fresh()
+        mgr._attach()
+        try:
+            mgr.push_audio(_pcm(320, 0xAA) + _pcm(320, 0xBB))
+            assert mgr.drop_stale(320) == 320
+            assert bytes(mgr._buffer) == _pcm(320, 0xBB)
+        finally:
+            mgr._detach()
+
+    def test_drop_stale_is_a_noop_below_the_threshold(self) -> None:
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(320, 0xCC))
+        assert mgr.drop_stale(640) == 0
+        assert mgr.buffered_bytes() == 320
+
+    def test_mix_mode_bounds_each_source_independently(self) -> None:
+        # Bounding the sum would let one backed-up channel evict another's audio.
+        mgr = self._fresh(mix=True)
+        mgr.idle_keep_bytes = ws._CHUNK_BYTES
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES * 4, 0x44), port=23458)
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x55), port=23462)
+        assert all(len(b) == ws._CHUNK_BYTES for b in mgr._mix_buffers.values())
