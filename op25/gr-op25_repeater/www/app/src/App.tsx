@@ -11,6 +11,7 @@ import type { NavItem } from './components/Header/Header';
 import { ThemeServiceProvider } from './services/themeService';
 import { WebSocketServiceProvider } from './services/websocketService';
 import { OP25ServiceProvider } from './services/op25Service';
+import ToastHost from './services/toastService';
 import PlayerCard from './components/PlayerCard/PlayerCard';
 import ChannelsCard from './components/ChannelsCard/ChannelsCard';
 import BandPlanCard from './components/BandPlanCard/BandPlanCard';
@@ -138,6 +139,10 @@ function AppShell() {
 
       <ConfigDialog open={dialog === 'config'} onClose={() => setDialog(null)} />
       <AboutDialog  open={dialog === 'about'}  onClose={() => setDialog(null)} />
+
+      {/* Outside the dialogs, so a failure raised by one is still readable
+          after it closes. */}
+      <ToastHost />
     </Box>
   );
 }

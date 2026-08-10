@@ -210,6 +210,27 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
 - Clips are gated on `min_call_secs` and `min_peak`. The peak gate is what
   drops encrypted traffic, which decodes to near-silence — that is correct
   behaviour, not a bug to fix.
+- **`talkgroup_scope` decides which calls are worth a round trip**: `all`,
+  `focused` (the talkgroups pinned in the UI) or `list` (the explicit
+  `talkgroups` array, which is what a bare `talkgroups` has always meant — hence
+  that being the default when the key is absent but the list is not, rather than
+  silently widening an upgraded install onto a metered STT engine).
+  - `focused` reads `ui_state.focused_talkgroups` through a **callable**
+    (`HomeAssistantBridge.focused_talkgroups`, supplied by
+    `websocket_server._focused_talkgroups`), not a captured list. Two reasons:
+    `ha_bridge` stays stdlib-only and ignorant of `ui_state`, and pinning a
+    talkgroup has to take effect on the next call rather than the next restart.
+    The scope itself is config and does need a restart; the pins do not.
+  - **An empty selection means everything, not nothing** — same convention as an
+    empty whitelist. A user who turns this on and then unpins their last
+    talkgroup would otherwise get silence with nothing on screen to explain it.
+    `/api/ha/status` reports `talkgroup_scope`, the resolved `talkgroup_filter`
+    and `filtering` so the widened case is visible.
+  - `filtered` is counted separately from `dropped` and only while enabled: a
+    rising `filtered` beside a flat `submitted` is the answer to "why is nothing
+    being transcribed", and a disabled bridge is off rather than filtering.
+  - Excluded calls are still recorded, still in `/api/calls`, still in the UI.
+    This gates what leaves the host, not what is captured.
 - **One `CallRecorder` per UDP port** (`CallCapture`). P25 only ever uses one
   port — `p25_frame_assembler_impl.h` holds a single `p25p2_tdma` and calls
   plain `send_audio()`. Slot B (`port + 1`) is DMR-only, via
@@ -383,15 +404,43 @@ numbers.
   - Timed blacklist entries survive a replacement: those are `TGID_SKIP_TIME`
     skips in flight, and `get_scan_lists()` omits them so the UI does not flicker.
 - **Focus/pin and the scan list are separate, and the second is never implicit.**
-  Pinning is `localStorage` (`hooks/useTalkgroupFocus.ts`) and only sorts/filters
-  the table; the scan list stops other talkgroups being received at all, so it
-  takes an explicit button in the Talkgroup Browser. Narrowing what you look at
-  must not silently narrow what gets recorded and transcribed.
+  Pinning lives on the receiver (`hooks/useTalkgroupFocus.ts` → `ui_state`) and
+  only sorts/filters the table; the scan list stops other talkgroups being
+  received at all, so it takes an explicit button in the Talkgroup Browser.
+  Narrowing what you look at must not silently narrow what gets recorded and
+  transcribed.
 - `components/TalkgroupBrowser` **freezes its list while open** (`systems` is
   deliberately not a loader dependency). Chasing a row that re-sorts under you as
   traffic arrives is the problem it exists to solve.
-- An invalid live regex shows *everything* and says why, rather than emptying the
-  table — most keystrokes in a pattern are a syntax error in progress.
+- **The browser filters on a *set* of patterns, OR'd together.** One box could
+  express one idea; the real question is a union — "W Cola 1, and everything
+  starting RCHP, and 4501". Each pattern carries its own rule
+  (`utils/talkgroupPatterns.ts`: contains / starts / exact / wildcard / regex),
+  and the kind is guessed from what you type so `RCHP*` lands on Wildcard.
+  Without that guess it would be read as a substring, match nothing — no tag
+  contains a literal asterisk — and read as the filter being broken rather than
+  the wrong rule being applied.
+  - **Each chip shows how many talkgroups it accounts for**, counted against the
+    rows currently in scope. A pattern that matches nothing is the commonest
+    reason a search "does not work", and it is invisible in a union.
+  - The half-typed pattern participates in the filter before it is added, so the
+    table previews what Add would do.
+  - A pattern that will not compile is reported, never silently dropped and never
+    silently matched: in a union, a broken pattern that matched everything would
+    quietly widen the result. That is also why an *invalid* pattern is shown as a
+    red chip rather than emptying the table — most keystrokes in a regex are a
+    syntax error in progress.
+  - Patterns persist in `ui_state.talkgroup_filters`, like pins and for the same
+    reason: retyping them on every visit, and again on the phone, is the
+    navigation cost the browser exists to remove.
+- **Every column sorts, and the default is Calls descending.** "Which talkgroups
+  actually carry traffic" is the question that decides what to select, and it is
+  answered by `count` / `last_seen` — the two fields `tg_metadata` exists to
+  persist. `Calls` survives on a phone where `Freq` does not, and a "Heard only"
+  switch drops the never-heard entirely.
+  - Selected rows are **not** floated to the top here, unlike the dashboard's
+    table: ticking a checkbox would move the row out from under the pointer, and
+    this dialog exists to be ticked through.
 
 ## Responsive UI
 
@@ -615,7 +664,10 @@ holds, the selected channel — state that belongs to the *receiver*.
   SD card. Values are coerced on the way in: `bool` is excluded from the tgid
   list (it is an `int` subclass and would become tgid 1), and a `0` hold is
   dropped rather than stored — 0 is the decoder's own "release", so storing it
-  would re-apply a hold the user let go.
+  would re-apply a hold the user let go. Talkgroup-browser patterns are
+  capped in both count and length, deduped, and an unrecognised `kind` degrades
+  to `contains` rather than being dropped — the text is what the user typed, and
+  `contains` is the one rule that cannot fail to compile.
 - **Holds are keyed by channel *name*, not msgq id.** Ids are positional, so
   adding a device ahead of a channel would silently move a stored hold onto a
   different channel.
@@ -735,6 +787,24 @@ not. The effective config is therefore **composed, never stored**:
   tabs share one `useConfigEditor`, which lives outside `op25Service` because
   that service re-renders at 1 Hz from the WebSocket and this is a REST resource
   that only changes when someone edits it.
+- **It names no config *tab* either.** `schema.standalone_sections` (currently
+  just `transcription`) is what moves a section out of Settings and onto its own
+  tab; `SettingsTab` renders whichever sections it is given, so Transcription is
+  the same form and inherits the dirty tracking, preset badges, write gate and
+  restart banner rather than reimplementing five of them. A client that has not
+  heard of the tab still shows the fields under Settings.
+  - `TranscriptionTab` adds only what the config cannot say: what the *running*
+    bridge is doing, from `/api/ha/status`. Those two disagree between a save and
+    a restart, which is the state most likely to be read as a bug.
+  - `group` splits a long section into sub-headings. Twenty controls in one grid
+    hides which of them decide *what gets sent* and which decide *what comes
+    back*.
+- **`default` in the schema is displayed, never stored.** A switch for a field
+  that defaults to on (`call_recording`, `filter_hallucinations`, `normalize`)
+  read as off while the key was absent, which invites the user to "fix" it by
+  storing an override that changes nothing. `ConfigFieldInput` shows the default
+  when the value is unset; the overridden badge still distinguishes stored from
+  defaulted.
 - **`POST /api/restart` asks Supervisor to restart the add-on**, which is how a
   restart-required field actually takes effect. It needs `hassio_api` +
   `hassio_role: manager` (the narrowest role that permits
@@ -823,7 +893,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 600 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 630 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -837,7 +907,7 @@ its `from gnuradio import gr`.
 - `tests/call_capture_spec.py` — PCM helpers, call segmentation, normalisation,
   speech heuristics, hallucination filtering, clip store, keyword matching, HA
   config, HA HTTP round-trips, media upload, REST endpoints, per-port
-  capture (170).
+  capture, and the talkgroup scope that gates transcription (188).
 - `tests/protocol_spec.py` — json_type routing, live SYSTEM_STATE, call-log
   ring, capture listing/download, idle-plot reaping, upstream type
   validation (32).
@@ -859,7 +929,8 @@ its `from gnuradio import gr`.
   names apart (8).
 - `tests/ui_state_spec.py` — the persisted scanner state: value coercion and the
   key allow-list, merge-not-replace, degradation to memory-only, the REST
-  round-trip, and hold record/restore incl. once-per-decoder (27).
+  round-trip, hold record/restore incl. once-per-decoder, and the pinned list
+  the transcription scope reads, and the browser's saved search patterns (37).
 - `tests/config_store_spec.py` — merge/prune/diff primitives, overlay deltas,
   preset drift, rollback replaying intent onto a moved preset, redaction
   round-trip, path resolution, schema live-vs-restart classification, and the
@@ -868,7 +939,7 @@ its `from gnuradio import gr`.
 - `tests/config_api_spec.py` — the write gate (ingress/open/off), config state,
   schema filtering, validation, history, rollback, reset, export containment,
   the restart endpoint's gating and error mapping, and float precision
-  over the API (54).
+  over the API, and the transcription section's own schema (60).
 - `tests/addon_preset_spec.py` — the built-in add-on presets: loadable, RF
   fields pinned to `Palmetto800-single.json`, and container-appropriate (no
   pinned serial, no local speaker output, no secrets) (29).

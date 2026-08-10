@@ -29,6 +29,20 @@ Two properties of a field matter more than its type:
     Connect+ has slots that P25 does not -- so a field list that ignores the
     protocol shows the user knobs that do nothing.
 
+``default``
+    What the code does when the key is absent. Not a value that gets stored --
+    it is what the control *displays* while nothing overrides it. Without it a
+    switch for a field that defaults to on reads as off, which is worse than
+    unhelpful: ``call_recording`` is on unless the config says otherwise, and a
+    switch showing it off invites the user to "fix" it by turning it on and
+    thereby writing an override that did nothing.
+
+``group``
+    Optional sub-heading within a section. Only the transcription section has
+    enough fields to need it: twenty controls in one undifferentiated grid is a
+    wall, and the reader cannot tell which of them affect *what gets sent* and
+    which affect *what comes back*.
+
 Paths use the same syntax as ``config_store.flatten``:
 ``devices[sdr0].gains``, with ``*`` standing for "every element of this list".
 """
@@ -199,20 +213,160 @@ TERMINAL_FIELDS = [
            advanced=True,
            help='Explicit override of the UDP ports the browser stream listens '
                 'on. Normally discovered from each channel destination.'),
-    _field('terminal.home_assistant.enabled', 'Transcription', 'boolean',
-           help='Speech-to-text and call recording via Home Assistant.'),
+]
+
+# ---------------------------------------------------------------------------
+# Transcription
+# ---------------------------------------------------------------------------
+#
+# Its own section, and its own tab in the editor, because it is the one part of
+# the config that is not about receiving radio: it decides which finished calls
+# leave this host, where they go, and what comes back. Mixing that in with sample
+# rates and filter shapes buried it.
+#
+# Everything here is read at startup -- HomeAssistantConfig is built once in
+# start_call_capture -- so none of it is live. The one thing that *is* live is the
+# pinned talkgroup list that ``talkgroup_scope: focused`` reads, which is
+# deliberate: the scope is a setting, the pins are scanner state (ui_state.py).
+
+TRANSCRIPTION_FIELDS = [
+    _field('terminal.home_assistant.enabled', 'Enable transcription', 'boolean',
+           group='Connection', default=False,
+           help='Send finished calls to Home Assistant for speech-to-text, '
+                'keyword matching and webhook alerts. Off leaves call recording '
+                'and the in-browser clip list working.'),
+    _field('terminal.home_assistant.url', 'Home Assistant URL', 'string',
+           group='Connection', placeholder='http://supervisor/core',
+           help='Injected by the add-on when home_assistant.use_supervisor is '
+                'on, which is also what supplies the token. Set it here only for '
+                'a standalone install.'),
+    _field('terminal.home_assistant.token_file', 'Token file', 'string',
+           group='Connection', advanced=True,
+           help='Path to a file holding a long-lived access token. Preferred over '
+                'putting the token in the config, which is served to the browser. '
+                '$OP25_HA_TOKEN is the other way in.'),
+    _field('terminal.call_recording', 'Record calls', 'boolean',
+           group='Connection', default=True,
+           help='Slice the UDP audio into one clip per transmission. Off disables '
+                'the clip list, /api/calls and transcription together -- nothing '
+                'downstream has anything to work on.'),
+
+    # -- what gets sent -----------------------------------------------------
+    _field('terminal.home_assistant.talkgroup_scope', 'Transcribe', 'enum',
+           choices=['all', 'focused', 'list'], group='What gets sent', default='all',
+           choice_labels={
+               'all': 'All traffic',
+               'focused': 'Only pinned talkgroups',
+               'list': 'Only the talkgroups listed below',
+           },
+           help='"Only pinned" reuses the same selection the talkgroup table '
+                'pins, so one list drives both what you watch and what gets '
+                'transcribed. It is read live -- pinning a talkgroup takes effect '
+                'on the next call, with no restart. An empty selection means no '
+                'restriction rather than silence, so unpinning everything cannot '
+                'quietly stop transcription.'),
+    _field('terminal.home_assistant.talkgroups', 'Talkgroup list', 'list',
+           group='What gets sent', placeholder='1001, 1002',
+           help='Used when the scope above is "list". Talkgroup ids, comma '
+                'separated. Empty means no restriction.'),
+    _field('terminal.home_assistant.min_call_secs', 'Minimum call length', 'number',
+           unit='s', min=0, max=30, step=0.1, precision=2, group='What gets sent',
+           default=0.8,
+           help='Shorter transmissions are dropped rather than transcribed. A '
+                'radio keyed and released produces a fraction of a second of '
+                'audio that no engine can do anything with.'),
+    _field('terminal.home_assistant.min_peak', 'Minimum peak level', 'number',
+           min=0, max=32767, step=10, group='What gets sent', default=250,
+           help='Peak sample amplitude a clip must reach. This is the gate that '
+                'drops encrypted traffic, which decodes to near-silence -- that '
+                'is the intent, not a bug.'),
+    _field('terminal.home_assistant.max_call_secs', 'Maximum call length', 'number',
+           unit='s', min=1, max=3600, step=1, precision=2, advanced=True,
+           group='What gets sent', default=120.0,
+           help='A transmission this long is closed and sent anyway, so a stuck '
+                'mic cannot grow one clip without bound.'),
+    _field('terminal.home_assistant.hang_time_secs', 'Hang time', 'number',
+           unit='s', min=0.1, max=30, step=0.1, precision=2, advanced=True,
+           group='What gets sent', default=1.5,
+           help='Gap in UDP audio that ends a call. The decoder only emits while '
+                'a call is up, so this gap is the voice-activity detector -- too '
+                'long and two transmissions merge into one clip.'),
+    _field('terminal.home_assistant.min_voiced_ratio', 'Minimum voiced ratio',
+           'number', min=0, max=1, step=0.05, precision=2, advanced=True,
+           group='What gets sent', default=0.0,
+           help='Speech-likeness gate, 0 to disable. Advisory and off by default '
+                'so it cannot silently eat traffic.'),
+
+    # -- speech to text -----------------------------------------------------
     _field('terminal.home_assistant.stt_engine', 'Speech-to-text engine', 'string',
-           placeholder='stt.faster_whisper',
+           group='Speech to text', default='stt.faster_whisper',
            help='A Home Assistant stt entity id.'),
     _field('terminal.home_assistant.language', 'Language', 'string',
+           group='Speech to text', default='en-US',
            help='Must match what the provider advertises -- HA Cloud says en-US, '
-                'Wyoming says en, and a mismatch is a bare HTTP 415.'),
+                'Wyoming says en, and a mismatch is a bare HTTP 415. The bridge '
+                'asks the engine at startup and corrects this where it can.'),
+    _field('terminal.home_assistant.filter_hallucinations',
+           'Filter hallucinated text', 'boolean', group='Speech to text', default=True,
+           help='Unintelligible audio makes Whisper produce confident boilerplate '
+                '("Thank you for watching"). Rejected text is kept in the clip as '
+                'discarded_transcript, so over-filtering stays visible.'),
+    _field('terminal.home_assistant.hallucination_phrases', 'Extra phrases to reject',
+           'list', advanced=True, group='Speech to text',
+           help='Added to the built-in list of hallucinated boilerplate.'),
+    _field('terminal.home_assistant.stt_sample_rate', 'Sample rate sent', 'number',
+           unit='Hz', advanced=True, group='Speech to text',
+           suggestions=[8000, 16000], default=16000,
+           help="Clips are 8 kHz and are upsampled to this. Home Assistant's stt "
+                'API accepts only what the provider advertises, normally 16000. '
+                'Upsampling recovers no detail -- the vocoder is the quality '
+                'floor -- it is purely a format requirement.'),
+    _field('terminal.home_assistant.stt_audio', 'Audio format sent', 'enum',
+           choices=['raw', 'wav'], advanced=True, group='Speech to text', default='raw',
+           choice_labels={'raw': 'Headerless PCM', 'wav': 'WAV container'},
+           help='Home Assistant passes the body straight to the provider as raw '
+                'PCM chunks. Switch to wav only if a provider needs a container.'),
+    _field('terminal.home_assistant.timeout_secs', 'Request timeout', 'number',
+           unit='s', min=1, max=600, step=1, precision=2, advanced=True,
+           group='Speech to text', default=30.0,
+           help='Applies to every Home Assistant round-trip: transcription, '
+                'webhook and media upload.'),
+
+    # -- what comes back ----------------------------------------------------
     _field('terminal.home_assistant.keywords', 'Keywords', 'list',
-           help='Phrases to match in a transcript.'),
+           group='Alerts and storage',
+           help='Phrases to match in a transcript. Plain words are matched on '
+                'word boundaries, so "fire" does not fire on "firehouse".'),
+    _field('terminal.home_assistant.keywords_only', 'Alert on keywords only',
+           'boolean', group='Alerts and storage', default=False,
+           help='Post the webhook only when a keyword matched, rather than for '
+                'every transcribed call.'),
+    _field('terminal.home_assistant.webhook_id', 'Webhook id', 'string',
+           group='Alerts and storage',
+           help='Home Assistant automation webhook to POST each result to. Empty '
+                'means transcripts appear in this UI only.'),
     _field('terminal.home_assistant.media_upload', 'Upload clips', 'boolean',
-           help='Push each clip to Home Assistant, which makes clips outlive the '
-                'in-memory ring and removes any need for this host to be '
-                'reachable.'),
+           group='Alerts and storage', default=False,
+           help='Push each clip into Home Assistant, which makes clips outlive '
+                'the in-memory ring and removes any need for this host to be '
+                'reachable. The upload endpoint needs an administrator token.'),
+    _field('terminal.home_assistant.media_dir', 'Media folder', 'string',
+           advanced=True, group='Alerts and storage', default='scanner',
+           help='Folder within the media source. Created on demand.'),
+    _field('terminal.home_assistant.media_source', 'Media source', 'string',
+           advanced=True, group='Alerts and storage', default='local',
+           help='Media source id; "local" on a default install.'),
+    _field('terminal.home_assistant.media_url_base', 'Public media URL', 'string',
+           advanced=True, group='Alerts and storage',
+           placeholder='/local/scanner',
+           help='/media/<source>/<dir> requires authentication, so a link to it '
+                '401s. Uploading under <config>/www and pointing this at /local/... '
+                'makes the clip linkable -- and unauthenticated.'),
+    _field('terminal.home_assistant.normalize', 'Level clips', 'boolean',
+           advanced=True, group='Alerts and storage', default=True,
+           help='Loudness-normalise each clip at finalize. Measured 24 dB of RMS '
+                'spread on live traffic. The peak/rms in clip metadata stay '
+                'as-received, so they remain valid as an RF indicator.'),
 ]
 
 SECTIONS = [
@@ -225,7 +379,14 @@ SECTIONS = [
      'fields': TRUNKING_FIELDS},
     {'key': 'terminal', 'label': 'Interface & integration', 'kind': 'object',
      'fields': TERMINAL_FIELDS},
+    {'key': 'transcription', 'label': 'Transcription', 'kind': 'object',
+     'fields': TRANSCRIPTION_FIELDS},
 ]
+
+#: Sections the editor gives a tab of their own rather than listing under
+#: Settings. Named here so the server decides it, not the React file: a client
+#: that does not know about the tab still gets the fields.
+STANDALONE_SECTIONS = ('transcription',)
 
 #: Fields with a runtime command behind them, by config path pattern.
 #: Everything else needs the flowgraph rebuilt -- i.e. an add-on restart.
@@ -245,6 +406,7 @@ def schema(protocol: str | None = None) -> dict[str, Any]:
         'protocols': list(ALL_PROTOCOLS),
         'sections': out,
         'live_paths': list(LIVE_PATHS),
+        'standalone_sections': list(STANDALONE_SECTIONS),
     }
 
 

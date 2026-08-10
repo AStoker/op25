@@ -186,6 +186,62 @@ class TestConfigSchemaEndpoint:
         assert 'devices[*].gains' in body['live_paths']
 
 
+class TestTranscriptionSection:
+    """Transcription is a section of its own, and a tab of its own."""
+
+    @staticmethod
+    def _section(client: Any, key: str) -> dict:
+        body = client.get('/api/config/schema').json()
+        return next(s for s in body['sections'] if s['key'] == key)
+
+    def test_the_server_decides_which_sections_get_their_own_tab(
+        self, client: Any
+    ) -> None:
+        # The React file does not name config fields, and it does not name tabs
+        # either: a client that has not heard of this one still renders the
+        # fields under Settings.
+        body = client.get('/api/config/schema').json()
+        assert body['standalone_sections'] == ['transcription']
+
+    def test_the_scope_flag_is_offered(self, client: Any) -> None:
+        field = next(f for f in self._section(client, 'transcription')['fields']
+                     if f['path'] == 'terminal.home_assistant.talkgroup_scope')
+        assert field['choices'] == ['all', 'focused', 'list']
+        assert field['default'] == 'all'
+        assert set(field['choice_labels']) == {'all', 'focused', 'list'}
+
+    def test_transcription_fields_left_the_terminal_section(self, client: Any) -> None:
+        # Otherwise they render twice: once under Settings, once under the tab.
+        paths = {f['path'] for f in self._section(client, 'terminal')['fields']}
+        assert not any(p.startswith('terminal.home_assistant.') for p in paths)
+
+    def test_fields_that_default_to_on_say_so(self, client: Any) -> None:
+        # A switch showing "off" for something that is on invites the user to
+        # store an override that changes nothing.
+        fields = {f['path']: f for f in self._section(client, 'transcription')['fields']}
+        assert fields['terminal.call_recording']['default'] is True
+        assert fields['terminal.home_assistant.filter_hallucinations']['default'] is True
+        assert fields['terminal.home_assistant.enabled']['default'] is False
+
+    def test_nothing_here_claims_to_be_live(self, client: Any) -> None:
+        # HomeAssistantConfig is built once in start_call_capture. The live half
+        # of this is the pinned talkgroup list, which is not config.
+        fields = self._section(client, 'transcription')['fields']
+        assert not [f['path'] for f in fields if f['live']]
+
+    def test_the_scope_survives_a_round_trip_through_the_editor(
+        self, client: Any
+    ) -> None:
+        resp = _put(client, lambda c: c.setdefault('terminal', {})
+                    .setdefault('home_assistant', {})
+                    .update(talkgroup_scope='focused'))
+        assert resp.json()['ok'] is True
+        assert resp.json()['needs_restart'] is True
+        state = client.get('/api/config/state').json()
+        assert (state['effective']['terminal']['home_assistant']['talkgroup_scope']
+                == 'focused')
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------

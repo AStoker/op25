@@ -72,6 +72,8 @@
             "enabled": false,
             "stt_engine": "stt.faster_whisper",
             "language": "en",
+            "#talkgroup_scope": "Which calls are worth a speech-to-text round trip: 'all', 'focused' (only the talkgroups pinned in the web UI -- read live, so pinning takes effect on the next call), or 'list' (only the ids in `talkgroups`). An empty selection means no restriction rather than silence, so unpinning everything widens transcription instead of stopping it. Edit this from Config -> Transcription.",
+            "talkgroup_scope": "all",
             "keywords": [],
             "keywords_only": false,
             "media_upload": false

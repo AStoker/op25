@@ -27,14 +27,37 @@ import type { ConfigField, ConfigSection } from '../../types/config';
  * Edits are held locally until Save, so a half-typed frequency is never sent —
  * and so the diff the server records is one deliberate change set rather than
  * one per keystroke, which would bury the version history.
+ *
+ * One instance renders any subset of the schema's sections, selected by `only`:
+ * Transcription is its own tab, but it is the same form, so it inherits the
+ * dirty tracking, the preset badges, the write gate and the restart banner
+ * rather than reimplementing five of them.
  */
 
 interface Props {
   editor: UseConfigEditor;
+  /** Section keys to render. Defaults to every section the server did not mark
+   *  standalone — those have a tab of their own. */
+  only?: string[];
+  /** Rendered above the form, inside the same scroll area. */
+  header?: React.ReactNode;
 }
 
 function fieldsFor(section: ConfigSection, advanced: boolean): ConfigField[] {
   return section.fields.filter((f) => advanced || !f.advanced);
+}
+
+/** Fields in declaration order, split into their `group` runs. A field with no
+ *  group joins the run before it, so an ungrouped section stays one block. */
+function groupRuns(fields: ConfigField[]): { group: string; fields: ConfigField[] }[] {
+  const runs: { group: string; fields: ConfigField[] }[] = [];
+  for (const f of fields) {
+    const group = f.group ?? '';
+    const last = runs[runs.length - 1];
+    if (last && last.group === group) last.fields.push(f);
+    else runs.push({ group, fields: [f] });
+  }
+  return runs;
 }
 
 /** Fields whose path has no `[*]` — they belong to the section, not an element. */
@@ -46,7 +69,7 @@ function elementFields(fields: ConfigField[]): ConfigField[] {
   return fields.filter((f) => f.path.includes('[*]'));
 }
 
-export default function SettingsTab({ editor }: Props) {
+export default function SettingsTab({ editor, only, header }: Props) {
   const { schema, state, save, busy, error, lastSave, dismissSave, restartAddon } = editor;
   const [restarting, setRestarting] = useState(false);
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
@@ -140,8 +163,18 @@ export default function SettingsTab({ editor }: Props) {
     </Box>
   );
 
+  const standalone = schema.standalone_sections ?? [];
+  const sections = schema.sections.filter((s) => (
+    only ? only.includes(s.key) : !standalone.includes(s.key)
+  ));
+  // The section title would just repeat the tab label when a tab holds one
+  // section, so it is only drawn where it separates one section from another.
+  const showSectionHeadings = sections.length > 1;
+
   return (
     <Stack spacing={2}>
+      {header}
+
       {!state.editable && (
         <Alert severity="warning">
           <AlertTitle>Read-only</AlertTitle>
@@ -247,7 +280,7 @@ export default function SettingsTab({ editor }: Props) {
 
       <FieldLegend />
 
-      {schema.sections.map((section) => {
+      {sections.map((section) => {
         const visible = fieldsFor(section, advanced);
         const scalars = scalarFields(visible);
         const perElement = elementFields(visible);
@@ -257,15 +290,26 @@ export default function SettingsTab({ editor }: Props) {
 
         return (
           <Box key={section.key}>
-            <Divider sx={{ mb: 1.5 }} />
-            <SectionHeading
-              title={section.label}
-              meta={keys.length > 0 ? <Chip variant="outlined" label={`${keys.length}`} /> : undefined}
-            />
+            {showSectionHeadings && (
+              <>
+                <Divider sx={{ mb: 1.5 }} />
+                <SectionHeading
+                  title={section.label}
+                  meta={keys.length > 0
+                    ? <Chip variant="outlined" label={`${keys.length}`} />
+                    : undefined}
+                />
+              </>
+            )}
 
             {scalars.length > 0 && (
               <Box sx={{ mb: perElement.length > 0 ? 2 : 0 }}>
-                {grid(scalars.map((f) => renderField(f)))}
+                {groupRuns(scalars).map((run, i) => (
+                  <Box key={run.group || `run-${i}`} sx={{ mb: 2 }}>
+                    {run.group && <SectionHeading title={run.group} />}
+                    {grid(run.fields.map((f) => renderField(f)))}
+                  </Box>
+                ))}
               </Box>
             )}
 

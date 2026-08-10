@@ -27,19 +27,22 @@ app/                        ← this directory
       useAudioSources.ts    /api/audio/channels — selectable streams
       useSystemState.ts     the SYSTEM_STATE health payload
       useIsPhone.ts         drop low-value table columns below sm
-      useTalkgroupFocus.ts  pinned talkgroups (localStorage, per browser)
+      useTalkgroupFocus.ts  pinned talkgroups (on the receiver, via useUiState)
+      useTalkgroupFilters.ts  the browser's saved search patterns, likewise
       useConfigEditor.ts    the config REST client + flattened-path helpers
     components/<Name>Card/  one card per panel, all wrapped in CardShell
     components/ConfigDialog/  Config modal: the editor, runtime knobs, display prefs
       SettingsTab.tsx         schema-driven form; edits held local until Save
+      TranscriptionTab.tsx    the transcription section + what the bridge is doing
       ConfigFieldInput.tsx    one control, rendered from a server field description
       AdvancedJsonTab.tsx     raw JSON, plus reset-to-preset and export
       HistoryTab.tsx          versions, field diffs, rollback
     components/AboutDialog/   About modal: what this fork is, how it differs upstream
-    components/TalkgroupBrowser/  pick talkgroups from the full list: regex + batch
+    components/TalkgroupBrowser/  pick talkgroups from the full list: patterns + batch
     components/common/      the design-system primitives (see below)
     utils/systemKind.ts     P25 / SmartNet / Connect+ branching + safe formatters
     utils/lastSeen.ts       relative last-heard / frequency formatting
+    utils/talkgroupPatterns.ts  contains/starts/exact/wildcard/regex matching
     types/op25.ts           decoder payload shapes
     types/websocket.ts      envelope + upstream/downstream unions
   vite.config.ts            builds to ../dist
@@ -174,14 +177,25 @@ page here. `AppShell` owns which one is open.
   bug that was there. `tgid_tags[tgid].last_seen` is a raw epoch (0 = never);
   format with `utils/lastSeen.ts` and sort on the number.
 - **Pinning and the scan list are different things.** `useTalkgroupFocus` is
-  localStorage and only sorts/filters the table. `setScanList` stops the decoder
-  receiving anything else, so it must stay behind an explicit action — never
-  wire it to a selection change.
+  receiver-side state that only sorts/filters the table. `setScanList` stops the
+  decoder receiving anything else, so it must stay behind an explicit action —
+  never wire it to a selection change.
 - **The Talkgroup Browser freezes its list while open** on purpose (`systems` is
   not a loader dependency). Re-sorting it as traffic arrives is the problem it
   exists to solve.
-- **An invalid live regex must show everything**, not nothing: most keystrokes in
-  a pattern are a syntax error in progress.
+- **Its filter is a list of patterns OR'd together**, each with its own rule
+  (`utils/talkgroupPatterns.ts`). `guessKind` preselects the rule from what was
+  typed, because `RCHP*` read as a substring matches nothing and looks like a
+  broken filter rather than the wrong rule. Chips carry a match count — a
+  pattern matching nothing is invisible inside a union — and a pattern that will
+  not compile is shown as a red chip, never silently dropped and never silently
+  matched. Saved in `ui_state.talkgroup_filters`.
+- **An invalid pattern must show everything else**, not nothing: most keystrokes
+  in a regex are a syntax error in progress.
+- **Sortable columns default to Calls descending there**, because the question
+  that decides a selection is which talkgroups carry traffic. Selected rows are
+  deliberately *not* floated to the top as they are on the dashboard — the row
+  would move out from under the pointer that is ticking it.
 - **Responsive.** Below `md` the layout is tabs (Live / Audio / System /
   Signal); at `md`+ it is the two-column dashboard. Verify with CDP at
   390 / 820 / 1440 px and check
@@ -195,14 +209,14 @@ page here. `AppShell` owns which one is open.
 
 ## The config editor
 
-`ConfigDialog`'s Settings / Advanced JSON / History tabs render from
-`/api/config/schema` — **no field is named in this codebase**. Adding a protocol
-is a matter of describing its fields in `apps/config_schema.py`, which is what
-makes this a scanner UI rather than a P25 UI.
+`ConfigDialog`'s Settings / Transcription / Advanced JSON / History tabs render
+from `/api/config/schema` — **no field is named in this codebase**. Adding a
+protocol is a matter of describing its fields in `apps/config_schema.py`, which
+is what makes this a scanner UI rather than a P25 UI.
 
-- **One `useConfigEditor` instance is shared by all three tabs** (created in
-  `ConfigDialog`). Three copies would each re-fetch and then disagree about what
-  was saved.
+- **One `useConfigEditor` instance is shared by every editing tab** (created in
+  `ConfigDialog`). Several copies would each re-fetch and then disagree about
+  what was saved.
 - It is **not** part of `op25Service`. That service is live decoder state
   arriving at 1 Hz; folding a REST resource into it would re-render the app every
   second for a panel nobody has open. The hook only loads while the dialog is on
@@ -221,6 +235,19 @@ makes this a scanner UI rather than a P25 UI.
 - **`overridden` is computed against the saved overlay, not the draft.** An
   unsaved edit is already covered by the dirty count; flagging it as an override
   would claim something is stored that is not.
+- **An unset field shows the schema's `default`, not blank/off.** A switch
+  reading "off" for something that is on (`call_recording`) invites the user to
+  turn it on and store an override that changes nothing. The default is
+  displayed, never submitted — the overridden badge still says whether a value is
+  actually stored.
+- **Which sections get their own tab is the server's call**, not this file's:
+  `schema.standalone_sections` lists them and `SettingsTab`'s `only` prop renders
+  them. `TranscriptionTab` is that form plus a *Running now* panel from
+  `/api/ha/status`, because between a save and a restart the config and the
+  running bridge disagree — and the pinned-talkgroup scope is live while the
+  scope setting itself is not, which needs saying on screen.
+- **Fields with a `group` get a sub-heading inside their section.** A section big
+  enough to need it (transcription) otherwise reads as one undifferentiated grid.
 - **Floats are trimmed to the schema's `precision`.** `adj_tune` works in
   fractional ppm and produces `2.3749999999999996`; at 859 MHz the smallest
   tuning step is ~0.116 ppm, so the extra digits are below what the hardware can

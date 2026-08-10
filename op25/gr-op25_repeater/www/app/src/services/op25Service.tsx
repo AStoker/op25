@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { useWebSocketService } from './websocketService';
+import { notify } from './toastService';
 import { apiUrl } from '../utils/url';
 import type {
   CallClip,
@@ -356,6 +357,17 @@ export function OP25ServiceProvider({ children }: { children: React.ReactNode })
             });
           }
         }
+      } else if (msg.type === 'ERROR') {
+        // The decoder rejects a command by answering with this, and nothing
+        // used to read it: an unsupported command looked exactly like a command
+        // that worked. `detail` is written by the server for a human.
+        const detail = (msg.payload as { detail?: string } | undefined)?.detail;
+        notify({
+          key: `decoder-error:${detail ?? 'unknown'}`,
+          severity: 'error',
+          message: 'The decoder rejected a command',
+          detail: detail || 'No detail was given.',
+        });
       }
     });
   }, [subscribe]);

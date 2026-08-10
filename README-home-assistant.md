@@ -283,19 +283,39 @@ Clips live in a bounded in-memory ring (60 clips / 24 MB by default, roughly
 
 ### 3.5 Filtering what gets transcribed
 
-Transcription is the expensive step. Two options narrow it:
+Transcription is the expensive step. `talkgroup_scope` decides which calls are
+worth it:
 
 ```json
-"talkgroups": [1211, 1215, 3300],
+"talkgroup_scope": "focused",
 "keywords_only": true
 ```
 
-- `talkgroups` — only these TGIDs are transcribed at all. Everything else is
-  still captured and still visible in the OP25 web UI, it just never reaches
-  Home Assistant.
+| `talkgroup_scope` | Transcribes |
+|---|---|
+| `all` (default) | every captured call |
+| `focused` | only the talkgroups **pinned in the web UI** |
+| `list` | only the TGIDs in `talkgroups` below |
+
+- `focused` reuses the same selection the talkgroup table pins, so one list
+  drives both what you watch and what gets transcribed. It is read live — pin a
+  talkgroup and the next call on it is transcribed, no restart. The pins live on
+  the receiver (`op25_ui_state.json`), so a phone and a desktop agree.
+- `talkgroups` — the explicit list, used when the scope is `list`. Setting it
+  with no `talkgroup_scope` at all still means "only these", which is what it
+  meant before the scope key existed.
+- An **empty selection means no restriction**, not silence — the same convention
+  as an empty whitelist. Unpinning your last talkgroup widens transcription
+  rather than stopping it, and `/api/ha/status` says which it is
+  (`talkgroup_scope`, `talkgroup_filter`, `filtering`).
+- Whichever scope is in force, excluded calls are still captured and still
+  visible in the OP25 web UI; they just never reach Home Assistant. The count
+  is `filtered` in `/api/ha/status`.
 - `keywords_only` — transcribe everything, but only fire the webhook when a
   keyword matched. Useful when you want alerts without a firehose of
   automation triggers.
+
+All of this is editable from the web UI: **Config → Transcription**.
 
 ---
 
@@ -474,7 +494,8 @@ All keys live under `terminal.home_assistant`.
 | `webhook_id` | — | HA webhook to POST results to; omit to disable the push |
 | `keywords` | `[]` | Terms to match in the transcript |
 | `keywords_only` | false | Only fire the webhook when a keyword matched |
-| `talkgroups` | `[]` (all) | Restrict transcription to these TGIDs |
+| `talkgroup_scope` | `all`, or `list` when `talkgroups` is set | `all` / `focused` (pinned in the UI) / `list` — see §3.5 |
+| `talkgroups` | `[]` (all) | Restrict transcription to these TGIDs, when the scope is `list` |
 | `public_url` | inferred | Base URL Home Assistant should use to fetch clip audio. Only needed when `media_upload` is off |
 | `media_upload` | false | Push each clip into Home Assistant's media library (see §4.1) |
 | `media_dir` | `scanner` | Folder within the media source to upload into |

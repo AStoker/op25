@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.0.15
+
+**Finding the talkgroups worth listening to, and deciding which of them get
+transcribed.**
+
+- **The Talkgroup Browser searches on several patterns at once.** One box could
+  only ask one question; what you actually want is a union — "West Columbia 1,
+  and everything starting RCHP, and 4501". Add as many patterns as you like and
+  a talkgroup shows if it matches *any* of them.
+
+  Each pattern has its own rule: contains, starts with, exact, wildcard
+  (`RCHP*`) or a full regular expression. The rule is guessed from what you
+  type, so `RCHP*` is treated as a wildcard rather than searched for literally,
+  and you can override it. Every chip shows how many talkgroups it accounts for,
+  so a pattern that finds nothing says so instead of hiding inside the union.
+
+  Your patterns are saved on the receiver, alongside your pins — so they are
+  still there tomorrow, and the same on your phone.
+- **Every column in the browser sorts, and it opens on Calls, highest first.**
+  Which talkgroups actually carry traffic is the question that decides what to
+  select, and now it is the first thing on screen. There is also a "Heard only"
+  switch to drop everything that has never been heard, and the header counts
+  them for you.
+- **Config has a Transcription tab**, holding everything about speech-to-text in
+  one place: what gets sent, which engine, what comes back, and the recording
+  gates that decide whether a call is worth transcribing at all. It shows what
+  the running scanner is doing beside what the settings say, which is the
+  difference you cannot otherwise see between saving a change and restarting
+  into it.
+- **You can now transcribe only the talkgroups you have pinned.** Transcription
+  is the expensive step — a cloud engine bills for it, a local one competes with
+  Home Assistant for CPU — so `Transcribe` offers *all traffic*, *only pinned
+  talkgroups*, or *only a list you type*. Pinning is read live: pin a talkgroup
+  and its next call is transcribed, no restart.
+
+  Unpinning everything widens transcription back to all traffic rather than
+  silently stopping it, and the tab says so when that happens.
+- **Errors that used to vanish now say something.** A setting that would not
+  save, or a command the decoder rejected, previously just undid itself a moment
+  later, which looks like a broken screen rather than a message. Those now raise
+  a notification that stays until you dismiss it.
+- Settings that are on unless you say otherwise (call recording, hallucination
+  filtering, clip levelling) no longer show as "off" in the config form when you
+  have never touched them.
+
 ## 0.0.14
 
 **Pinned talkgroups and holds now live with the scanner, so they survive a

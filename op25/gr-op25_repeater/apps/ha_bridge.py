@@ -51,7 +51,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
@@ -644,6 +644,9 @@ SECRET_KEYS = ('token',)
 #: from the browser would persist the mask as the token.
 REDACTED = '***redacted***'
 
+#: Accepted values of ``terminal.home_assistant.talkgroup_scope``.
+TALKGROUP_SCOPES = ('all', 'focused', 'list')
+
 
 def _read_token_file(path: str) -> str:
     """Read a long-lived access token from *path*, or '' if unreadable.
@@ -727,6 +730,24 @@ class HomeAssistantConfig:
         self.talkgroups    = [int(t) for t in (raw.get('talkgroups') or [])
                               if str(t).strip().lstrip('-').isdigit()]
 
+        # Which calls are worth a speech-to-text round trip.
+        #
+        #   all      every captured call
+        #   focused  the talkgroups pinned in the UI -- ui_state.focused_talkgroups,
+        #            the same selection the talkgroup table sorts and filters by.
+        #            Read live through a callback, so pinning takes effect on the
+        #            next call rather than at the next restart.
+        #   list     the explicit `talkgroups` list above.
+        #
+        # The default preserves the behaviour that predates this key: a config
+        # that set `talkgroups` and nothing else meant "only these", and silently
+        # widening that to everything would start billing a cloud STT engine for
+        # the whole system.
+        scope = str(raw.get('talkgroup_scope', '') or '').strip().lower()
+        if scope not in TALKGROUP_SCOPES:
+            scope = 'list' if self.talkgroups else 'all'
+        self.talkgroup_scope = scope
+
         self.enabled = bool(raw.get('enabled', bool(self.url)))
         self.keywords = _compile_keywords(raw.get('keywords') or [])
 
@@ -753,7 +774,8 @@ class HomeAssistantConfig:
         bits.append('keywords=%d' % len(self.keywords))
         bits.append('media=%s' % ('%s/%s' % (self.media_source, self.media_dir)
                                   if self.media_configured else 'off'))
-        if self.talkgroups:
+        bits.append('scope=%s' % self.talkgroup_scope)
+        if self.talkgroup_scope == 'list':
             bits.append('talkgroups=%d' % len(self.talkgroups))
         return 'home assistant: ' + ' '.join(bits)
 
@@ -805,10 +827,15 @@ class HomeAssistantBridge(threading.Thread):
         cfg: HomeAssistantConfig,
         on_transcript: Callable[[CallClip], None] | None = None,
         queue_size: int = 16,
+        focused_talkgroups: Callable[[], Iterable[int]] | None = None,
     ) -> None:
         super().__init__(name='ha-bridge', daemon=True)
         self.cfg           = cfg
         self.on_transcript = on_transcript
+        # Supplied by websocket_server, reading ui_state. A callable rather than
+        # a list because the pinned selection changes while this runs -- and
+        # because ha_bridge stays stdlib-only and knows nothing about ui_state.
+        self.focused_talkgroups = focused_talkgroups
         self._q: queue.Queue[CallClip | None] = queue.Queue(maxsize=queue_size)
         self.keep_running  = True
 
@@ -819,6 +846,7 @@ class HomeAssistantBridge(threading.Thread):
         self.media_uploaded = 0
         self.media_errors   = 0
         self.submitted   = 0
+        self.filtered    = 0
         self.dropped     = 0
         self.transcribed = 0
         self.stt_errors  = 0
@@ -839,11 +867,34 @@ class HomeAssistantBridge(threading.Thread):
         """
         if not self.cfg.enabled:
             return False
-        if self.cfg.talkgroups:
+        wanted = self.wanted_talkgroups()
+        if wanted:
             tgid = clip.metadata.get('tgid') or 0
-            if int(tgid or 0) not in self.cfg.talkgroups:
+            if int(tgid or 0) not in wanted:
                 return False
         return True
+
+    def wanted_talkgroups(self) -> set[int]:
+        """The talkgroups transcription is restricted to; empty means no filter.
+
+        Empty is deliberately "everything", matching the whitelist convention
+        elsewhere in OP25: an empty *list* would otherwise mean silence, and a
+        user who turns on "only pinned talkgroups" and then unpins the last one
+        would get no transcripts at all with nothing on screen explaining why.
+        Widening is visible in the UI and in /api/ha/status; silence is not.
+        """
+        if self.cfg.talkgroup_scope == 'focused':
+            if self.focused_talkgroups is None:
+                return set()
+            try:
+                return {int(t) for t in self.focused_talkgroups()}
+            except Exception:
+                # This runs on the audio thread for every finished call. A
+                # broken state file must not stop calls being transcribed.
+                return set()
+        if self.cfg.talkgroup_scope == 'list':
+            return set(self.cfg.talkgroups)
+        return set()
 
     def will_transcribe(self, clip: CallClip) -> bool:
         """As :meth:`accepts`, but also requires speech-to-text to be usable.
@@ -856,6 +907,11 @@ class HomeAssistantBridge(threading.Thread):
     def submit(self, clip: CallClip) -> None:
         """Queue *clip* for processing.  Never blocks the audio thread."""
         if not self.accepts(clip):
+            # Counted so "nothing is being transcribed" has an answer in
+            # /api/ha/status other than silence: a rising `filtered` next to a
+            # flat `submitted` is the talkgroup scope doing its job.
+            if self.cfg.enabled:
+                self.filtered += 1
             return
         self.submitted += 1
         while True:
@@ -1211,6 +1267,7 @@ class HomeAssistantBridge(threading.Thread):
     def stats(self) -> dict[str, int]:
         return {
             'submitted':      self.submitted,
+            'filtered':       self.filtered,
             'dropped':        self.dropped,
             'transcribed':    self.transcribed,
             'stt_errors':     self.stt_errors,

@@ -72,7 +72,16 @@ export default function ConfigFieldInput({
   field, value, presetValue, overridden, onChange, onReset, disabled = false,
 }: Props) {
   const ro = disabled || field.readonly;
-  const shown = field.type === 'number' ? trimFloat(value, field.precision) : value;
+  // An absent key means the code's own default is in force, so that is what the
+  // control shows. Displaying "off" for something that is on invites the user to
+  // turn it on and store an override that changes nothing — and the `overridden`
+  // badge still distinguishes stored from defaulted.
+  const unset = value === undefined || value === null;
+  const effective = unset && field.default !== undefined ? field.default : value;
+  const shown = field.type === 'number' ? trimFloat(effective, field.precision) : effective;
+  // A default that is not shown in the control itself still belongs on screen.
+  const placeholder = field.placeholder
+    ?? (field.default === undefined ? undefined : String(field.default));
 
   const label = (
     <Box
@@ -131,7 +140,7 @@ export default function ConfigFieldInput({
       <Field label={label} hint={field.help}>
         <Box sx={{ display: 'flex', alignItems: 'center', minHeight: 32 }}>
           <Switch
-            checked={Boolean(value)}
+            checked={Boolean(effective)}
             disabled={ro}
             onChange={(e) => onChange(e.target.checked)}
             inputProps={{ 'aria-label': field.label }}
@@ -146,7 +155,7 @@ export default function ConfigFieldInput({
       <Field label={label} hint={field.help}>
         <TextField
           select
-          value={value === undefined || value === null ? '' : String(value)}
+          value={effective === undefined || effective === null ? '' : String(effective)}
           disabled={ro}
           onChange={(e) => {
             // Choices may be numbers (crypt_behavior); keep the original type so
@@ -157,7 +166,9 @@ export default function ConfigFieldInput({
           slotProps={{ htmlInput: { 'aria-label': field.label } }}
         >
           {(field.choices ?? []).map((c) => (
-            <MenuItem key={String(c)} value={String(c)}>{String(c)}</MenuItem>
+            <MenuItem key={String(c)} value={String(c)}>
+              {field.choice_labels?.[String(c)] ?? String(c)}
+            </MenuItem>
           ))}
         </TextField>
       </Field>
@@ -165,13 +176,13 @@ export default function ConfigFieldInput({
   }
 
   if (field.type === 'list') {
-    const text = Array.isArray(value) ? value.join(', ') : '';
+    const text = Array.isArray(effective) ? effective.join(', ') : '';
     return (
       <Field label={label} hint={field.help ?? 'Comma separated.'}>
         <TextField
           value={text}
           disabled={ro}
-          placeholder={field.placeholder}
+          placeholder={placeholder}
           onChange={(e) => onChange(
             e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
               // A list of ports has to go back as numbers, or the decoder gets
@@ -192,7 +203,7 @@ export default function ConfigFieldInput({
           type="number"
           value={shown === undefined || shown === null ? '' : String(shown)}
           disabled={ro}
-          placeholder={field.placeholder}
+          placeholder={placeholder}
           onChange={(e) => onChange(trimFloat(toNumber(e.target.value), field.precision))}
           slotProps={{
             htmlInput: {
@@ -214,9 +225,9 @@ export default function ConfigFieldInput({
   return (
     <Field label={label} hint={field.help}>
       <TextField
-        value={value === undefined || value === null ? '' : String(value)}
+        value={effective === undefined || effective === null ? '' : String(effective)}
         disabled={ro}
-        placeholder={field.placeholder}
+        placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         slotProps={{ htmlInput: { 'aria-label': field.label } }}
       />

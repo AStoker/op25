@@ -11,6 +11,8 @@ interface SearchFieldProps {
   placeholder: string;
   /** Accessible name, since there is no visible label. */
   ariaLabel?: string;
+  /** For a box whose content is committed rather than applied live — Enter. */
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   sx?: SxProps<Theme>;
 }
 
@@ -22,13 +24,14 @@ interface SearchFieldProps {
  * the heading line and pushing the table down.
  */
 export default function SearchField({
-  value, onChange, placeholder, ariaLabel, sx,
+  value, onChange, placeholder, ariaLabel, onKeyDown, sx,
 }: SearchFieldProps) {
   return (
     <TextField
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      onKeyDown={onKeyDown}
       sx={{ width: { xs: '100%', sm: 200 }, ...sx }}
       slotProps={{
         htmlInput: { 'aria-label': ariaLabel ?? placeholder },

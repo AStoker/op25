@@ -23,6 +23,7 @@ import InfoRow from '../common/InfoRow';
 import SectionHeading from '../common/SectionHeading';
 import RunningConfigPanel from './RunningConfigPanel';
 import SettingsTab from './SettingsTab';
+import TranscriptionTab from './TranscriptionTab';
 import AdvancedJsonTab from './AdvancedJsonTab';
 import HistoryTab from './HistoryTab';
 import { useConfigEditor } from '../../hooks/useConfigEditor';
@@ -260,6 +261,7 @@ function InterfaceTab() {
  *  about what was saved. */
 const TABS = [
   { label: 'Settings',       needsEditor: true  },
+  { label: 'Transcription',  needsEditor: true  },
   { label: 'Decoder',        needsEditor: false },
   { label: 'Interface',      needsEditor: false },
   { label: 'Advanced JSON',  needsEditor: true  },
@@ -285,6 +287,7 @@ export default function ConfigDialog({ open, onClose }: { open: boolean; onClose
   const panel = () => {
     switch (TABS[tab].label) {
       case 'Settings':       return <SettingsTab editor={editor} />;
+      case 'Transcription':  return <TranscriptionTab editor={editor} />;
       case 'Decoder':        return <DecoderTab />;
       case 'Interface':      return <InterfaceTab />;
       case 'Advanced JSON':  return <AdvancedJsonTab editor={editor} />;

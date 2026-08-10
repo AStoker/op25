@@ -521,6 +521,108 @@ class TestHomeAssistantConfig:
         cfg = ha_bridge.HomeAssistantConfig({'url': 'http://x', 'talkgroups': ['101', 202]})
         assert cfg.talkgroups == [101, 202]
 
+    def test_scope_defaults_to_all(self) -> None:
+        assert ha_bridge.HomeAssistantConfig({'url': 'http://x'}).talkgroup_scope == 'all'
+
+    def test_a_bare_talkgroup_list_still_means_only_those(self) -> None:
+        """Back-compat: `talkgroups` predates the scope key and meant "only these".
+
+        Reading it as `all` would start sending a whole system to a paid STT
+        engine on the strength of an upgrade.
+        """
+        cfg = ha_bridge.HomeAssistantConfig({'url': 'http://x', 'talkgroups': [101]})
+        assert cfg.talkgroup_scope == 'list'
+
+    def test_an_unknown_scope_falls_back_rather_than_raising(self) -> None:
+        cfg = ha_bridge.HomeAssistantConfig({'url': 'http://x', 'talkgroup_scope': 'nonsense'})
+        assert cfg.talkgroup_scope == 'all'
+
+    def test_scope_all_beats_a_leftover_talkgroup_list(self) -> None:
+        cfg = ha_bridge.HomeAssistantConfig(
+            {'url': 'http://x', 'talkgroup_scope': 'all', 'talkgroups': [101]})
+        assert cfg.talkgroup_scope == 'all'
+
+
+class TestTalkgroupScope:
+    """`talkgroup_scope` picks which finished calls are worth sending."""
+
+    @staticmethod
+    def _bridge(raw: dict, focused=None) -> ha_bridge.HomeAssistantBridge:
+        return ha_bridge.HomeAssistantBridge(
+            ha_bridge.HomeAssistantConfig({'url': 'http://x', **raw}),
+            focused_talkgroups=focused)
+
+    @staticmethod
+    def _clip(tgid: int) -> ha_bridge.CallClip:
+        clip = make_clip('a')
+        clip.metadata['tgid'] = tgid
+        return clip
+
+    def test_scope_all_sends_everything(self) -> None:
+        bridge = self._bridge({'talkgroup_scope': 'all'}, focused=lambda: [101])
+        bridge.submit(self._clip(999))
+        assert bridge.submitted == 1
+
+    def test_scope_focused_uses_the_pinned_list(self) -> None:
+        bridge = self._bridge({'talkgroup_scope': 'focused'}, focused=lambda: [101, 102])
+        bridge.submit(self._clip(101))
+        bridge.submit(self._clip(999))
+        assert (bridge.submitted, bridge.filtered) == (1, 1)
+
+    def test_the_pinned_list_is_read_per_call_not_captured(self) -> None:
+        """Pinning a talkgroup has to take effect without a restart."""
+        pinned: list[int] = []
+        bridge = self._bridge({'talkgroup_scope': 'focused'}, focused=lambda: list(pinned))
+        bridge.submit(self._clip(101))
+        assert bridge.submitted == 1        # nothing pinned -> no restriction
+        pinned.append(202)
+        bridge.submit(self._clip(101))
+        assert (bridge.submitted, bridge.filtered) == (1, 1)
+        pinned.append(101)
+        bridge.submit(self._clip(101))
+        assert bridge.submitted == 2
+
+    def test_an_empty_pinned_list_means_everything_not_nothing(self) -> None:
+        """Same convention as an empty whitelist. Unpinning the last talkgroup
+        must not silently stop transcription with nothing on screen to say so."""
+        bridge = self._bridge({'talkgroup_scope': 'focused'}, focused=lambda: [])
+        bridge.submit(self._clip(999))
+        assert bridge.submitted == 1
+        assert bridge.wanted_talkgroups() == set()
+
+    def test_a_broken_state_source_does_not_stop_transcription(self) -> None:
+        def boom():
+            raise RuntimeError('state file is gone')
+        bridge = self._bridge({'talkgroup_scope': 'focused'}, focused=boom)
+        bridge.submit(self._clip(999))
+        assert bridge.submitted == 1
+
+    def test_scope_focused_with_no_source_wired_up(self) -> None:
+        """An older caller that never passes the callback gets no filter, not
+        an exception on the audio thread."""
+        bridge = self._bridge({'talkgroup_scope': 'focused'})
+        bridge.submit(self._clip(999))
+        assert bridge.submitted == 1
+
+    def test_scope_list_ignores_the_pinned_list(self) -> None:
+        bridge = self._bridge({'talkgroup_scope': 'list', 'talkgroups': [101]},
+                              focused=lambda: [999])
+        bridge.submit(self._clip(999))
+        bridge.submit(self._clip(101))
+        assert (bridge.submitted, bridge.filtered) == (1, 1)
+
+    def test_filtered_is_not_counted_while_disabled(self) -> None:
+        """A disabled bridge is not filtering; it is off."""
+        bridge = ha_bridge.HomeAssistantBridge(ha_bridge.HomeAssistantConfig(None))
+        bridge.submit(self._clip(999))
+        assert (bridge.submitted, bridge.filtered) == (0, 0)
+
+    def test_will_transcribe_honours_the_scope(self) -> None:
+        bridge = self._bridge({'token': 't', 'talkgroup_scope': 'focused'},
+                              focused=lambda: [101])
+        assert bridge.will_transcribe(self._clip(101)) is True
+        assert bridge.will_transcribe(self._clip(999)) is False
+
 
 class TestBridgeFiltering:
     """submit() must be cheap and must never block the audio thread."""
@@ -1338,6 +1440,31 @@ class TestHaStatusEndpoint:
         assert body['enabled'] is True
         assert body['webhook_id'] == 'op25_call'
         assert body['keywords'] == ['fire']
+        assert body['talkgroup_scope'] == 'all'
+        assert body['filtering'] is False
+
+    def test_reports_the_talkgroups_the_scope_resolves_to(
+        self, client: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scope alone does not say what is being sent: "only pinned" with
+        nothing pinned means everything, and that has to be visible here."""
+        import websocket_server
+
+        cfg = ha_bridge.HomeAssistantConfig({
+            'url': 'http://ha.local:8123', 'token': 't',
+            'talkgroup_scope': 'focused',
+        })
+        pinned: list[int] = []
+        monkeypatch.setattr(websocket_server, '_ha_bridge', ha_bridge.HomeAssistantBridge(
+            cfg, focused_talkgroups=lambda: list(pinned)))
+
+        body = client.get('/api/ha/status').json()['home_assistant']
+        assert (body['talkgroup_scope'], body['filtering']) == ('focused', False)
+
+        pinned.extend([202, 101])
+        body = client.get('/api/ha/status').json()['home_assistant']
+        assert body['filtering'] is True
+        assert body['talkgroup_filter'] == [101, 202]
 
 
 # ---------------------------------------------------------------------------

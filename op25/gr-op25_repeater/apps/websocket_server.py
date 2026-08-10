@@ -772,6 +772,18 @@ def _current_call_metadata() -> dict[str, Any]:
     return {}
 
 
+def _focused_talkgroups() -> list[int]:
+    """The talkgroups pinned in the UI, for ``talkgroup_scope: focused``.
+
+    Read through the module global at call time rather than captured, because
+    start_call_capture can run before _init_ui_state -- and because the point of
+    the scope is that pinning a talkgroup takes effect on the next call.
+    """
+    if _ui_state is None:
+        return []
+    return list(_ui_state.get('focused_talkgroups') or [])
+
+
 def _on_clip_complete(clip: CallClip) -> None:
     """A call finished recording: tell the UI, then queue it for Home Assistant.
 
@@ -867,7 +879,8 @@ def start_call_capture(config: dict[str, Any] | None,
             if addr:
                 ha_cfg.public_url = 'http://%s:%s' % (addr, port)
     if ha_cfg.enabled and _ha_bridge is None:
-        _ha_bridge = HomeAssistantBridge(ha_cfg, on_transcript=_on_transcript)
+        _ha_bridge = HomeAssistantBridge(ha_cfg, on_transcript=_on_transcript,
+                                         focused_talkgroups=_focused_talkgroups)
         _ha_bridge.start()
 
     if _call_capture is None:
@@ -2100,6 +2113,10 @@ async def ha_status() -> Response:
     if _ha_bridge is None:
         body["home_assistant"] = {"enabled": False}
     else:
+        # The scope and the set it resolves to are both reported: "only pinned
+        # talkgroups" with nothing pinned means no restriction, and that has to
+        # be visible here or it reads as the filter having failed.
+        wanted = sorted(_ha_bridge.wanted_talkgroups())
         body["home_assistant"] = dict(
             _ha_bridge.stats(),
             enabled=True,
@@ -2107,6 +2124,9 @@ async def ha_status() -> Response:
             stt_engine=_ha_bridge.cfg.stt_engine if _ha_bridge.cfg.stt_configured else None,
             webhook_id=_ha_bridge.cfg.webhook_id if _ha_bridge.cfg.webhook_configured else None,
             keywords=[term for term, _ in _ha_bridge.cfg.keywords],
+            talkgroup_scope=_ha_bridge.cfg.talkgroup_scope,
+            talkgroup_filter=wanted,
+            filtering=bool(wanted),
         )
     return Response(content=json.dumps(body), media_type="application/json",
                     headers={"Cache-Control": "no-store"})

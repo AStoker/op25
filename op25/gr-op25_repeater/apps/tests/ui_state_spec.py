@@ -89,6 +89,64 @@ class TestValueCleaning:
         assert store.get('holds') == {'a': 100}
 
 
+class TestTalkgroupFilters:
+    """The browser's saved search patterns. A union, so order is the user's."""
+
+    def test_patterns_keep_their_order_and_kind(self, store: us.UiState) -> None:
+        store.merge({'talkgroup_filters': [
+            {'kind': 'contains', 'text': 'W Cola 1'},
+            {'kind': 'wildcard', 'text': 'RCHP*'},
+        ]})
+        assert store.get('talkgroup_filters') == [
+            {'kind': 'contains', 'text': 'W Cola 1'},
+            {'kind': 'wildcard', 'text': 'RCHP*'},
+        ]
+
+    def test_an_unknown_kind_degrades_to_contains(self, store: us.UiState) -> None:
+        # The text is what the user typed and is worth keeping; 'contains' is
+        # the reading that cannot fail to compile.
+        store.merge({'talkgroup_filters': [{'kind': 'fuzzy', 'text': 'FIRE'}]})
+        assert store.get('talkgroup_filters') == [{'kind': 'contains', 'text': 'FIRE'}]
+
+    def test_blank_and_duplicate_patterns_are_dropped(self, store: us.UiState) -> None:
+        store.merge({'talkgroup_filters': [
+            {'kind': 'contains', 'text': 'FIRE'},
+            {'kind': 'contains', 'text': '  '},
+            {'kind': 'contains', 'text': 'FIRE'},
+            {'kind': 'regex', 'text': 'FIRE'},      # same text, different rule
+        ]})
+        assert store.get('talkgroup_filters') == [
+            {'kind': 'contains', 'text': 'FIRE'},
+            {'kind': 'regex', 'text': 'FIRE'},
+        ]
+
+    def test_one_malformed_entry_does_not_lose_the_others(self, store: us.UiState) -> None:
+        store.merge({'talkgroup_filters': ['not an object', {'text': 'EMS'}]})
+        assert store.get('talkgroup_filters') == [{'kind': 'contains', 'text': 'EMS'}]
+
+    def test_the_list_and_each_pattern_are_capped(self, store: us.UiState,
+                                                  monkeypatch: Any) -> None:
+        # Unauthenticated endpoint, possibly an SD card.
+        monkeypatch.setattr(us, 'MAX_FILTERS', 3)
+        monkeypatch.setattr(us, 'MAX_FILTER_TEXT', 4)
+        # Distinct after truncation: two patterns that truncate to the same text
+        # really are one pattern, and dedupe collapsing them is correct.
+        store.merge({'talkgroup_filters':
+                     [{'kind': 'contains', 'text': 'p%d-long-tail' % i} for i in range(9)]})
+        stored = store.get('talkgroup_filters')
+        assert len(stored) == 3
+        assert all(len(p['text']) <= 4 for p in stored)
+
+    def test_a_non_list_is_rejected_whole(self, store: us.UiState) -> None:
+        rejected = store.merge({'talkgroup_filters': 'FIRE', 'focus_only': True})
+        assert 'talkgroup_filters' in rejected
+        assert store.get('focus_only') is True
+
+    def test_they_are_counted_in_stats(self, store: us.UiState) -> None:
+        store.merge({'talkgroup_filters': [{'kind': 'contains', 'text': 'FIRE'}]})
+        assert store.stats()['filter_count'] == 1
+
+
 class TestSetHold:
     def test_setting_and_releasing(self, store: us.UiState) -> None:
         store.set_hold('Palmetto 800', 24671)
@@ -217,3 +275,33 @@ class TestHoldRestore:
         monkeypatch.setattr(ws, '_holds_applied', set())
         ws._restore_holds({'0': {'name': 'ch', 'hold_tgid': 0}})
         assert sent == []
+
+
+class TestFocusedTalkgroupsForTranscription:
+    """The pinned list is what `talkgroup_scope: focused` transcribes."""
+
+    def test_the_pins_are_read_from_the_store(self, client: Any) -> None:
+        client.put('/api/ui-state', json={'state': {'focused_talkgroups': [9, 4]}})
+        assert ws._focused_talkgroups() == [4, 9]
+
+    def test_no_store_means_no_restriction(self, monkeypatch: Any) -> None:
+        # start_call_capture can run before _init_ui_state, and an empty list is
+        # "everything" rather than "nothing" -- see ha_bridge.wanted_talkgroups.
+        monkeypatch.setattr(ws, '_ui_state', None)
+        assert ws._focused_talkgroups() == []
+
+    def test_the_bridge_is_wired_to_the_live_pins(self, client: Any,
+                                                  monkeypatch: Any) -> None:
+        """The wiring, not just the function: a bridge built with no callback
+        would filter nothing and look identical from /api/ha/status."""
+        monkeypatch.setattr(ws, '_ha_bridge', None)
+        monkeypatch.setattr(ws, '_call_capture', None)
+        ws.start_call_capture({'terminal': {'home_assistant': {
+            'url': 'http://ha.local:8123', 'token': 't',
+            'talkgroup_scope': 'focused',
+        }}})
+        try:
+            client.put('/api/ui-state', json={'state': {'focused_talkgroups': [4]}})
+            assert ws._ha_bridge.wanted_talkgroups() == {4}
+        finally:
+            ws.stop_call_capture()

@@ -28,7 +28,16 @@ export interface ConfigField {
   readonly?: boolean;
   /** Hidden behind the "advanced" switch — rarely-touched or expert knobs. */
   advanced?: boolean;
+  /** What the code does when the key is absent — shown, never stored. A switch
+   *  for a field that defaults to on must not read as off. */
+  default?: unknown;
   choices?: (string | number)[];
+  /** Readable label per choice. `all` / `focused` / `list` mean nothing on their
+   *  own in a dropdown; the raw value is what gets stored either way. */
+  choice_labels?: Record<string, string>;
+  /** Sub-heading within the section. Only used where a section has enough
+   *  fields that one flat grid stops being readable. */
+  group?: string;
   /** Offered as a datalist but not enforced, unlike `choices`. */
   suggestions?: (string | number)[];
   min?: number;
@@ -59,6 +68,10 @@ export interface ConfigSchema {
   protocols: string[];
   sections: ConfigSection[];
   live_paths: string[];
+  /** Section keys the editor gives a tab of their own rather than listing under
+   *  Settings. The server decides this, so a client that has not heard of the
+   *  tab still renders the fields somewhere. */
+  standalone_sections?: string[];
 }
 
 /** One field's worth of change, as computed by `config_store.diff_fields`. */

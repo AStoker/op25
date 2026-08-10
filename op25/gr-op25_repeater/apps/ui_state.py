@@ -41,6 +41,7 @@ from typing import Any
 KNOWN_KEYS = (
     'focused_talkgroups',   # list[int]  — pinned talkgroups
     'focus_only',           # bool       — hide everything unpinned
+    'talkgroup_filters',    # list[{kind, text}] — saved browser search patterns
     'holds',                # {channel: tgid} — active holds, by channel name
     'selected_channel',     # int | None
     'audio_source',         # str | None — which stream the player last used
@@ -49,6 +50,16 @@ KNOWN_KEYS = (
 #: Cap on the pinned list. Pinning is a manual act; this exists so a scripted
 #: client cannot grow the file without bound.
 MAX_FOCUSED = 2_000
+
+#: How a saved talkgroup-browser pattern is matched. The browser ORs them
+#: together, so a set of them is a union of the talkgroups a user cares about --
+#: 'W Cola 1' as plain text beside 'RCHP*' as a wildcard.
+FILTER_KINDS = ('contains', 'starts', 'exact', 'wildcard', 'regex')
+
+#: Cap on saved patterns, and on the length of one. Small: this is a hand-built
+#: list, and the endpoint that writes it is unauthenticated.
+MAX_FILTERS = 24
+MAX_FILTER_TEXT = 200
 
 
 def state_path(config: dict[str, Any] | None) -> str | None:
@@ -81,6 +92,26 @@ def _clean(key: str, value: Any) -> Any:
         return out[:MAX_FOCUSED]
     if key == 'focus_only':
         return bool(value)
+    if key == 'talkgroup_filters':
+        if not isinstance(value, list):
+            raise ValueError('talkgroup_filters must be a list')
+        out: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue                    # one bad entry must not lose the rest
+            kind = str(item.get('kind', 'contains')).strip().lower()
+            text = str(item.get('text', '')).strip()[:MAX_FILTER_TEXT]
+            # An unknown kind degrades to a plain substring rather than being
+            # dropped: the text is what the user typed and is worth keeping, and
+            # 'contains' is the reading that cannot fail to compile.
+            if kind not in FILTER_KINDS:
+                kind = 'contains'
+            if not text or (kind, text) in seen:
+                continue
+            seen.add((kind, text))
+            out.append({'kind': kind, 'text': text})
+        return out[:MAX_FILTERS]
     if key == 'holds':
         if not isinstance(value, dict):
             raise ValueError('holds must be an object keyed by channel')
@@ -212,5 +243,6 @@ class UiState:
                 'persistent': self.persistent,
                 'path': self.path,
                 'focused_count': len(self._data.get('focused_talkgroups') or []),
+                'filter_count': len(self._data.get('talkgroup_filters') or []),
                 'hold_count': len(self._data.get('holds') or {}),
             }
