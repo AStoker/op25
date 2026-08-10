@@ -1,6 +1,6 @@
 ---
 name: OP25 Trunking Scanner
-version: "0.0.15"
+version: "0.0.16"
 slug: op25
 description: >-
   P25 / DMR / SmartNet trunking decoder (GNU Radio + RTL-SDR) with a React web
@@ -84,6 +84,7 @@ options:
   work_dir: /config
   verbosity: 1
   audio_output: browser
+  conceal_frames: 3
   device_overrides: []
   home_assistant:
     use_supervisor: true
@@ -97,6 +98,9 @@ schema:
   work_dir: str
   verbosity: int(0,10)
   audio_output: list(browser|alsa|none)
+  # 3 is the vocoder's own repeat budget (TIA-102.BABA-A 7.7); anything higher
+  # would only get silence back. 0 disables concealment.
+  conceal_frames: int(0,3)
   device_overrides:
     - name: str
       serial: str?

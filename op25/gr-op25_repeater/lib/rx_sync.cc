@@ -176,6 +176,16 @@ std::string rx_sync::get_fec_stats_json() const {
 			{"sync", {
 				{"losses", p25fdma.stat_timeouts()},
 			}},
+			// P25 phase 1 voice: how much audio actually made it out of the
+			// vocoder, and how much of it only did so because of a repair.
+			// voice_lost climbing while voice_recovered stays flat means the sync
+			// is being lost outright, which is an RF problem, not a decode one.
+			{"voice", {
+				{"frames",    p25fdma.stat_voice_frames()},
+				{"recovered", p25fdma.stat_voice_recovered()},
+				{"lost",      p25fdma.stat_voice_lost()},
+				{"concealed", p25fdma.stat_voice_concealed()},
+			}},
 		}},
 	};
 	return envelope.dump();
@@ -253,6 +263,7 @@ void rx_sync::ysf_sync(const uint8_t dibitbuf[], bool& ysf_fullrate, bool& unmut
 rx_sync::rx_sync(const char * options, log_ts& logger, int debug, int msgq_id, gr::msg_queue::sptr queue) :	// constructor
 	sync_timer(op25_timer(1000000)),
 	d_symbol_count(0),
+	d_symbols_total(0),
 	d_sync_reg(0),
 	d_fs(0),
     d_cbuf(),
@@ -506,6 +517,7 @@ void rx_sync::rx_sym(const uint8_t sym) {
     }
 
 	d_symbol_count ++;
+	d_symbols_total ++;	// keeps running through a sync outage - see rx_sync.h
 	d_sync_reg = (d_sync_reg << 2) | (sym & 3);
 	for (int i = 0; i < KNOWN_MAGICS; i++) {
 		if (check_frame_sync(SYNC_MAGIC[i].magic ^ d_sync_reg, (SYNC_MAGIC[i].type == d_current_type) ? d_threshold : 0, MODE_DATA[SYNC_MAGIC[i].type].sync_len)) {
@@ -569,7 +581,10 @@ void rx_sync::rx_sym(const uint8_t sym) {
 		break;
 	case RX_TYPE_P25P1:
         if (d_fragment_len == MODE_DATA[d_current_type].fragment_len) {
-		    int frame_len = p25fdma.load_nid(symbol_ptr, MODE_DATA[d_current_type].fragment_len, d_fs);
+            // d_symbols_total is the count at the *end* of this NID fragment, which
+            // is a fixed offset into every frame, so successive voice frames are
+            // exactly LDU_SYMBOLS apart and any excess is lost audio.
+		    int frame_len = p25fdma.load_nid(symbol_ptr, MODE_DATA[d_current_type].fragment_len, d_fs, d_symbols_total);
             if (frame_len > 0) {
                 d_fragment_len = frame_len;                             // expected length of remainder of this frame
             } else {

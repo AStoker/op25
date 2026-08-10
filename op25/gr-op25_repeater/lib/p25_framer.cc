@@ -44,12 +44,14 @@ p25_framer::p25_framer(log_ts& logger, int debug, int msgq_id) :
     d_expected_nac(0),
     d_unexpected_nac(0),
     d_behavior(0),
+    d_voice_hint(0),
     logts(logger),
     symbols_received(0),
     nac(0),
     duid(0),
     parity(0),
-    frame_body(P25_VOICE_FRAME_SIZE)
+    frame_body(P25_VOICE_FRAME_SIZE),
+    nid_recovered(false)
 {
 }
 
@@ -154,6 +156,7 @@ bool p25_framer::rx_sym(uint8_t dibit) {
     } else if (nid_syms >= 33) {
         // nid completely received
         nid_syms = 0;
+        nid_recovered = false;  // this path never predicts a duid
         bool bch_rc = nid_codeword(nid_accum);
         if (bch_rc) {   // if ok to start accumulating frame data
             next_bit = 48 + 64;
@@ -193,11 +196,33 @@ bool p25_framer::rx_sym(uint8_t dibit) {
 }
 
 /*
+ * sync_bit_errors: hamming distance between the 48-bit frame sync at the head of
+ * frame_body and the magic that was detected.  Used as independent corroboration
+ * that a frame really does start here when the NID's BCH decode has failed.
+ */
+int p25_framer::sync_bit_errors(const uint64_t fs) const {
+    uint64_t received = 0;
+    for (int i = 0; i < 48; i++) {
+        received <<= 1;
+        received |= frame_body[i] ? 1 : 0;
+    }
+    uint64_t diff = (received ^ fs) & ((1ULL << 48) - 1ULL);
+    int errs = 0;
+    while (diff) {           // popcount
+        diff &= diff - 1;
+        errs++;
+    }
+    return errs;
+}
+
+/*
  * load_nid: called by framer when SYNC + NID have been received (first 57 symbols)
  * Perform BCH check on received NID
  * Returns number of symbols required to complete the frame, else 0 upon error
  */
 uint32_t p25_framer::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs) {
+    nid_recovered = false;
+
     if (nsyms < 57)
         return 0;
 
@@ -218,8 +243,27 @@ uint32_t p25_framer::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs)
     }
     bool bch_rc = nid_codeword(accum);
     if (!bch_rc) {
+        // The NID carries nothing but NAC and DUID - it says who is talking and
+        // what kind of frame this is, not a single bit of voice.  Discarding the
+        // frame therefore throws away 180 ms of audio (nine IMBE codewords, each
+        // with its own Golay/Hamming protection and each independently
+        // recoverable) because 64 bits of addressing failed.  A subscriber unit
+        // does not do that: once it has acquired the channel it knows the
+        // LDU1/LDU2 alternation and keeps decoding voice straight through a bad
+        // NID.  So do the same - but only while a voice call is up, and only when
+        // the frame sync itself still corroborates the frame boundary, because
+        // the cost of getting this wrong is injecting noise into the audio.
+        int sync_errs = sync_bit_errors(fs);
+        if (((d_voice_hint == 0x05) || (d_voice_hint == 0x0a)) && (sync_errs <= RECOVERY_MAX_SYNC_ERRS)) {
+            duid = d_voice_hint;
+            nid_recovered = true;   // nac, parity, bch_errors and nid_word are stale - see header
+            frame_size_limit = P25_VOICE_FRAME_SIZE;
+            if (d_debug >= 10)
+                fprintf(stderr, "%s p25_framer::load_nid() error check failed, voice recovered as duid=%01x, sync_errs=%d, nid=%012lx\n", logts.get(d_msgq_id), duid, sync_errs, (unsigned long)accum);
+            return (frame_size_limit >> 1) - nsyms;
+        }
         if (d_debug >= 10)
-            fprintf(stderr, "%s p25_framer::load_nid() error check failed, frame discarded, nid=%012lx\n", logts.get(d_msgq_id), accum);  
+            fprintf(stderr, "%s p25_framer::load_nid() error check failed, frame discarded, sync_errs=%d, nid=%012lx\n", logts.get(d_msgq_id), sync_errs, (unsigned long)accum);
         return 0;
     }
 

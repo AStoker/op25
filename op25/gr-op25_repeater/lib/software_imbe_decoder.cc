@@ -923,6 +923,55 @@ software_imbe_decoder::decode_fullrate(uint32_t u0, uint32_t u1, uint32_t u2, ui
 	tmp_f = Old; Old = New; New = tmp_f;
 }
 
+bool
+software_imbe_decoder::decode_erasure()
+{
+	int en, tmp_f;
+	float SE = 0;
+
+	// A voice frame that never arrived - a whole LDU lost to a failed frame sync,
+	// not a codeword that arrived damaged.  Handled the same way the standard
+	// handles an uncorrectable codeword: repeat the previous frame's parameters
+	// (TIA-102-BABA-A section 7.7) until the four-frame repeat budget is spent,
+	// then mute (section 7.8).  That is why a real radio in a marginal spot sounds
+	// warbly rather than chopped - holding pitch and envelope renders the loss as
+	// a smeared vowel instead of a hole.
+	//
+	// ER is deliberately left alone.  It estimates the channel error rate from FEC
+	// corrections actually counted, and there are none to count here; driving it
+	// up would keep muting good frames for several frames after the gap closed.
+	// rpt_ctr alone is the limiter, and it is reset by the next good frame.
+	bool muted = (repeat_last() != 0);
+
+	if (!muted) {
+		adaptive_smoothing(SE, 0);  // ET=0: the parameters being repeated came from a frame that passed
+
+		//synth:
+		synth_unvoiced();
+		synth_voiced();
+
+		//output:
+		audio_samples *samples = audio();
+		for(en = 0; en <= 159; en++) {
+			float sample = suv[en] + sv[en] * 4; //balance v/uv loudness
+			if(abs((int)sample) > 32767) {
+				sample = (sample < 0) ? -32767 : 32767;
+			}
+			samples->push_back(sample);
+		}
+	} else {
+		audio_samples *samples = audio();
+		for(en = 0; en <= 159; en++) {
+			samples->push_back(0);
+		}
+	}
+	OldL = L;
+	Oldw0 = w0;
+	tmp_f = Old; Old = New; New = tmp_f;
+
+	return !muted;
+}
+
 void
 software_imbe_decoder::decode_tap(int _L, int _K, float _w0, const int * _v, const float * _mu)
 {

@@ -12,6 +12,7 @@ generator is driven directly under asyncio instead.
 
 import asyncio
 import struct
+import time
 from typing import Any
 
 import pytest
@@ -398,6 +399,99 @@ class TestJitterBuffer:
         asyncio.run(_take_chunks_primed(mgr, 3, container='raw'))
         assert mgr.underruns == 0
         assert mgr.silent_chunks == 3
+
+
+class TestRePrimeOnlyForTransportJitter:
+    """A dropout gets a rebuilt cushion only if the *producer* is still producing.
+
+    Re-priming is right for transport jitter — without a cushion every late packet
+    punches another hole.  It is wrong for lost voice frames: an LDU whose frame
+    sync failed yields no audio for as long as the RF is bad, no cushion can help,
+    and the extra _STREAM_PRIME_MS of silence is charged on top of the real gap
+    every single time.  The discriminator is producer_idle_ms(), latched as a
+    running maximum because the packet that ends the gap destroys the evidence.
+    """
+
+    def _fresh(self) -> ws.AudioStreamManager:
+        mgr = ws.AudioStreamManager()
+        mgr.mock = False
+        return mgr
+
+    def test_producer_idle_is_infinite_before_the_first_push(self) -> None:
+        assert self._fresh().producer_idle_ms() == float('inf')
+
+    def test_producer_idle_tracks_the_last_push(self) -> None:
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES))
+        assert mgr.producer_idle_ms() < 100.0
+
+    def test_a_new_listener_always_primes(self) -> None:
+        # dry_idle starts at infinity, so a client that has just attached gets a
+        # full cushion whatever the producer was doing beforehand.  The no-prime
+        # shortcut is only ever an in-flight decision about one dry spell.
+        mgr = self._fresh()
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x55))
+        chunks = asyncio.run(_take_chunks_primed(mgr, 1, container='raw'))
+        assert chunks[0] == b'\x00' * ws._CHUNK_BYTES
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES, "audio held, not dropped"
+
+    async def _gap(
+        self, mgr: ws.AudioStreamManager, idle_ms: float, fill: int = 0x22,
+    ) -> bytes:
+        """Prime, drain, open a gap of *idle_ms*, then resume with one chunk.
+
+        The whole sequence has to run inside a single generator: the verdict is
+        per-dry-spell state, and a freshly attached client is always primed
+        properly regardless of what the producer was doing before it arrived.
+        Returns the chunk yielded on the tick after the producer comes back.
+        """
+        mgr.push_audio(_pcm(mgr.prime_bytes, 0x11))
+        n = mgr.prime_bytes // ws._CHUNK_BYTES
+        gen = mgr.generate(container='raw')
+        try:
+            for _ in range(n):                  # drain the cushion
+                await gen.__anext__()
+            assert mgr.buffered_bytes() == 0
+
+            mgr.last_push_ts = time.time() - idle_ms / 1_000.0
+            await gen.__anext__()               # the dry tick: latches the verdict
+            # The decoder comes back, which refreshes last_push_ts.
+            mgr.push_audio(_pcm(ws._CHUNK_BYTES, fill))
+            return await gen.__anext__()
+        finally:
+            await gen.aclose()
+
+    def test_mid_call_decoder_gap_resumes_immediately(self) -> None:
+        # Producer quiet for longer than a couple of packet intervals but well
+        # inside a transmission: these are lost voice frames.  Play the moment
+        # audio returns rather than adding a second prime's worth of hole.
+        #
+        # This also guards the latch: read fresh, producer_idle_ms() shows the
+        # producer alive again on the very tick it resumes, so the gap would
+        # re-prime anyway — and a two-threshold latch oscillated between the two
+        # verdicts on alternate ticks.
+        mgr = self._fresh()
+        chunk = asyncio.run(self._gap(mgr, ws._JITTER_IDLE_MS + 100, fill=0x66))
+        assert chunk == _pcm(ws._CHUNK_BYTES, 0x66), \
+            "resumption must not be delayed by a prime it cannot benefit from"
+        assert mgr.buffered_bytes() == 0
+
+    def test_gap_past_the_dropout_ceiling_primes_again(self) -> None:
+        # Past _DROPOUT_END_MS the transmission is over, so the next one is a fresh
+        # start and deserves a real cushion.  Without this the no-reprime verdict
+        # would stick and every subsequent call would chop on its first word.
+        mgr = self._fresh()
+        chunk = asyncio.run(self._gap(mgr, ws._DROPOUT_END_MS + 100, fill=0x77))
+        assert chunk == b'\x00' * ws._CHUNK_BYTES
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES
+
+    def test_brief_gap_with_a_live_producer_still_primes(self) -> None:
+        # The jitter case, driven the same way: the producer never went quiet, so
+        # the cushion is worth rebuilding and the lone chunk is held back.
+        mgr = self._fresh()
+        chunk = asyncio.run(self._gap(mgr, 0.0, fill=0x88))
+        assert chunk == b'\x00' * ws._CHUNK_BYTES
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES
 
 
 class TestIdleBacklogIsNotInherited:

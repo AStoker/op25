@@ -230,6 +230,31 @@ _STREAM_PRIME_MS = int(os.environ.get('OP25_STREAM_PRIME_MS', '120'))
 # start of a transmission, not staleness. Discarding it clips the first word.
 _IDLE_KEEP_MS = int(os.environ.get('OP25_STREAM_IDLE_KEEP_MS', '120'))
 
+# Rebuilding the cushion after a dropout is right for transport jitter and wrong
+# for lost voice frames, and the two are told apart by whether the *producer* is
+# still producing.
+#
+# The decoder emits one 20 ms packet every 20 ms.  If packets are still arriving
+# and the buffer is nevertheless empty, we consumed faster than they landed --
+# jitter -- and without a cushion every late packet punches another hole, which is
+# the whole reason _STREAM_PRIME_MS exists.  Rebuild it.
+#
+# If no packet has arrived for longer than this, the decoder itself has gone
+# quiet: an LDU whose frame sync failed yields no audio at all, for as long as the
+# RF is bad.  No cushion can help with that, and re-priming charges a further
+# _STREAM_PRIME_MS of silence on top of the real gap every single time it happens.
+# So resume the instant audio returns.  Two packet intervals is enough to tell:
+# one missed slot is jitter, two in a row is the decoder.
+_JITTER_IDLE_MS = int(os.environ.get('OP25_STREAM_JITTER_IDLE_MS', str(2 * _CHUNK_MS)))
+
+# ...but a gap this long is not a mid-call dropout any more, it is the end of the
+# transmission, and the *next* one deserves a proper prime.  Without this the
+# no-reprime decision would stick and the first word of every subsequent call
+# would play with no cushion.  Matches the decoder's own concealment ceiling
+# (p25p1_fdma.h CONCEAL_MAX_GAP_SYMBOLS, 720 ms): past that point it stops trying
+# to paper over the loss too.
+_DROPOUT_END_MS = int(os.environ.get('OP25_STREAM_DROPOUT_END_MS', '750'))
+
 
 def _wav_stream_header(sample_rate: int = _SAMPLE_RATE) -> bytes:
     """WAV header for an infinite/unknown-length stream.
@@ -415,6 +440,18 @@ class AudioStreamManager:
                 return max((len(b) for b in self._mix_buffers.values()), default=0)
             return len(self._buffer)
 
+    def producer_idle_ms(self) -> float:
+        """Milliseconds since the producer last pushed; ``inf`` if it never has.
+
+        This is what separates "the buffer is empty because we got ahead of a
+        producer that is still running" from "the buffer is empty because the
+        decoder has stopped producing" — see :data:`_JITTER_IDLE_MS`.
+        """
+        with self._lock:
+            if not self.last_push_ts:
+                return float('inf')
+            return (time.time() - self.last_push_ts) * 1_000.0
+
     def _attach(self) -> None:
         with self._lock:
             self._consumers += 1
@@ -460,10 +497,17 @@ class AudioStreamManager:
         interval = _CHUNK_MS / 1_000.0
         t        = 0.0
         loop     = asyncio.get_event_loop()
-        # False until self.prime_bytes of audio has accumulated.  Reset whenever
-        # the buffer runs dry, which is both the end of a transmission and the
-        # recovery path from a jitter dropout — see _STREAM_PRIME_MS.
+        # False until the cushion has accumulated.  Reset whenever the buffer runs
+        # dry, which is both the end of a transmission and the recovery path from a
+        # jitter dropout — see _STREAM_PRIME_MS.
         primed   = False
+        # Longest the producer has been quiet during the current dry spell, which
+        # is what says whether rebuilding the cushion is the right move — see
+        # _JITTER_IDLE_MS.  It has to be latched as a running maximum, because the
+        # very packet that ends the gap destroys the evidence: read fresh, the
+        # producer looks alive again the instant it resumes.  Starts at infinity so
+        # the first audio of a session gets a proper prime.
+        dry_idle = float('inf')
         # Absolute send schedule.  Sleeping for "interval minus work done" looks
         # right but silently runs slow: asyncio.sleep overshoots by a millisecond
         # or two every iteration and that error accumulates, so the stream
@@ -474,11 +518,26 @@ class AudioStreamManager:
         next_send = loop.time()
 
         while True:
-            # Hold playback until the cushion is there.  Taking a chunk the
-            # moment one exists consumes it as fast as it arrives, so the
-            # cushion never builds and every late packet is a hole.
-            if not primed and self.buffered_bytes() >= max(self.prime_bytes, _CHUNK_BYTES):
-                primed = True
+            if not primed:
+                # Keep watching how long the producer stays quiet.  At the instant
+                # the buffer empties the two causes are indistinguishable — 20 ms of
+                # nothing looks the same either way — so the answer only accrues
+                # over the following packet intervals.
+                dry_idle = max(dry_idle, self.producer_idle_ms())
+
+                # Hold playback until the cushion is there.  Taking a chunk the
+                # moment one exists consumes it as fast as it arrives, so the
+                # cushion never builds and every late packet is a hole.
+                #
+                # The exception is a gap the decoder opened rather than the
+                # transport: there is no cushion to wait for, and waiting only adds
+                # _STREAM_PRIME_MS of hole on top of the frames already lost.  A gap
+                # longer than _DROPOUT_END_MS is not a mid-call dropout any more —
+                # the transmission is over and the next one deserves a real prime.
+                mid_call_loss = _JITTER_IDLE_MS < dry_idle <= _DROPOUT_END_MS
+                target = _CHUNK_BYTES if mid_call_loss else max(self.prime_bytes, _CHUNK_BYTES)
+                if self.buffered_bytes() >= target:
+                    primed = True
 
             if not primed:
                 chunk = _sine_chunk(t) if self.mock else _silence_chunk()
@@ -489,6 +548,7 @@ class AudioStreamManager:
                 if real_len == _CHUNK_BYTES:
                     chunk = real_bytes
                     self.real_chunks += 1
+                    dry_idle = 0.0
                 elif real_len > 0:
                     # Partial buffer — pad the tail with silence so the chunk
                     # stays exactly _CHUNK_BYTES.  Normal at the end of a
@@ -497,11 +557,13 @@ class AudioStreamManager:
                     chunk = real_bytes + b'\x00' * (_CHUNK_BYTES - real_len)
                     self.underruns += 1
                     primed = False
+                    dry_idle = self.producer_idle_ms()
                 else:
                     chunk = _sine_chunk(t) if self.mock else _silence_chunk()
                     self.underruns += 1
                     t += interval
                     primed = False
+                    dry_idle = self.producer_idle_ms()
 
             self.bytes_yielded += len(chunk)
             yield resample_pcm16(chunk, _SAMPLE_RATE, out_rate) if out_rate != _SAMPLE_RATE else chunk

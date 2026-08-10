@@ -90,11 +90,36 @@ Config selector:
     duration ÷ wall-clock span, clamped to 1.0. 0.6 means 40 % of the
     transmission never decoded. Unlike `symbol_quality` it is a post-FEC figure —
     it counts frames that actually arrived.
+  - **This is still true after the concealment work below, and deliberately so.**
+    `conceal_lost_frames` emits at most three repeated 20 ms frames per gap and
+    then stops rather than padding the rest with silence — padding would make a
+    long dropout indistinguishable from clean audio in the clip's duration, which
+    is the only thing `continuity` has to measure. So a lossy call still yields a
+    short clip; it just no longer starts each hole with a hard cut.
 - **`underruns` means "lost audio that was in flight"; idle silence is
   `silent_chunks`.** They used to be the same counter, which made it useless as
   a diagnostic because idle time dominated it. The 5 s `ws audio:` log line
   prints `voice`/`silent`/`underruns`: underruns climbing while `voice` is
   steady is jitter in this process, not RF.
+- **Re-priming after a dropout is right for transport jitter and wrong for lost
+  voice frames, and the discriminator is `producer_idle_ms()`.** Every underrun
+  used to set `primed = False`, which charges a further `_STREAM_PRIME_MS`
+  (120 ms) of silence on top of the gap. If packets are still arriving, an empty
+  buffer means we outran them and the cushion *is* worth rebuilding — that is
+  what the prime exists for. If the decoder has gone quiet the silence is lost
+  LDUs, for as long as the RF is bad, and no cushion can help: a 180 ms loss was
+  being rendered as a 300 ms hole, every time.
+  - **The verdict has to be latched as a running maximum (`dry_idle`), because
+    the packet that ends the gap destroys the evidence.** Read fresh each tick,
+    the producer looks alive again the instant it resumes, so the gap re-primes
+    anyway. A two-threshold latch (`_JITTER_IDLE_MS` down, `_DROPOUT_END_MS` up)
+    was tried first and *oscillated* between the two verdicts on alternate ticks.
+  - Past `_DROPOUT_END_MS` (750 ms) it is not a mid-call dropout any more, it is
+    the end of the transmission, and the next one gets a full prime. Without that
+    the no-reprime verdict sticks and every subsequent call chops on its first
+    word. The value matches the decoder's own `CONCEAL_MAX_GAP_SYMBOLS`.
+  - `dry_idle` starts at infinity, so a newly attached client always primes
+    properly whatever the producer was doing before it arrived.
 - Docs: `README-new-gui.md` (protocol + endpoints), `www/app/AGENTS.md`
   (frontend conventions).
 
@@ -141,6 +166,98 @@ React UI fully populated → browser audio. Specifically confirmed:
 - `/api/stream` serves valid RIFF/WAVE at exactly 8 kHz/16-bit mono with real
   voice content (peak ~28k, ~28% non-silent during normal traffic).
 - No JS console errors.
+
+## Lost voice frames: recovery and concealment (P25 phase 1)
+
+The audible chop on live P25 audio was mostly not a streaming fault. Two loss
+mechanisms exist and only one of them was ever handled.
+
+**Per-codeword damage was already correct and standards-compliant.**
+`software_imbe_decoder::decode_fullrate` implements TIA-102.BABA-A §7.7 Frame
+Repeat and §7.8 Frame Muting: `repeat_last()` reloads the previous frame's
+`w0`/`L`/voicing/spectral amplitudes, `rpt_ctr` allows three repeats and mutes on
+the fourth, and `ER` (a leaky estimate built from Golay/Hamming corrections) mutes
+outright above 0.0875. A muted frame still pushes 160 zero samples, so the 20 ms
+timeline survives. Do not "simplify" any of that.
+
+**Whole-LDU loss was not handled at all, and that was the chop.** A failed NID
+BCH check discarded the entire frame — nine independently-FEC-protected IMBE
+codewords, 180 ms of audio — because 64 bits of *addressing* failed. The NID
+carries NAC and DUID and not one bit of voice. Worse, `rx_sync` then called
+`sync_reset()`, so `d_threshold` dropped to 0 and the receiver had to re-acquire
+an exact 48-bit sync match on a signal that had just proved marginal — which is
+how one bad frame cascaded into several.
+
+- **A subscriber unit does not do that.** Once it has acquired the channel it
+  knows the strict `HDU → LDU1 → LDU2 → LDU1 → …` alternation and the 20 ms frame
+  clock, and keeps decoding voice straight through a bad NID. `p25_framer` now
+  does the same: `set_voice_hint(duid)` supplies the predicted DUID and
+  `load_nid()` falls back to it instead of returning 0.
+- **The gate is the frame sync, not optimism.** Recovery requires a voice hint
+  *and* `sync_bit_errors(fs) <= RECOVERY_MAX_SYNC_ERRS` (4 of 48). The sync
+  detector itself locks at ≤ 2; 4 is still far beyond what noise produces, and it
+  is the only remaining evidence that a frame really starts here once the NID's
+  own BCH has given up. Getting this wrong injects noise into the audio, so it is
+  deliberately strict.
+- **A recovered frame is voice-only.** `nid_recovered` means nac / nid_word /
+  parity / bch_errors are stale, so `process_frame` decodes codewords and nothing
+  else: no `process_duid` message to the trunking layer (that would assert a frame
+  type that was *inferred*), no LCW, no ESS. It does reset `qtimer` — a frame
+  genuinely arrived — and does `cycle_p25_mi()` on a recovered LDU2, the same
+  fallback `process_LDU2` already uses when the ESS fails to decode, so a keyed
+  encrypted call stays in step.
+- Guessing LDU1 vs LDU2 wrong is harmless for clear traffic: `imbe_deinterleave`
+  uses the same bit map for both. It only shifts the keystream offset for
+  encrypted-and-keyed calls, which any lost frame already breaks.
+- The hint is cleared by every non-voice DUID, by `call_end()`, and by the 1 s
+  `check_timeout()`, so a stale hint cannot outlive its call for long.
+
+**Frames that never arrived at all are concealed, bounded.**
+`software_imbe_decoder::decode_erasure()` is the §7.7/§7.8 path with no codeword
+to decode: repeat the previous frame's parameters, mute when the budget is spent,
+always emit exactly 160 samples. `p25p1_fdma::conceal_gap()` measures the hole and
+drives it.
+
+- **Gap measurement needs a symbol clock that survives a resync**, which is why
+  `rx_sync::d_symbols_total` exists alongside `d_symbol_count` — the latter is
+  reset by `sync_reset()`, i.e. precisely by the event whose duration we need.
+  It is passed into `p25p1_fdma::load_nid()`; P25 voice frames are contiguous, so
+  any excess over `LDU_SYMBOLS` (864 = 180 ms) is lost audio rather than an
+  inter-call pause. Callers that pass 0 get no concealment, which is how the
+  deprecated `rx_sym` path stays inert.
+- Bounded twice: at most `CONCEAL_FRAMES_DEFAULT` (3, `$OP25_CONCEAL_FRAMES`)
+  frames per gap, and not at all past `CONCEAL_MAX_GAP_SYMBOLS` (720 ms) where the
+  previous frame's parameters are too stale to repeat and muting is what a real
+  radio does anyway.
+  - **The env var is surfaced as the add-on's `conceal_frames` option**, exported
+    by the s6 run script. It exists as a knob rather than a constant only so
+    concealment can be switched off on real RF *without* also disabling the NID
+    recovery it ships beside — that is the only way to attribute a change in what
+    you hear to one or the other. A dev-only env var would have been useless on
+    the one platform that has a dongle attached.
+- **`d_voice_audio_flowing` gates it on the previous frame having actually put
+  samples on the wire.** Encrypted traffic without a key, and traffic silenced by
+  `crypt_behavior`, emit nothing — concealing there would repeat the last frame
+  the vocoder *did* decode and bleed a previous clear call into one that is
+  supposed to be silent.
+- `ER` is deliberately **not** driven up by an erasure: it estimates the channel
+  error rate from corrections actually counted, and there are none here. Loading
+  it would keep muting good frames for several frames after the gap closed.
+  `rpt_ctr` alone is the limiter, and the next good frame resets it.
+
+Counters are in `get_fec_stats_json()` under `voice`: `frames`, `recovered`,
+`lost`, `concealed`. `lost` climbing while `recovered` stays flat means sync is
+being lost outright — an RF problem, not a decode one. Nothing calls
+`control('fec_stats')` yet, so for now the visible signal is `-v 10`, which prints
+both `voice recovered as duid=` and `conceal_gap: N voice frames lost`. Counting
+those against clip `continuity` is how to tell the two mechanisms apart.
+
+The C++ here has no automated coverage — `test_op25_repeater_sources` is empty and
+these paths cannot be reached from `apps/tests`. Both were validated by throwaway
+harnesses linking `p25_framer.cc`/`software_imbe_decoder.cc` directly (recovery
+gating, the sync error threshold, frame sizing; and 160 samples per erasure, the
+bounded repeat budget, re-arming on a good frame). Re-derive that if you change
+them — do not assume the pytest suite covers it.
 
 ## Audio backends
 
@@ -852,6 +969,13 @@ not. The effective config is therefore **composed, never stored**:
    covered: `tests/audio_udp_roundtrip_spec.py` drives the real compiled
    `analog_udp` block and asserts non-silent PCM comes out of `/api/stream`.
    What is still untested here is RF → demod → vocoder, which needs hardware.
+8. **NID-failure voice recovery and gap concealment are unverified on air** for
+   the same reason — see "Lost voice frames" above. The decision logic was
+   validated directly in C++, but only real marginal RF can say whether the
+   `RECOVERY_MAX_SYNC_ERRS` gate is tight enough in practice. The symptom of it
+   being too loose is bursts of noise where there used to be silence; back it off,
+   or set the add-on's `conceal_frames` to 0 (`$OP25_CONCEAL_FRAMES`) to isolate
+   concealment from recovery. Shipped in 0.0.16.
 
 ## Testing the running stack without a browser
 
@@ -893,7 +1017,7 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 630 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 636 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -922,8 +1046,9 @@ its `from gnuradio import gr`.
   reduction, exponential-average compensation, stateless-mode skipping,
   decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
-  `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, and
-  the idle-vs-attached buffer bound (44).
+  `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, the
+  idle-vs-attached buffer bound, and the jitter-vs-decoder-loss discrimination
+  that decides whether a dropout re-primes at all (51).
 - `tests/multi_rx_api_spec.py` — parses `multi_rx.py` (it cannot be imported
   without GNU Radio) to reject shadowed methods and pin the two device-lookup
   names apart (8).

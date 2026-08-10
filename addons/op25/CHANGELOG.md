@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.0.16
+
+**Live audio should be noticeably less choppy. The decoder was throwing away
+audio it could have decoded.**
+
+- **A corrupt frame header no longer costs you the audio in that frame.** Each
+  180 ms of P25 voice arrives wrapped in a small header that says who is talking
+  and what kind of frame it is — and nothing else. It carries no voice at all.
+  Until now, if that header failed its error check, OP25 discarded the whole
+  frame: nine chunks of speech, each with its own independent error correction,
+  each perfectly decodable, thrown out because 64 bits of *addressing* were
+  damaged.
+
+  Worse, dropping the frame also lost the receiver's place in the stream, so it
+  had to re-lock onto a signal that had just proved marginal — which is how one
+  bad frame turned into several in a row.
+
+  A real P25 radio does not do this. Once it has locked onto a channel it knows
+  the frame pattern and keeps decoding speech straight through a bad header. OP25
+  now does the same. This is the change that should be audible.
+- **Short gaps are smoothed instead of cut.** When audio genuinely is lost, the
+  decoder now does what a real radio does: it holds the last fragment of speech
+  briefly instead of cutting to silence instantly. That is why a P25 radio in a
+  marginal spot sounds warbly or underwater rather than chopped — holding the
+  pitch renders the loss as a smeared vowel instead of a hole.
+
+  This is deliberately brief — up to 60 ms — and then the gap goes quiet. It
+  softens the edges of a dropout; it cannot invent speech that never arrived.
+- **The browser stream stopped adding its own silence on top of the loss.**
+  After any interruption the player rebuilt its safety buffer before resuming,
+  which costs an extra 120 ms of quiet. That is the right thing to do when the
+  network hiccuped, and the wrong thing when the radio signal simply went away —
+  there is nothing to buffer, so the wait was pure added silence, on every single
+  dropout. A 180 ms loss was being played back as a 300 ms hole. The stream now
+  tells the two cases apart and resumes immediately when the gap was the radio's.
+- **Recordings still show you when a call was lossy.** A call that lost half its
+  audio still produces a shorter clip, and the decode-quality figure on it still
+  reflects that. Smoothing the gaps was not allowed to hide them.
+
+Notes for testing this on air:
+
+- All of the above is in the decoder, so it takes effect when the add-on
+  restarts after the update. Nothing to configure.
+- There is a new `conceal_frames` option, default 3. Setting it to `0` turns the
+  gap smoothing off while leaving the header recovery on, which is how to tell
+  which of the two is responsible for a change in what you hear.
+- If something sounds *worse* — bursts of noise where there used to be silence —
+  that points at the header recovery being too willing, and the honest fix is to
+  roll back to 0.0.15 and say so. The decision logic was tested directly, but
+  only real marginal RF can confirm the threshold, and there is no radio on the
+  development machine to try it with.
+- With `verbosity` at 10 the log names both effects: `voice recovered as duid=`
+  is a frame rescued from a bad header, `conceal_gap: N voice frames lost` is
+  audio that never arrived. If the first dominates, this release is working; if
+  the second dominates, the signal itself is too weak and antenna or gain is the
+  next thing to look at.
+
 ## 0.0.15
 
 **Finding the talkgroups worth listening to, and deciding which of them get

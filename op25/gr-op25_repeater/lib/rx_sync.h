@@ -155,6 +155,11 @@ private:
 
 	op25_timer sync_timer;
 	unsigned int d_symbol_count;
+	// Monotonic symbol count, never reset by sync_reset().  d_symbol_count is
+	// relative to the current sync lock, which makes it useless for measuring how
+	// much voice was lost *across* a resync - which is exactly what p25p1_fdma
+	// needs to know in order to conceal it.
+	uint64_t d_symbols_total;
 	uint64_t d_sync_reg;
 	uint64_t d_fs;
 	uint8_t d_cbuf[CBUF_SIZE*2];

@@ -104,6 +104,7 @@ JSON, which is handy when hardware moves between machines.
 | `work_dir` | `/config` | Working directory. Tag files, whitelists and crypt keys resolve against this |
 | `verbosity` | `1` | Decoder log level, 0–10 |
 | `audio_output` | `browser` | `browser` streams audio to the UI. `alsa` sends it to a local sound device instead, which needs one mapped in. `none` disables it |
+| `conceal_frames` | `3` | How many missing 20 ms voice frames the decoder repeats before leaving a gap silent, 0–3. `0` turns concealment off, so a dropout is a hard cut again |
 | `device_overrides` | `[]` | Per-device `serial` / `gains` / `ppm` overrides, matched on `name` |
 | `home_assistant.use_supervisor` | `true` | Use the Supervisor proxy for speech-to-text, so no long-lived token is needed |
 | `home_assistant.url` / `.token` | — | Point at a different Home Assistant instead |

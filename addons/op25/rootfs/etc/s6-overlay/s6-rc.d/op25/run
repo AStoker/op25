@@ -99,6 +99,15 @@ fi
 # /api/config serves to the browser.
 export OP25_HA_TOKEN="${ha_token}"
 
+# ------------------------------------------------------- lost-audio handling -
+# How many missing 20 ms voice frames p25p1_fdma repeats before it gives up and
+# leaves the gap silent (see "Lost voice frames" in CLAUDE.md). This is an option
+# rather than a compile-time constant only so the concealment can be switched off
+# on real RF without downgrading the add-on: set it to 0 and a dropout goes back
+# to being a hard cut, which is how you tell concealment apart from the NID
+# recovery that ships alongside it.
+export OP25_CONCEAL_FRAMES="$(bashio::config 'conceal_frames')"
+
 # -------------------------------------------------------------- render ------
 #
 # Three layers, in this order:

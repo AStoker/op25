@@ -39,6 +39,23 @@ namespace gr {
 
         static const int SND_FRAME = 160;   // pcm samples per frame
 
+        // P25 phase 1 voice timing, in C4FM symbols at 4800 sym/sec.  An LDU is
+        // 1728 bits = 864 symbols = 180 ms, carrying nine 20 ms IMBE frames.
+        static const uint64_t LDU_SYMBOLS         = 864;
+        static const uint64_t VOICE_FRAME_SYMBOLS = LDU_SYMBOLS / 9;   // 96 = 20 ms
+
+        // Ceiling on how many missing 20 ms frames get concealed before the gap is
+        // simply left as lost audio.  Three is the vocoder's own repeat budget
+        // (TIA-102-BABA-A 7.7 - software_imbe_decoder::repeat_last() mutes on the
+        // fourth), so asking for more would only get silence back.  Overridable via
+        // $OP25_CONCEAL_FRAMES; 0 disables concealment.
+        static const int CONCEAL_FRAMES_DEFAULT = 3;
+
+        // Beyond this much lost time the previous frame's spectral parameters are
+        // too stale to be worth repeating and muting is the correct answer - which
+        // is also what a subscriber unit does.  Four LDUs = 720 ms.
+        static const uint64_t CONCEAL_MAX_GAP_SYMBOLS = 4 * LDU_SYMBOLS;
+
         class p25p1_fdma
         {
             private:
@@ -63,6 +80,12 @@ namespace gr {
                 int  process_blocks(const bit_vector& fr, uint32_t& fr_len, block_vector& dbuf);
                 void process_frame();
                 void check_timeout();
+                void emit_voice_frame();
+                void conceal_gap();
+                void conceal_lost_frames(int nframes);
+                void note_voice_frame();
+                void start_voice_sequence();
+                void end_voice_sequence();
                 inline bool encrypted() { return (ess_algid != 0x80); }
                 inline void reset_ess() { ess_algid = 0x80; memset(ess_mi, 0, sizeof(ess_mi)); }
                 void send_msg(const std::string msg_str, long msg_type);
@@ -97,12 +120,31 @@ namespace gr {
                 uint8_t  ess_mi[9] = {0};
                 uint16_t vf_tgid;
 
+                // Voice sequence tracking.  P25 phase 1 voice is a strict
+                // HDU -> LDU1 -> LDU2 -> LDU1 -> ... alternation of contiguous
+                // 180 ms frames, which is what makes both NID recovery and gap
+                // measurement possible.  0 = no call in progress.
+                uint32_t d_voice_next_duid = 0;
+                uint64_t d_sym_clock = 0;       // monotonic symbol count at the current NID
+                uint64_t d_last_voice_clock = 0;// d_sym_clock at the previous voice LDU, 0 = none
+                int d_conceal_frames = CONCEAL_FRAMES_DEFAULT;
+                // Whether the previous voice LDU actually put samples on the wire.
+                // False for encrypted traffic without a key and for traffic the
+                // crypt_behavior gate silenced, where concealment would repeat the
+                // last frame the vocoder *did* decode - bleeding a previous clear
+                // call into one that is supposed to be silent.
+                bool d_voice_audio_flowing = false;
+
                 // FEC counters surfaced via fec_stats control() command.
                 uint64_t d_stat_tsbk_attempted = 0;
                 uint64_t d_stat_tsbk_passed = 0;
                 uint64_t d_stat_pdu_attempted = 0;
                 uint64_t d_stat_pdu_passed = 0;
                 uint64_t d_stat_timeouts = 0;
+                uint64_t d_stat_voice_frames = 0;     // LDUs whose voice reached the audio sink
+                uint64_t d_stat_voice_recovered = 0;  // ...of those, ones whose NID had failed BCH
+                uint64_t d_stat_voice_lost = 0;       // 20 ms frames that never arrived
+                uint64_t d_stat_voice_concealed = 0;  // ...of those, ones the vocoder papered over
 
             public:
                 void set_debug(int debug);
@@ -115,7 +157,7 @@ namespace gr {
                 void rx_sym (const uint8_t *syms, int nsyms);
                 p25p1_fdma(op25_audio& udp, log_ts& logger, int debug, bool do_imbe, bool do_output, bool do_msgq, gr::msg_queue::sptr queue, std::deque<int16_t> &output_queue, bool do_audio_output, int msgq_id = 0);
                 ~p25p1_fdma();
-                uint32_t load_nid(const uint8_t *syms, int nsyms, const uint64_t fs);
+                uint32_t load_nid(const uint8_t *syms, int nsyms, const uint64_t fs, uint64_t sym_clock = 0);
                 bool load_body(const uint8_t * syms, int nsyms);
 
                 uint64_t stat_tsbk_attempted() const { return d_stat_tsbk_attempted; }
@@ -123,6 +165,10 @@ namespace gr {
                 uint64_t stat_pdu_attempted()  const { return d_stat_pdu_attempted; }
                 uint64_t stat_pdu_passed()     const { return d_stat_pdu_passed; }
                 uint64_t stat_timeouts()       const { return d_stat_timeouts; }
+                uint64_t stat_voice_frames()    const { return d_stat_voice_frames; }
+                uint64_t stat_voice_recovered() const { return d_stat_voice_recovered; }
+                uint64_t stat_voice_lost()      const { return d_stat_voice_lost; }
+                uint64_t stat_voice_concealed() const { return d_stat_voice_concealed; }
 
                 // Where all the action really happens
 

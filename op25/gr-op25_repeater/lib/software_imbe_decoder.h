@@ -54,6 +54,16 @@ public:
 	void decode_fullrate(uint32_t u0, uint32_t u1, uint32_t u2, uint32_t u3, uint32_t u4, uint32_t u5, uint32_t u6, uint32_t u7, uint32_t E0, uint32_t ET);
 	void decode_tap(int _L, int _K, float _w0, const int * _v, const float * _mu);
 	void decode_tone(int _ID, int _AD, int * _n);
+
+	/**
+	 * Synthesize one 20 ms frame for a voice frame that never arrived at all.
+	 *
+	 * Always emits exactly 160 samples, so the caller's timeline stays intact.
+	 * Returns true if the frame was concealed by repeating the previous one and
+	 * false if the repeat budget was spent and the frame was muted, which is the
+	 * caller's cue to stop asking.
+	 */
+	bool decode_erasure();
 private:
 
 	//NOTE: Single-letter variable names are upper case only; Lower

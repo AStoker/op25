@@ -32,6 +32,7 @@
 #include <string.h>
 #include <errno.h>
 #include <vector>
+#include <algorithm>
 #include "bch.h"
 #include "op25_msg_types.h"
 #include "op25_imbe_frame.h"
@@ -223,6 +224,11 @@ namespace gr {
             ess_algid(0x80),
             vf_tgid(0)
         {
+            const char *p = getenv("OP25_CONCEAL_FRAMES");
+            if (p != NULL) {
+                int n = atoi(p);
+                d_conceal_frames = (n < 0) ? 0 : n;
+            }
         }
 
         void p25p1_fdma::process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len) {
@@ -568,6 +574,10 @@ namespace gr {
         }
 
         void p25p1_fdma::process_voice(const bit_vector& A, const frame_type fr_type) {
+            // Cleared up front so the crypt_behavior early-return below leaves it
+            // false: no audio emitted means nothing worth concealing a gap with.
+            d_voice_audio_flowing = false;
+
             if (d_do_imbe || d_do_audio_output) {
                 if (encrypted()) {
                     crypt_algs.prepare(ess_algid, ess_keyid, PT_P25_PHASE1, ess_mi);
@@ -634,22 +644,8 @@ namespace gr {
 
                     if (d_do_audio_output && audio_valid) {
                         software_decoder.decode_fullrate(u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], E0, ET);
-                        audio_samples *samples = software_decoder.audio();
-                        for (int i=0; i < SND_FRAME; i++) {
-                            if (samples->size() > 0) {
-                                snd[i] = (int16_t)(samples->front());
-                                samples->pop_front();
-                            } else {
-                                snd[i] = 0;
-                            }
-                        }
-                        if (op25audio.enabled()) {      // decoded audio goes out via UDP (normal code path)
-                            op25audio.send_audio(snd, SND_FRAME * sizeof(int16_t));
-                        } else {                        // decoded audio back to gnuradio (still supported?)
-                            for (int i = 0; i < SND_FRAME; i++) {
-                                output_queue.push_back(snd[i]);
-                            }
-                        }
+                        emit_voice_frame();
+                        d_voice_audio_flowing = true;
                     }
 
                     if (d_do_output && !d_do_audio_output) { // ugh! - legacy wireshark support
@@ -662,6 +658,95 @@ namespace gr {
             }
         }
 
+        /* Drain one 20 ms frame out of the vocoder and hand it to the audio sink.
+         * Always emits exactly SND_FRAME samples - a muted frame leaves the
+         * vocoder's queue short and the tail is zero-filled, which is what keeps
+         * the 20 ms timeline intact through a dropout. */
+        void p25p1_fdma::emit_voice_frame() {
+            audio_samples *samples = software_decoder.audio();
+            for (int i = 0; i < SND_FRAME; i++) {
+                if (samples->size() > 0) {
+                    snd[i] = (int16_t)(samples->front());
+                    samples->pop_front();
+                } else {
+                    snd[i] = 0;
+                }
+            }
+            if (op25audio.enabled()) {      // decoded audio goes out via UDP (normal code path)
+                op25audio.send_audio(snd, SND_FRAME * sizeof(int16_t));
+            } else {                        // decoded audio back to gnuradio (still supported?)
+                for (int i = 0; i < SND_FRAME; i++) {
+                    output_queue.push_back(snd[i]);
+                }
+            }
+        }
+
+        /* Measure the hole between the previous voice LDU and this one and hand it
+         * to the vocoder as frame erasures.  P25 phase 1 voice frames are
+         * contiguous, so any symbol time in excess of one LDU is audio the decoder
+         * never got - not an inter-call pause. */
+        void p25p1_fdma::conceal_gap() {
+            if ((d_last_voice_clock == 0) || (d_sym_clock == 0))
+                return;     // start of a call, or no symbol clock supplied by the caller
+            if (d_sym_clock <= d_last_voice_clock + LDU_SYMBOLS)
+                return;     // contiguous with the previous frame - nothing missing
+
+            uint64_t gap  = d_sym_clock - d_last_voice_clock - LDU_SYMBOLS;
+            uint64_t lost = gap / VOICE_FRAME_SYMBOLS;
+            if (lost == 0)
+                return;
+
+            d_stat_voice_lost += lost;
+            if (d_debug >= 10)
+                fprintf(stderr, "%s p25p1_fdma::conceal_gap: %lu voice frames lost (%lu ms)\n", logts.get(d_msgq_id), (unsigned long)lost, (unsigned long)(lost * 20));
+
+            if (gap > CONCEAL_MAX_GAP_SYMBOLS)
+                return;     // too much elapsed to repeat anything sensible; silence is correct
+            if (!d_voice_audio_flowing)
+                return;     // nothing to repeat - see d_voice_audio_flowing
+
+            conceal_lost_frames((int)std::min<uint64_t>(lost, (uint64_t)d_conceal_frames));
+        }
+
+        void p25p1_fdma::conceal_lost_frames(int nframes) {
+            if (!d_do_audio_output)
+                return;
+            for (int f = 0; f < nframes; f++) {
+                if (!software_decoder.decode_erasure()) {
+                    // Repeat budget spent.  decode_erasure() queued 20 ms of
+                    // silence; drop it rather than emitting it.  The remainder of
+                    // the gap is silence either way, and padding it out would make
+                    // a long dropout indistinguishable from clean audio in the
+                    // clip's duration - which is the only signal a listener has
+                    // that the transmission was lossy (see clip 'continuity').
+                    software_decoder.audio()->clear();
+                    break;
+                }
+                emit_voice_frame();
+                d_stat_voice_concealed++;
+            }
+        }
+
+        void p25p1_fdma::note_voice_frame() {
+            d_stat_voice_frames++;
+            d_last_voice_clock = d_sym_clock;
+            // Strict alternation, which is what lets a failed NID be recovered.
+            d_voice_next_duid = (framer->duid == 0x05) ? 0x0a : 0x05;
+            framer->set_voice_hint(d_voice_next_duid);
+        }
+
+        void p25p1_fdma::start_voice_sequence() {
+            d_voice_next_duid  = 0x05;      // HDU is always followed by LDU1
+            d_last_voice_clock = 0;
+            framer->set_voice_hint(d_voice_next_duid);
+        }
+
+        void p25p1_fdma::end_voice_sequence() {
+            d_voice_next_duid  = 0;
+            d_last_voice_clock = 0;
+            framer->set_voice_hint(0);
+        }
+
         void p25p1_fdma::reset_timer() {
             qtimer.reset();
         }
@@ -670,6 +755,7 @@ namespace gr {
             if (d_do_audio_output)
                 op25audio.send_audio_flag(op25_audio::DRAIN);
             reset_ess();
+            end_voice_sequence();
         }
 
         void p25p1_fdma::crypt_reset() {
@@ -690,6 +776,33 @@ namespace gr {
         }
 
         void p25p1_fdma::process_frame() {
+            const bool is_voice = ((framer->duid == 0x05) || (framer->duid == 0x0a));
+
+            // Conceal frames that never arrived *before* the frame that ended the
+            // gap, so the audio stays in order.
+            if (is_voice)
+                conceal_gap();
+
+            if (framer->nid_recovered) {
+                // The duid was predicted from the LDU1/LDU2 alternation because the
+                // NID failed its BCH check, so nothing in this frame outside the
+                // vocoder codewords can be trusted: no NAC, no link control, no
+                // ESS.  Decode voice only.  In particular no duid message goes to
+                // the trunking layer - that would be asserting a frame type that
+                // was inferred rather than decoded - but the receive timer is reset
+                // because a frame genuinely did arrive.
+                d_stat_voice_recovered++;
+                process_voice(framer->frame_body, (framer->duid == 0x05) ? FT_LDU1 : FT_LDU2);
+                if (framer->duid == 0x0a) {
+                    // Same fallback process_LDU2 uses when the ESS fails to decode:
+                    // advance the MI so a keyed encrypted call stays in step.
+                    op25_crypt_algs::cycle_p25_mi(ess_mi);
+                }
+                note_voice_frame();
+                qtimer.reset();
+                return;
+            }
+
             // extract additional signalling information and voice codewords
             switch(framer->duid) {
                 case 0x00:
@@ -714,6 +827,13 @@ namespace gr {
                     process_TDU15(framer->frame_body);
                     break;
             }
+
+            if (is_voice)
+                note_voice_frame();
+            else if (framer->duid == 0x00)  // HDU - a call is starting, LDU1 is next
+                start_voice_sequence();
+            else
+                end_voice_sequence();
 
             if (!d_do_imbe) { // send raw frame to wireshark
                               // pack the bits into bytes, MSB first
@@ -756,7 +876,10 @@ namespace gr {
         }
 
         // Load a frame starting with NID block (used by multi_rx.py)
-        uint32_t p25p1_fdma::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs) {
+        // sym_clock is a monotonic symbol count owned by the caller, used to measure
+        // how much voice went missing across a resync.  0 disables that measurement.
+        uint32_t p25p1_fdma::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs, uint64_t sym_clock) {
+            d_sym_clock = sym_clock;
             uint32_t fr_len = framer->load_nid(syms, nsyms, fs);
             check_timeout();
             return fr_len;
@@ -783,6 +906,11 @@ namespace gr {
                     if (d_do_audio_output) {
                         op25audio.send_audio_flag(op25_audio::DRAIN);
                     }
+
+                    // Nothing has arrived for a second: whatever call was up is
+                    // over, so stop predicting voice duids and stop treating the
+                    // next voice frame as the far side of a concealable gap.
+                    end_voice_sequence();
 
                     qtimer.reset();
                     d_stat_timeouts++;
