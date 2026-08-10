@@ -1017,6 +1017,47 @@ $(cat op25_python) multi_rx.py -c Palmetto800-single.json -v 1 2> stderr.2
 # then open http://localhost:8080
 ```
 
+## Cutting a release
+
+**Never hand-edit the version. Run `scripts/bump-version.py <X.Y.Z>`.** Three
+files carry it and two of them are read by machines that fail unhelpfully when
+they disagree:
+
+| File | Read by |
+|---|---|
+| `addons/op25/config.yaml` | Supervisor, to pick the image tag. `addon.yml`'s `version-check` job refuses to publish unless it equals the release tag |
+| `addons/op25/CHANGELOG.md` | the add-on store, as the release notes the user sees |
+| `www/app/package.json` | baked into the bundle at build time, shown in the About dialog — how you tell what a running install actually is |
+
+`scripts/bump-version.py --check` runs in the `Tests` workflow and fails the push
+on any mismatch. That check is the only thing standing between a hand-edited bump
+and a release that reports the *previous* version in its own UI, which is exactly
+what happened on the first attempt at 0.0.16.
+
+Then, in order:
+
+```bash
+scripts/bump-version.py 0.0.17          # all three files; stubs the changelog
+# write the changelog section — --check fails while the stub is there
+cd op25/gr-op25_repeater/www/app && yarn build   # www/dist carries the version too
+git commit -am 'chore(addon): bump to 0.0.17' && git push
+git tag -a v0.0.17 -m '...' && git push origin v0.0.17
+gh release create v0.0.17 --verify-tag --notes-file <notes>
+```
+
+- **Publishing the release is the build trigger.** A tag alone builds nothing, and
+  *editing* an existing release does not re-fire the workflow — so a release cut
+  against a bad commit cannot be repaired in place. Either move the tag (delete
+  the release with `--cleanup-tag`, re-tag, re-create) or burn the version and go
+  to the next one. Moving it is only defensible while no image has published; once
+  Supervisor can pull `ghcr.io/astoker/op25:X.Y.Z`, that tag is spent.
+- The changelog is written for a scanner user, not for this file: what they will
+  hear differently, and what to do if it is worse. Compare 0.0.16's entry against
+  the commit message for the same change — deliberately two different documents.
+- `www/dist` is committed, so a version-only rebuild still moves the entry chunk's
+  content hash. Vendor chunks keeping theirs is the signal that nothing else
+  changed.
+
 Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 636 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
