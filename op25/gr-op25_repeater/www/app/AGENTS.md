@@ -43,6 +43,8 @@ app/                        ← this directory
     utils/systemKind.ts     P25 / SmartNet / Connect+ branching + safe formatters
     utils/lastSeen.ts       relative last-heard / frequency formatting
     utils/talkgroupPatterns.ts  contains/starts/exact/wildcard/regex matching
+    utils/callSearch.ts     free-text search over captured calls (transcript + talkgroup)
+    utils/callTranscripts.ts  clip↔call-log join, transcript state, match marking
     types/op25.ts           decoder payload shapes
     types/websocket.ts      envelope + upstream/downstream unions
   vite.config.ts            builds to ../dist
@@ -101,6 +103,7 @@ already uses. Instead:
 | Note under a control | `common/Hint` (what `Field` renders internally) |
 | Repeated outlined tile | `common/InsetPanel` — `highlight` for a keyword hit |
 | Filter box in a heading | `common/SearchField` — magnifier, placeholder, clear button |
+| Text with matched runs marked | `common/HighlightedText` — keyword hits (alert colour) vs search hits (quiet) |
 | A modal panel | `common/DialogShell` — the dialog's `CardShell`: title, close button, full-screen below `sm` |
 
 Never use `helperText=" "` to reserve a line: that is what made the TGID field
@@ -192,6 +195,23 @@ page here. `AppShell` owns which one is open.
   matched. Saved in `ui_state.talkgroup_filters`.
 - **An invalid pattern must show everything else**, not nothing: most keystrokes
   in a regex are a syntax error in progress.
+- **Call search is deliberately not that pattern engine.** The clip list's box
+  (`utils/callSearch.ts`) is whitespace-separated terms, all of which must match,
+  each a plain case-insensitive substring across the talkgroup name, the TGID and
+  the transcript. AND-across-fields is the point: `cola fire` means "the Columbia
+  talkgroup, where someone said fire", which no single-field search expresses.
+  Substring rather than `guessKind` because transcripts legitimately contain
+  `10-33`, `(inaudible)` and `*`, so guessing a pattern rule would turn a phrase
+  search into one that matches nothing. Checked by `yarn verify:search` in CI.
+  - **What is searched must be what is shown, in both directions.** The clip row
+    prints the TGID beside the name so a match on `4520` has a visible cause, and
+    a discarded (hallucinated) transcript is searchable because it is displayed.
+  - Search hits and keyword hits are marked differently (`HighlightedText`): a
+    configured keyword means something on its own, a search hit only means "this
+    is what you asked for". Styling them alike would invent alerts.
+  - The query is transient, unlike the browser's saved patterns — this filters a
+    live feed of the last 60 clips, so a restored query would hide traffic that
+    arrived since it was typed.
 - **Sortable columns default to Calls descending there**, because the question
   that decides a selection is which talkgroups carry traffic. Selected rows are
   deliberately *not* floated to the top as they are on the dashboard — the row

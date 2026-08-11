@@ -65,6 +65,14 @@ jobs:
         working-directory: op25/gr-op25_repeater/www/app
         run: yarn verify:agc
 
+      # Call search is pure logic behind a text box, so the failure mode is
+      # silent: a query that quietly matches nothing reads as "there were no
+      # such calls". This asserts the AND-across-fields rule, that a call with
+      # no transcript is still findable, and that nothing typeable can throw.
+      - name: Verify call search
+        working-directory: op25/gr-op25_repeater/www/app
+        run: yarn verify:search
+
       # www/dist is a committed artifact and drifts silently. This does not
       # fail the build -- a drifting dist is a nuisance, not a broken tree --
       # but it puts the diff in the log.

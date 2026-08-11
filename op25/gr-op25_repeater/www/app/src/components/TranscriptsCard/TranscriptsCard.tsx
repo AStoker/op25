@@ -14,8 +14,11 @@ import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import CircularProgress from '@mui/material/CircularProgress';
 import CardShell from '../CardShell/CardShell';
 import InsetPanel from '../common/InsetPanel';
+import HighlightedText from '../common/HighlightedText';
+import SearchField from '../common/SearchField';
+import ControlRow from '../common/ControlRow';
 import { useOp25Service } from '../../services/op25Service';
-import { highlight } from '../../utils/callTranscripts';
+import { matchesClip, searchTerms } from '../../utils/callSearch';
 import { apiUrl } from '../../utils/url';
 import type { CallClip } from '../../types/op25';
 
@@ -120,9 +123,12 @@ interface ClipRowProps {
   clip: CallClip;
   playing: boolean;
   onToggle: (clip: CallClip) => void;
+  /** Terms to mark in the talkgroup and transcript, so it is visible *why* this
+   *  row survived the filter. */
+  search: readonly string[];
 }
 
-function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
+function ClipRow({ clip, playing, onToggle, search }: ClipRowProps) {
   const alert = clip.keywords.length > 0;
   const label = clip.talkgroup || (clip.tgid ? `TG ${clip.tgid}` : 'Unknown talkgroup');
   const source = clip.source_tag || (clip.source ? String(clip.source) : '');
@@ -146,9 +152,18 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 0.75 }}>
           <Typography variant="body2" fontWeight="medium" sx={{ overflowWrap: 'anywhere' }}>
-            {label}
+            <HighlightedText text={label} search={search} />
           </Typography>
           <Typography variant="caption" color="text.secondary">
+            {/* The TGID rides here whenever the label is the *name*, because the
+                number is searchable: a row matched by "4520" that shows only
+                "Cayce Fire" gives no visible reason for being in the results. */}
+            {clip.talkgroup && clip.tgid ? (
+              <>
+                <HighlightedText text={String(clip.tgid)} search={search} />
+                {' · '}
+              </>
+            ) : null}
             {fmtClock(clip.started)} · {fmtDuration(clip.duration)}
             {clip.continuity !== undefined && clip.continuity < 0.9 && (
               <Tooltip
@@ -179,19 +194,7 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
 
         {clip.transcript ? (
           <Typography variant="body2" sx={{ mt: 0.25, overflowWrap: 'anywhere' }}>
-            {highlight(clip.transcript, clip.keywords).map((part, i) =>
-              typeof part === 'string' ? (
-                <span key={i}>{part}</span>
-              ) : (
-                <Box
-                  key={i}
-                  component="mark"
-                  sx={{ bgcolor: 'warning.light', color: 'warning.contrastText', px: 0.25, borderRadius: 0.5 }}
-                >
-                  {part.hit}
-                </Box>
-              ),
-            )}
+            <HighlightedText text={clip.transcript} keywords={clip.keywords} search={search} />
           </Typography>
         ) : clip.transcript_pending ? (
           // A clip queued behind a slow model and a clip that came back empty
@@ -209,8 +212,15 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
               ? `speech-to-text failed: ${clip.stt_error}`
               : clip.discarded_transcript
                 // Surfaced rather than hidden: if the filter is eating real
-                // traffic, this is how you would notice.
-                ? `discarded as a likely hallucination: “${clip.discarded_transcript}”`
+                // traffic, this is how you would notice. Searchable for the same
+                // reason, hence highlighted like any other transcript text.
+                ? (
+                  <>
+                    {'discarded as a likely hallucination: “'}
+                    <HighlightedText text={clip.discarded_transcript} search={search} />
+                    {'”'}
+                  </>
+                )
                 : 'no transcript'}
           </Typography>
         )}
@@ -234,6 +244,10 @@ function ClipRow({ clip, playing, onToggle }: ClipRowProps) {
 export default function TranscriptsCard() {
   const { callClips } = useOp25Service();
   const [alertsOnly, setAlertsOnly] = useState(false);
+  // Transient, unlike the talkgroup browser's saved patterns: this searches a
+  // live feed of the last 60 clips, so a query restored on the next visit would
+  // hide traffic that arrived since, having been typed about calls that are gone.
+  const [query, setQuery] = useState('');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -263,14 +277,32 @@ export default function TranscriptsCard() {
 
   useEffect(() => stopPlayback, [stopPlayback]);
 
-  const rows = useMemo(
-    () => (alertsOnly ? callClips.filter((c) => c.keywords.length > 0) : callClips)
-      .slice(0, MAX_VISIBLE),
-    [callClips, alertsOnly],
+  const terms = useMemo(() => searchTerms(query), [query]);
+
+  // Both filters narrow, so they compose: "keyword hits, that also mention this".
+  const matched = useMemo(
+    () => callClips.filter((c) =>
+      (!alertsOnly || c.keywords.length > 0) && matchesClip(c, terms)),
+    [callClips, alertsOnly, terms],
   );
 
+  const rows = useMemo(() => matched.slice(0, MAX_VISIBLE), [matched]);
+
+  // Counted over the *matched* set, not every clip: while a search is active the
+  // rest of the caption describes what is on screen, and a keyword total that
+  // did not would read as rows being hidden. Unfiltered, the two are the same.
   const alertCount = useMemo(
-    () => callClips.filter((c) => c.keywords.length > 0).length,
+    () => matched.filter((c) => c.keywords.length > 0).length,
+    [matched],
+  );
+
+  const filtering = terms.length > 0 || alertsOnly;
+
+  // Only used to explain an empty search result: with speech-to-text off there
+  // is nothing but talkgroup names to match, which is worth saying once rather
+  // than leaving the user to conclude the search does not work.
+  const transcribedCount = useMemo(
+    () => callClips.filter((c) => c.transcript || c.discarded_transcript).length,
     [callClips],
   );
 
@@ -282,8 +314,13 @@ export default function TranscriptsCard() {
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Typography variant="caption" color="text.secondary">
-              {callClips.length} captured
+              {/* While filtering, how many of the captured clips are on screen is
+                  the number being asked about — the total stays, because a
+                  search that matches nothing is otherwise indistinguishable
+                  from nothing having been captured. */}
+              {filtering ? `${matched.length} of ${callClips.length} captured` : `${callClips.length} captured`}
               {alertCount > 0 ? ` · ${alertCount} keyword ${alertCount === 1 ? 'hit' : 'hits'}` : ''}
+              {matched.length > rows.length ? ` · showing ${rows.length}` : ''}
             </Typography>
             {/* Whether transcription is even configured is the first thing to
                 check when transcripts do not appear — /api/ha/status knows, so
@@ -294,19 +331,40 @@ export default function TranscriptsCard() {
               </Tooltip>
             )}
           </Stack>
-          <FormControlLabel
-            control={<Switch size="small" checked={alertsOnly} onChange={(e) => setAlertsOnly(e.target.checked)} />}
-            label="Keyword hits only"
-            sx={{ mr: 0 }}
-          />
+          <ControlRow sx={{ flex: { xs: '1 1 100%', sm: '0 0 auto' } }}>
+            {/* One box over both fields: which of the two the user remembers —
+                what was said, or who said it — is not predictable. */}
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              placeholder="Search transcripts, talkgroups"
+              ariaLabel="search captured calls"
+              sx={{ width: { xs: '100%', sm: 220 } }}
+            />
+            <FormControlLabel
+              control={<Switch size="small" checked={alertsOnly} onChange={(e) => setAlertsOnly(e.target.checked)} />}
+              label="Keyword hits only"
+              sx={{ mr: 0 }}
+            />
+          </ControlRow>
         </Box>
 
         {rows.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
+            {/* Three different reasons for an empty list, and conflating them is
+                what makes a search look broken: nothing captured, nothing
+                matched, or a search matching nothing among calls that have no
+                transcript to search in the first place. */}
             {callClips.length === 0
               ? 'No calls captured yet. Clips appear here as transmissions end; '
                 + 'transcripts need a Home Assistant speech-to-text engine — see README-home-assistant.md.'
-              : 'No calls matched a configured keyword.'}
+              : terms.length > 0
+                ? `No captured call matches “${query.trim()}”`
+                  + (alertsOnly ? ' among keyword hits.' : '.')
+                  + (transcribedCount === 0
+                    ? ' None of these calls has a transcript, so only talkgroup names are searchable.'
+                    : '')
+                : 'No calls matched a configured keyword.'}
           </Typography>
         ) : (
           <Stack spacing={0.75} sx={{ maxHeight: { xs: 380, md: 440 }, overflowY: 'auto', pr: 0.5 }}>
@@ -316,6 +374,7 @@ export default function TranscriptsCard() {
                 clip={clip}
                 playing={playingId === clip.id}
                 onToggle={togglePlay}
+                search={terms}
               />
             ))}
           </Stack>

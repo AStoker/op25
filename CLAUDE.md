@@ -490,6 +490,26 @@ result to an HA webhook. Full reference: `README-home-assistant.md`.
   channel, best-effort with several up. The `frequency_data` fallback path in
   that card has no usable timestamp (`last_activity` is preformatted text), so
   it never shows a transcript.
+- **Captured calls are searchable client-side over transcript *and* talkgroup, in
+  one box** (`www/app/src/utils/callSearch.ts`, the Call Audio & Transcripts
+  card). Which of the two the user remembers is not predictable, and with
+  speech-to-text off the talkgroup name is the only thing there is to match — a
+  transcript-only search would look broken on exactly the installs that have no
+  transcripts.
+  - Terms are whitespace-separated and **all** must match, but not in the same
+    field: `cola fire` means "the Columbia talkgroup, where someone said fire".
+    Fields are tested separately, never concatenated, or a term could straddle
+    the boundary between a name and a transcript and match text that exists
+    nowhere.
+  - **Not the talkgroup browser's pattern engine.** Plain case-insensitive
+    substrings, no `guessKind`: transcript text legitimately contains `10-33`,
+    `(inaudible)` and `*`, and reading those as wildcard/regex would turn a
+    phrase search into one that silently matches nothing.
+  - It searches the client's own `callClips` — the same 60-clip ring the card
+    renders, seeded from `/api/calls` on connect. Anything older than the
+    server's ring is not searchable because it no longer exists.
+  - `yarn verify:search` drives the shipped module (not a copy) in CI, the same
+    way `verify:agc` does. Verified to fail when the AND rule is relaxed to OR.
 - **The config is served to the browser, so it must not hold secrets.**
   `/api/config` and the decoder's `get_full_config` both hand the loaded JSON
   to an unauthenticated client; `ha_bridge.redact_config()` masks

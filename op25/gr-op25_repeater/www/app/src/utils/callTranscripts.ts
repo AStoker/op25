@@ -98,21 +98,45 @@ export type TranscriptState =
   | { kind: 'discarded'; text: string }
   | { kind: 'empty' };                                 // STT ran, heard nothing
 
+/** Why a run of text is marked. The two are styled differently on purpose: a
+ *  keyword hit is a configured alert and means something on its own, a search
+ *  hit only means "this is what you asked for". */
+export type HighlightKind = 'keyword' | 'search';
+
+export interface HighlightHit {
+  hit: string;
+  kind: HighlightKind;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
- * Split *text* around every keyword occurrence so the matched terms can be
- * rendered highlighted. Terms are escaped before going into the RegExp —
- * they come from the user's config, which may legitimately contain
- * characters like `10-33` that would otherwise change the pattern's meaning.
+ * Split *text* around every keyword and search-term occurrence so the matched
+ * runs can be rendered highlighted. Terms are escaped before going into the
+ * RegExp — keywords come from the user's config and search terms from whatever
+ * they are typing right now, both of which may legitimately contain characters
+ * like `10-33` or a half-typed `(` that would otherwise change the pattern's
+ * meaning or fail to compile.
+ *
+ * A run that is both a keyword and a search hit is reported as a keyword: the
+ * alert is the fact worth keeping.
  */
 export function highlight(
   text: string,
   keywords: readonly string[],
-): (string | { hit: string })[] {
-  if (!text || keywords.length === 0) return [text];
-  const escaped = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const parts = text.split(new RegExp(`(${escaped.join('|')})`, 'ig'));
-  const lower = new Set(keywords.map((k) => k.toLowerCase()));
-  return parts.map((p) => (lower.has(p.toLowerCase()) ? { hit: p } : p));
+  search: readonly string[] = [],
+): (string | HighlightHit)[] {
+  const terms = [...keywords, ...search].filter(Boolean);
+  if (!text || terms.length === 0) return [text];
+  const parts = text.split(new RegExp(`(${terms.map(escapeRe).join('|')})`, 'ig'));
+  const kw = new Set(keywords.map((k) => k.toLowerCase()));
+  const se = new Set(search.map((k) => k.toLowerCase()));
+  return parts.map((p) => {
+    const l = p.toLowerCase();
+    if (kw.has(l)) return { hit: p, kind: 'keyword' as const };
+    if (se.has(l)) return { hit: p, kind: 'search' as const };
+    return p;
+  });
 }
 
 /** Reduce a clip to the one thing the Call History column should say. */

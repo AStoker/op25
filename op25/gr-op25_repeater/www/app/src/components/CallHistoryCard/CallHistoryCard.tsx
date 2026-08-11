@@ -15,7 +15,8 @@ import CardShell from '../CardShell/CardShell';
 import { useIsPhone } from '../../hooks/useIsPhone';
 import { useSmartColor } from '../../hooks/useSmartColor';
 import { useOp25Service, useSelectedSystem } from '../../services/op25Service';
-import { highlight, matchClipsToCalls, transcriptState } from '../../utils/callTranscripts';
+import HighlightedText from '../common/HighlightedText';
+import { matchClipsToCalls, transcriptState } from '../../utils/callTranscripts';
 import type { TranscriptState } from '../../utils/callTranscripts';
 
 interface Row {
@@ -70,19 +71,7 @@ function TranscriptCell({ state }: { state: TranscriptState }) {
   if (state.kind === 'text') {
     return (
       <Typography variant="body2" component="span" sx={{ overflowWrap: 'anywhere' }}>
-        {highlight(state.text, state.keywords).map((part, i) =>
-          typeof part === 'string' ? (
-            <span key={i}>{part}</span>
-          ) : (
-            <Box
-              key={i}
-              component="mark"
-              sx={{ bgcolor: 'warning.light', color: 'warning.contrastText', px: 0.25, borderRadius: 0.5 }}
-            >
-              {part.hit}
-            </Box>
-          ),
-        )}
+        <HighlightedText text={state.text} keywords={state.keywords} />
       </Typography>
     );
   }
