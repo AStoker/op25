@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiUrl } from '../utils/url';
+import { PlaybackAgc, softKnee } from '../utils/audioAgc';
 
 /**
  * These constants MUST match websocket_server.py:
@@ -33,14 +34,9 @@ const PRIME_MS = 400;
 const MAX_QUEUE_MS = 1_500;
 
 /**
- * Playback gain. The P25 decoder's output is quiet — measured RMS ≈ 0.045 of
- * full scale on live traffic — so it needs a boost to be comfortable. But gain
- * alone clips: at 6x, peaks reached 4.4x full scale and 1.3% of speech samples
- * hard-clipped, which is what made voice sound distorted. Everything now runs
- * through SOFT_CLIP below, so peaks compress smoothly instead of squaring off.
- * Raise this if traffic is too quiet; the limiter keeps it from breaking up.
+ * Levelling matched to what the recordings do — see utils/audioAgc.ts for why a
+ * fixed gain into a WaveShaper was wrong, and by how much.
  */
-const PLAYBACK_GAIN = 4.0;
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(a.length + b.length);
@@ -55,19 +51,6 @@ export interface UseAudioStreamResult {
   start: () => Promise<void>;
   stop: () => void;
   audioStatus: AudioStreamStatus;
-}
-
-/**
- * tanh-shaped soft clipper. Bounds the signal to ±1 with a smooth knee, so
- * loud syllables lose a little headroom instead of hard-clipping into buzz.
- */
-function softClipCurve(steps = 2_048): Float32Array<ArrayBuffer> {
-  const curve = new Float32Array(steps);
-  for (let i = 0; i < steps; i++) {
-    const x = (i / (steps - 1)) * 2 - 1;   // -1 .. +1
-    curve[i] = Math.tanh(x * 2) / Math.tanh(2);
-  }
-  return curve;
 }
 
 /**
@@ -144,19 +127,15 @@ export function useAudioStream(url: string): UseAudioStreamResult {
       }
       ctxRef.current = ctx;
 
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = PLAYBACK_GAIN;
-      const limiter = ctx.createWaveShaper();
-      limiter.curve = softClipCurve();
-      limiter.oversample = '4x';   // reduces aliasing introduced by the curve
-      gainNode.connect(limiter);
-      limiter.connect(ctx.destination);
-
+      // Gain and limiting are applied per sample in the resampling loop below
+      // rather than by graph nodes, so the destination is connected directly.
       const outRate = ctx.sampleRate;
       const ratio = SERVER_SAMPLE_RATE / outRate;      // input samples per output sample
       const blockOutSamples = Math.round((BLOCK_MS / 1_000) * outRate);
       const primeInSamples = Math.round((PRIME_MS / 1_000) * SERVER_SAMPLE_RATE);
       const maxInSamples = Math.round((MAX_QUEUE_MS / 1_000) * SERVER_SAMPLE_RATE);
+
+      const agc = new PlaybackAgc(BLOCK_MS, SERVER_SAMPLE_RATE);
 
       // `url` may be a server-generated root-absolute path such as
       // /api/stream?port=N, so normalise it against the document base.
@@ -236,13 +215,25 @@ export function useAudioStream(url: string): UseAudioStreamResult {
           const needed = pos + (blockOutSamples - 1) * ratio + 1;
           if (queue.length < needed) break;
 
+          // Settle the gain on this block's input before the output loop, which
+          // advances `pos` past the samples being measured.
+          const gain = agc.observe(
+            queue,
+            Math.floor(pos),
+            Math.min(queue.length, Math.ceil(pos + blockOutSamples * ratio)),
+          );
+
           const buffer = ctx.createBuffer(1, blockOutSamples, outRate);
           const out = buffer.getChannelData(0);
           for (let j = 0; j < blockOutSamples; j++) {
             const p = pos + j * ratio;
             const i = Math.floor(p);
             const frac = p - i;
-            out[j] = queue[i] * (1 - frac) + queue[i + 1] * frac;
+            const v = queue[i] * (1 - frac) + queue[i + 1] * frac;
+            // Shaping after interpolation means it runs at the output rate, so
+            // the nonlinearity is already heavily oversampled relative to the
+            // 8 kHz content and needs no separate anti-aliasing.
+            out[j] = softKnee(gain * v);
           }
           pos += blockOutSamples * ratio;
 
@@ -263,7 +254,7 @@ export function useAudioStream(url: string): UseAudioStreamResult {
           }
           const src = ctx.createBufferSource();
           src.buffer = buffer;
-          src.connect(gainNode);
+          src.connect(ctx.destination);
           src.start(scheduleUntil);
           scheduleUntil += buffer.duration;
         }

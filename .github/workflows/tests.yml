@@ -56,6 +56,15 @@ jobs:
           yarn install --frozen-lockfile
           yarn build
 
+      # Playback levelling is the one piece of DSP in the frontend, it is audible
+      # when wrong, and it has no unit-test harness of its own. This runs the
+      # shipped module against a speech-shaped signal and asserts the two things
+      # that broke before: nothing flat-topped, and loudness consistent across the
+      # ~28 dB spread of input the decoder produces. See utils/audioAgc.ts.
+      - name: Verify playback levelling
+        working-directory: op25/gr-op25_repeater/www/app
+        run: yarn verify:agc
+
       # www/dist is a committed artifact and drifts silently. This does not
       # fail the build -- a drifting dist is a nuisance, not a broken tree --
       # but it puts the diff in the log.

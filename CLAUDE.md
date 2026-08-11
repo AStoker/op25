@@ -92,6 +92,36 @@ Config selector:
     so much time: the only trace was `yielded` growing at N× `pushed`, which reads
     as a puzzle rather than as "two things are listening".
   - `drop_stale()` is gone. It had no callers — the idle-window bound replaced it.
+- **Playback levelling matches the clip normaliser, and a fixed gain into a
+  `WaveShaper` was the reason live audio sounded worse than a recording of the
+  same call.** Two separate faults, one node:
+  - A `WaveShaper`'s curve spans an input domain of **−1..+1 and the spec clamps
+    anything outside it to the end values.** Feeding it a 4x-amplified signal
+    therefore turned every sample above 0.25 of full scale into exactly 1.0 — it
+    was a hard clipper named `limiter`, with a comment claiming it compressed
+    smoothly. Measured: 0.8 % of samples flat-topped at typical level, 6.2 % on
+    hot talkgroups.
+  - **A fixed multiplier cannot suit a 28 dB spread of input.** The same 4x was
+    +8 to +12 dB louder than the clip for normal traffic *and* too quiet for the
+    quietest, so it was wrong in both directions at once.
+  - `utils/audioAgc.ts` is a streaming AGC using `normalize_pcm16`'s own targets
+    (speech-RMS target, 24 dB boost cap, and a peak ceiling that *reduces* gain
+    rather than letting peaks clip — that ordering is what makes the clip path
+    clean). Attack is fast (30 ms) so transients never reach the limiter, release
+    slow (400 ms) so pauses do not pump. `speechLevel()` is the streaming form of
+    `ha_bridge.speech_rms()`: mean of the louder half, so dead air does not
+    inflate the boost.
+  - Gain and limiting are applied **per sample in the resampling loop**, not by
+    graph nodes, which keeps the transfer function and its input range in one
+    place where they cannot drift apart again. Shaping happens after
+    interpolation, i.e. at the output rate, so the nonlinearity is already
+    heavily oversampled relative to 8 kHz content.
+  - Result across five input levels: within 0.7–3.0 dB of the clip, output
+    loudness spread 4.7 dB (was 25.3 dB), **zero** flat-topping.
+  - **`yarn verify:agc` asserts all of that and runs in CI.** It drives the
+    shipped module, not a copy. Verified to fail (6 checks) when the old
+    fixed-gain behaviour is reinjected. Retuning the constants without re-running
+    it is exactly how the previous chain came to claim it compressed smoothly.
 - **Audio buffered while nobody is listening is history, not buffering.**
   `push_audio` bounds each source to `_IDLE_KEEP_MS` (120 ms) when
   `_consumers == 0` and to `_MAX_BUFFERED_BYTES` (4 s) when a `generate()` is
@@ -1097,7 +1127,7 @@ gh release create v0.0.17 --verify-tag --notes-file <notes>
   content hash. Vendor chunks keeping theirs is the signal that nothing else
   changed.
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 640 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 645 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -1196,8 +1226,10 @@ gitignored.
   annotations` and PEP 604 unions.
 - **This is a hard fork, no longer tracking upstream.** It began as
   [boatbod/op25](https://github.com/boatbod/op25) and diverged at merge-base
-  `b2e04c3f`; the `upstream` git remote has been removed deliberately, so
-  `git merge upstream/...` is not part of the workflow any more.
+  `b2e04c3f`. The `upstream` remote is deliberately absent — it had crept back in
+  and was removed again in the 0.0.18 work — so `git merge upstream/...` is not
+  part of the workflow. Referencing upstream for a specific fix is still fine;
+  fetch it by URL rather than adding a remote (see the cherry-pick note below).
 
   The divergence is not incidental — `rx.py`, `trunking.py`, `p25_decoder.py`,
   `http_server.py`, the whole legacy web UI and the `ws://` C++ audio transport

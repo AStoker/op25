@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.0.18
+
+**Live audio is now levelled the same way the recordings are. That difference —
+recordings sounding better than the same call heard live — was distortion, and it
+was measurable.**
+
+The web player used to apply one fixed volume boost to everything and then run it
+through what was labelled a limiter. Two things were wrong with that:
+
+- **The "limiter" was actually a hard clipper.** Because of how it was wired, any
+  sound above about a quarter of full volume came out squared off flat rather than
+  gently compressed. On loud talkgroups that was over 6% of the audio being
+  distorted. It is the gritty, harsh edge you hear on live speech but never on the
+  recording of the same call.
+- **One fixed boost cannot suit the traffic.** Talkgroups arrive around 28 dB
+  apart in loudness, so a single setting was simultaneously far too loud for
+  normal calls — around 8 to 12 dB hotter than the recording of the same audio —
+  and still too quiet for the faintest ones.
+
+Recordings never had this problem because they are levelled per call, with the
+volume backed off far enough that peaks cannot clip. The live player now uses the
+same targets, applied continuously as audio arrives:
+
+- Loudness now lands within about 1 to 3 dB of the recording of the same call,
+  instead of 8 to 12 dB over it.
+- The spread between the quietest and loudest traffic drops from 25 dB to under
+  5 dB, so you should stop reaching for the volume control between talkgroups.
+- **Nothing clips.** Zero flat-topped samples at any input level tested.
+- Loud sounds are held back quickly (30 ms) so a sudden shout cannot distort,
+  while quiet passages are brought up gently (400 ms) so the level does not pump
+  audibly between words.
+
+There is nothing to configure; it adapts on its own. Expect the first half-second
+of the first transmission after you press Play to settle in level.
+
+Also in this release: the levelling has an automated check that runs on every
+build, driving the real playback code over test tones at five different loudnesses
+and failing if anything clips or the levels drift apart again. The previous
+version's limiter carried a comment confidently describing behaviour it did not
+have, and nothing would have caught that.
+
 ## 0.0.17
 
 **This is the one that fixes choppy audio in the browser. It was a bug, not a
