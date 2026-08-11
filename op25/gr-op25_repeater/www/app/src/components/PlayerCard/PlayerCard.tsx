@@ -40,10 +40,22 @@ export default function PlayerCard() {
   const { decoderRunning, releaseHold, skipCall } = useOp25Service();
   const tint = useSmartColor();
 
+  // The URL the current playback session was started for. Declared up here
+  // because handlePlay claims it — see the comment there.
+  const playedUrlRef = useRef<string | null>(null);
+
   // Muting is entirely client-side: stopping the Web Audio path stops pulling
   // /api/stream, which is the whole mechanism.  This used to also send
   // SYSTEM_CONTROL mute/unmute, which the server silently discarded.
   function handlePlay() {
+    // Claim the URL *before* starting. The effect below keys off `playing`,
+    // which flips true the moment start() sets status 'loading' — so without
+    // this its `playedUrlRef` guard is still null on the first Play and it fires
+    // a second start() for the same URL. Two streams for one output is twice the
+    // work at best, and it used to be much worse than that: consumers shared one
+    // server-side queue and took strictly alternating chunks, so each heard half
+    // of every word (see _StreamSink in websocket_server.py).
+    playedUrlRef.current = sourceUrl;
     start().catch(() => {});
   }
 
@@ -57,7 +69,6 @@ export default function PlayerCard() {
   // Switching source mid-playback has to re-open the HTTP stream; start()
   // tears down the previous session itself. Skip the first run so mounting
   // does not auto-play (browsers require a gesture for that anyway).
-  const playedUrlRef = useRef<string | null>(null);
   useEffect(() => {
     if (!playing) return;
     if (playedUrlRef.current === sourceUrl) return;

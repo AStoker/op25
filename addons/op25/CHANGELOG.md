@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.0.17
+
+**This is the one that fixes choppy audio in the browser. It was a bug, not a
+limitation of listening over the web — and not the radio's fault at all.**
+
+Playing the same stream outside the browser was clean, which is what finally
+gave it away. If it sounds clean in VLC and choppy in the web UI, the audio
+already arrived intact and something in the page is mangling it. That was
+exactly the case here.
+
+- **The web UI was opening two audio streams and letting them fight over the
+  audio.** Pressing Play started one stream, and a second one started itself
+  immediately afterwards. The server handed each connection *alternate* pieces of
+  the audio instead of giving both the whole thing — so the page was playing
+  roughly every other fragment of every word, with the two streams a few
+  milliseconds apart.
+
+  That is the chop, and the faint echo or doubling underneath it. It had nothing
+  to do with signal strength, which is why it never tracked reception quality and
+  why last release's decoder work made no difference to it.
+- **Several listeners now work properly.** Each connection gets its own copy of
+  the audio. Two browser tabs, a phone next to a desktop, or a Home Assistant
+  media player pointed at port 8099 while you also have the UI open — all of
+  those used to break each other's sound in the same way, and now they don't.
+- **The player no longer leaves an abandoned connection behind** when you switch
+  audio source or press Play twice quickly. Those kept a listener slot open on the
+  scanner for nothing.
+- The add-on log now reports `listeners=` alongside the other audio counters. It
+  is there because not having it is what made this take so long to find: the only
+  hint was a throughput number that looked odd, rather than anything saying "two
+  things are listening to this."
+
+Worth knowing: **0.0.16's decoder work is still in place and still worth
+having** — it recovers voice from frames that used to be discarded outright. It
+simply was not the cause of the browser chop. If you turned `conceal_frames`
+down while testing, it is safe to put it back to 3.
+
+If audio still sounds wrong after this, the useful comparison is the same one:
+play `http://<your-ha-host>:8099/api/stream` in VLC. Clean there and bad in the
+browser means there is still something in the page; bad in both means it is worth
+looking at reception.
+
 ## 0.0.16
 
 **Live audio should be noticeably less choppy. The decoder was throwing away

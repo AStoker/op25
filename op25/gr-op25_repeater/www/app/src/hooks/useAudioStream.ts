@@ -99,10 +99,19 @@ export function useAudioStream(url: string): UseAudioStreamResult {
 
   const ctxRef = useRef<AudioContext | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const activeRef = useRef(false);
+  /**
+   * Monotonic session token. A boolean `active` flag could not express "this
+   * invocation has been superseded": an older start() parked on `await fetch()`
+   * would wake up, see the flag set back to true by the *newer* call, and carry
+   * on — leaving two reader loops running, each with its own AudioContext, and
+   * the loser leaking an HTTP stream that kept a listener attached server-side.
+   * Comparing a per-invocation token against this ref makes supersession
+   * one-way, which is what a boolean cannot do.
+   */
+  const runRef = useRef(0);
 
   const stop = useCallback(() => {
-    activeRef.current = false;
+    runRef.current++;            // supersede any in-flight start()
     readerRef.current?.cancel().catch(() => { });
     readerRef.current = null;
     ctxRef.current?.close().catch(() => { });
@@ -112,13 +121,14 @@ export function useAudioStream(url: string): UseAudioStreamResult {
 
   const start = useCallback(async () => {
     // Silently tear down any prior session before starting a new one.
-    activeRef.current = false;
+    const run = ++runRef.current;
+    const current = () => runRef.current === run;
+
     readerRef.current?.cancel().catch(() => { });
     readerRef.current = null;
     ctxRef.current?.close().catch(() => { });
     ctxRef.current = null;
 
-    activeRef.current = true;
     setAudioStatus('loading');
 
     try {
@@ -127,6 +137,10 @@ export function useAudioStream(url: string): UseAudioStreamResult {
       const ctx = new AudioContext();
       if (ctx.state === 'suspended') {
         await ctx.resume();
+      }
+      if (!current()) {                 // superseded while resuming
+        ctx.close().catch(() => { });
+        return;
       }
       ctxRef.current = ctx;
 
@@ -152,6 +166,13 @@ export function useAudioStream(url: string): UseAudioStreamResult {
       }
 
       const reader = response.body.getReader();
+      if (!current()) {
+        // Superseded while the request was in flight. Cancelling is not just
+        // tidiness: an abandoned body holds a listener slot open on the server.
+        reader.cancel().catch(() => { });
+        ctx.close().catch(() => { });
+        return;
+      }
       readerRef.current = reader;
 
       setAudioStatus('playing');
@@ -182,10 +203,11 @@ export function useAudioStream(url: string): UseAudioStreamResult {
         }
       };
 
-      while (activeRef.current) {
+      while (current()) {
         const { done, value } = await reader.read();
-        if (done || !activeRef.current) {
-          console.warn(`Audio stream ended (done=${done}, active=${activeRef.current})`);
+        if (done || !current()) {
+          console.warn(`Audio stream ended (done=${done}, current=${current()})`);
+          reader.cancel().catch(() => { });
           break;
         }
 
@@ -248,7 +270,7 @@ export function useAudioStream(url: string): UseAudioStreamResult {
       }
     } catch (error) {
       console.error('Audio stream runtime crash: ', error);
-      if (activeRef.current) {
+      if (current()) {
         setAudioStatus('error');
       }
     }
@@ -257,7 +279,9 @@ export function useAudioStream(url: string): UseAudioStreamResult {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      activeRef.current = false;
+      runRef.current++;
+      readerRef.current?.cancel().catch(() => { });
+      readerRef.current = null;
       ctxRef.current?.close().catch(() => { });
     };
   }, []);

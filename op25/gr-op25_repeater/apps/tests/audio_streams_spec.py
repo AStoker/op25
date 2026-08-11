@@ -25,6 +25,19 @@ def _pcm(nbytes: int, fill: int = 1) -> bytes:
     return bytes([fill]) * nbytes
 
 
+def _sink(mgr: ws.AudioStreamManager) -> ws._StreamSink:
+    """The queue set an argument-less reader would see — see _default_sink.
+
+    Consumers each own their queues (a shared one made two listeners steal each
+    other's chunks), so there is no single manager-wide buffer to inspect.
+    """
+    return mgr._default_sink(None)
+
+
+def _buffered(mgr: ws.AudioStreamManager, port: int = 0) -> bytes:
+    return bytes(_sink(mgr).buffers.get(port, b''))
+
+
 async def _take_chunks(mgr: ws.AudioStreamManager, count: int, **kw: Any) -> list[bytes]:
     """Pull *count* chunks from a manager's generator, then stop.
 
@@ -308,7 +321,7 @@ class TestAggregateMixes:
         # with nobody listening the bound is a short live window instead, see
         # TestIdleBacklogIsNotInherited.
         mgr = self._fresh()
-        mgr._attach()
+        sink = mgr._attach()
         try:
             cap = ws.AudioStreamManager._MAX_BUFFERED_BYTES
             mgr.push_audio(_pcm(cap * 2, 0x44), port=23458)
@@ -317,7 +330,7 @@ class TestAggregateMixes:
             # 23462's chunk survived and is still mixed in.
             assert mgr.buffered_bytes() == cap
         finally:
-            mgr._detach()
+            mgr._detach(sink)
 
     def test_buffered_bytes_is_the_worst_port_not_the_sum(self) -> None:
         mgr = self._fresh()
@@ -494,6 +507,97 @@ class TestRePrimeOnlyForTransportJitter:
         assert mgr.buffered_bytes() == ws._CHUNK_BYTES
 
 
+class TestMultipleListeners:
+    """Two listeners on one manager must each hear the whole stream.
+
+    They used to share the manager's queues, and _take_chunk *deletes* what it
+    returns, so they received strictly alternating chunks — each hearing half the
+    samples of every word. That sounds like heavy chopping with a comb-filter echo
+    a few ms off, it is entirely independent of RF quality, and nothing in the
+    logs named it. PlayerCard opened a second stream on every first Play, so the
+    single-user case hit it every time; two tabs, or a phone beside a desktop, or
+    a Home Assistant media player on the UI's port would do it too.
+    """
+
+    def _fresh(self, mix: bool = False) -> ws.AudioStreamManager:
+        mgr = ws.AudioStreamManager(mix=mix)
+        mgr.mock = False
+        mgr.prime_bytes = 0
+        return mgr
+
+    @staticmethod
+    async def _both(mgr: ws.AudioStreamManager, n: int) -> tuple[list[int], list[int]]:
+        """Run two consumers concurrently; return the fill byte each one saw."""
+        async def drain(gen: Any, out: list[bytes]) -> None:
+            try:
+                for _ in range(n):
+                    out.append(await gen.__anext__())
+            finally:
+                await gen.aclose()
+
+        a: list[bytes] = []
+        b: list[bytes] = []
+        await asyncio.gather(
+            drain(mgr.generate(container='raw'), a),
+            drain(mgr.generate(container='raw'), b),
+        )
+        return ([c[0] for c in a if c[0]], [c[0] for c in b if c[0]])
+
+    def test_both_listeners_get_every_chunk(self) -> None:
+        mgr = self._fresh()
+        n = 6
+        for i in range(1, n + 1):
+            mgr.push_audio(_pcm(ws._CHUNK_BYTES, i))
+        a, b = asyncio.run(self._both(mgr, n))
+        assert a == list(range(1, n + 1)), f'listener A missed chunks: {a}'
+        assert a == b, 'listeners must hear the same audio, not alternate chunks'
+
+    def test_neither_listener_starves_the_other(self) -> None:
+        # The precise old signature: zero overlap, each with half the chunks.
+        mgr = self._fresh()
+        for i in range(1, 5):
+            mgr.push_audio(_pcm(ws._CHUNK_BYTES, i))
+        a, b = asyncio.run(self._both(mgr, 4))
+        assert set(a) & set(b) == {1, 2, 3, 4}, 'chunks are being consumed exclusively'
+
+    def test_mixed_aggregate_fans_out_too(self) -> None:
+        mgr = self._fresh(mix=True)
+        mgr.push_audio(_s16(*([100] * ws._CHUNK_SAMPLES)), port=23458)
+        mgr.push_audio(_s16(*([ 25] * ws._CHUNK_SAMPLES)), port=23462)
+
+        async def drive() -> tuple[bytes, bytes]:
+            ga, gb = mgr.generate(container='raw'), mgr.generate(container='raw')
+            try:
+                return await ga.__anext__(), await gb.__anext__()
+            finally:
+                await ga.aclose()
+                await gb.aclose()
+
+        first, second = asyncio.run(drive())
+        assert first == _s16(*([125] * ws._CHUNK_SAMPLES))
+        assert first == second, 'the mix must be delivered to every listener'
+
+    def test_listener_count_is_reported(self) -> None:
+        # Surfaced in the 'ws audio:' log line: its absence is what made this
+        # invisible, since the only hint was `yielded` growing at 2x `pushed`.
+        mgr = self._fresh()
+        s1 = mgr._attach()
+        s2 = mgr._attach()
+        assert mgr.consumers == 2
+        mgr._detach(s1)
+        mgr._detach(s2)
+        assert mgr.consumers == 0
+
+    def test_one_listener_leaving_does_not_disturb_the_other(self) -> None:
+        mgr = self._fresh()
+        staying = mgr._attach()
+        leaving = mgr._attach()
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x5A))
+        mgr._detach(leaving)
+        assert mgr.buffered_bytes(staying) == ws._CHUNK_BYTES
+        assert bytes(staying.buffers[0]) == _pcm(ws._CHUNK_BYTES, 0x5A)
+
+
 class TestIdleBacklogIsNotInherited:
     """A listener must start live, not behind whatever queued while it was away.
 
@@ -523,7 +627,7 @@ class TestIdleBacklogIsNotInherited:
         mgr.idle_keep_bytes = ws._CHUNK_BYTES
         mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0xAA))
         mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0xBB))
-        assert bytes(mgr._buffer) == _pcm(ws._CHUNK_BYTES, 0xBB)
+        assert _buffered(mgr) == _pcm(ws._CHUNK_BYTES, 0xBB)
 
     def test_a_listener_starts_from_the_live_edge(self) -> None:
         mgr = self._fresh()
@@ -538,13 +642,13 @@ class TestIdleBacklogIsNotInherited:
         # Once someone is listening, nothing may be discarded early: a burst is
         # the start of a transmission, and trimming it clips the first word.
         mgr = self._fresh()
-        mgr._attach()
+        sink = mgr._attach()
         try:
             mgr.push_audio(_pcm(mgr.idle_keep_bytes * 4, 0x33))
             assert mgr.buffered_bytes() == mgr.idle_keep_bytes * 4
             assert mgr.bytes_dropped == 0
         finally:
-            mgr._detach()
+            mgr._detach(sink)
 
     def test_generate_registers_and_deregisters_as_a_consumer(self) -> None:
         mgr = self._fresh()
@@ -562,26 +666,11 @@ class TestIdleBacklogIsNotInherited:
         assert seen == [1], 'generate() did not register as a consumer'
         assert mgr.consumers == 0, 'consumer count leaked after aclose()'
 
-    def test_detach_never_goes_negative(self) -> None:
+    def test_detaching_something_never_attached_is_a_noop(self) -> None:
         mgr = self._fresh()
+        mgr._detach(ws._StreamSink())
         mgr._detach()
         assert mgr.consumers == 0
-
-    def test_drop_stale_keeps_the_tail(self) -> None:
-        mgr = self._fresh()
-        mgr._attach()
-        try:
-            mgr.push_audio(_pcm(320, 0xAA) + _pcm(320, 0xBB))
-            assert mgr.drop_stale(320) == 320
-            assert bytes(mgr._buffer) == _pcm(320, 0xBB)
-        finally:
-            mgr._detach()
-
-    def test_drop_stale_is_a_noop_below_the_threshold(self) -> None:
-        mgr = self._fresh()
-        mgr.push_audio(_pcm(320, 0xCC))
-        assert mgr.drop_stale(640) == 0
-        assert mgr.buffered_bytes() == 320
 
     def test_mix_mode_bounds_each_source_independently(self) -> None:
         # Bounding the sum would let one backed-up channel evict another's audio.
@@ -589,4 +678,16 @@ class TestIdleBacklogIsNotInherited:
         mgr.idle_keep_bytes = ws._CHUNK_BYTES
         mgr.push_audio(_pcm(ws._CHUNK_BYTES * 4, 0x44), port=23458)
         mgr.push_audio(_pcm(ws._CHUNK_BYTES, 0x55), port=23462)
-        assert all(len(b) == ws._CHUNK_BYTES for b in mgr._mix_buffers.values())
+        assert all(len(b) == ws._CHUNK_BYTES
+                   for b in _sink(mgr).buffers.values())
+
+    def test_a_departing_listener_leaves_only_a_live_window(self) -> None:
+        # Its queue may hold seconds; the next listener must not inherit that.
+        mgr = self._fresh()
+        mgr.idle_keep_bytes = ws._CHUNK_BYTES
+        sink = mgr._attach()
+        mgr.push_audio(_pcm(ws._CHUNK_BYTES * 4, 0x77))
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES * 4, 'not trimmed while listening'
+        mgr._detach(sink)
+        assert mgr.buffered_bytes() == ws._CHUNK_BYTES
+        assert _buffered(mgr) == _pcm(ws._CHUNK_BYTES, 0x77), 'kept the newest, not the oldest'

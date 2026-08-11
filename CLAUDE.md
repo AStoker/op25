@@ -63,6 +63,35 @@ Config selector:
   rather than emitting a hole per late packet: one longer gap, then smooth.
   Fixing the *drift* (the absolute `next_send` deadline) was a separate,
   earlier bug — don't mistake one for the other.
+- **Every listener gets its own queues (`_StreamSink`). A shared queue was silent
+  corruption, not an inefficiency.** `_take_chunk` *deletes* what it returns, so
+  two consumers on one manager received strictly **alternating** chunks — each
+  hearing half the samples of every word. Measured: A got `[35,37,39]`, B got
+  `[36,38,40]`, zero overlap. It sounds like heavy chopping with a comb-filter
+  echo a few ms off, it is completely independent of RF quality, and nothing in
+  the logs named it.
+  - **`PlayerCard` opened two streams on every first Play**, so the ordinary
+    single-user case hit this every time. `handlePlay` called `start()`, which
+    synchronously set status `loading`; that flipped `playing` true, which is a
+    dependency of the source-switch effect, whose `playedUrlRef` guard was still
+    `null` — so it fired a *second* `start()` for the same URL. Measured over CDP
+    against the real built bundle: one click → `opens +2, live: 2`. The fix is
+    `handlePlay` claiming `playedUrlRef` before starting.
+  - Two tabs, a phone beside a desktop, or an HA media player on the UI's port
+    all did it too — and still would, which is why the fan-out is the real fix
+    and the PlayerCard change alone would only have hidden it.
+  - `useAudioStream` now supersedes sessions with a **monotonic token**, not a
+    boolean. A boolean cannot express "this invocation was superseded": an older
+    `start()` parked on `await fetch()` woke to find the flag set back to true by
+    the newer call and carried on, leaving two reader loops and leaking an HTTP
+    body that held a listener slot open server-side.
+  - `_detach` hands the departing listener's newest audio back as the idle window
+    (bounded to `_IDLE_KEEP_MS`) rather than discarding it — that is exactly what
+    the window would have held had nobody been listening.
+  - The `ws audio:` line prints `listeners=`. Its absence is what made this cost
+    so much time: the only trace was `yielded` growing at N× `pushed`, which reads
+    as a puzzle rather than as "two things are listening".
+  - `drop_stale()` is gone. It had no callers — the idle-window bound replaced it.
 - **Audio buffered while nobody is listening is history, not buffering.**
   `push_audio` bounds each source to `_IDLE_KEEP_MS` (120 ms) when
   `_consumers == 0` and to `_MAX_BUFFERED_BYTES` (4 s) when a `generate()` is
@@ -76,13 +105,23 @@ Config selector:
     tone, and got it discarded as "stale". A producer ahead of real time is
     normal — UDP coalescing does it too — and that audio is the start of a
     transmission. Trimming it clips the first word.
+- **`ffplay http://host:8099/api/stream` is the first thing to try when live audio
+  sounds bad.** It splits the problem in half in thirty seconds: clean in ffplay
+  and choppy in the browser means the fault is in the browser player, and no
+  amount of decoder work will touch it. That test is what finally located the
+  two-listeners bug above, after a release aimed at the decoder changed nothing.
 - **A clip and the live stream are NOT comparable, and the difference is not a
   bug.** `CallRecorder.push` *concatenates* — nothing fills gaps — so a call that
   lost half its LDUs yields a clip half as long that sounds continuous. The live
   stream is paced at real time, so the same loss is rendered as silence and heard
-  as chop. "The recording is clean but the live audio is choppy" therefore means
-  **lost frames**, not a streaming fault, and an earlier note here recommending
-  that comparison as a way to isolate jitter from RF was wrong.
+  as chop. An earlier note here recommending that comparison as a way to isolate
+  jitter from RF was wrong.
+  - **But "the recording is clean and the live audio is choppy" does NOT imply
+    lost frames**, which is what this said before and it sent the investigation
+    into the decoder for a whole release. The recording is written from the UDP
+    stream *before* the browser path exists, so anything wrong downstream of
+    `push_audio` shows up in exactly the same way. Check `continuity` (≈1.0 means
+    nothing was lost at the decoder) and ffplay before touching the decoder.
   - Measured against the real `AudioStreamManager` with a P25-shaped producer
     (9 packets per LDU burst, 180 ms apart, with LDUs dropped): `LOST BY
     PLAYER = 0` in every case. The stream plays every byte the decoder produced.
@@ -1058,7 +1097,7 @@ gh release create v0.0.17 --verify-tag --notes-file <notes>
   content hash. Vendor chunks keeping theirs is the signal that nothing else
   changed.
 
-Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 636 tests,
+Python tests: `pytest` from `apps/` (specs are `tests/*_spec.py`), 640 tests,
 mostly in-process via FastAPI's `TestClient` — no network or dongle needed.
 Requires `httpx`.
 
@@ -1088,8 +1127,9 @@ its `from gnuradio import gr`.
   decimation, dead-source guard (20).
 - `tests/audio_streams_spec.py` — endpoint discovery, per-port fan-out,
   `?channel=` / `?port=` selection, jitter-buffer priming and re-priming, the
-  idle-vs-attached buffer bound, and the jitter-vs-decoder-loss discrimination
-  that decides whether a dropout re-primes at all (51).
+  idle-vs-attached buffer bound, the jitter-vs-decoder-loss discrimination that
+  decides whether a dropout re-primes at all, and the per-listener fan-out that
+  stops two consumers eating each other's chunks (55).
 - `tests/multi_rx_api_spec.py` — parses `multi_rx.py` (it cannot be imported
   without GNU Radio) to reject shadowed methods and pin the two device-lookup
   names apart (8).

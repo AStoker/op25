@@ -292,6 +292,32 @@ def _sine_chunk(t: float, freq: float = 600.0, amp: float = 0.25) -> bytes:
     return struct.pack(f'<{_CHUNK_SAMPLES}h', *samples)
 
 
+class _StreamSink:
+    """One consumer's private view of the stream, keyed by source port.
+
+    Consumers used to share the manager's queues, which was a silent corruption
+    rather than a mere inefficiency: :meth:`AudioStreamManager._take_chunk`
+    *deletes* what it returns, so two listeners on one manager received strictly
+    alternating chunks — each hearing half the samples of every word. It sounds
+    like heavy chopping with a comb-filter echo a few ms off, it is completely
+    independent of RF quality, and nothing in the logs said "two listeners".
+
+    A browser that opened two streams (which PlayerCard did on every first Play)
+    therefore broke its own audio. So did two tabs, or a phone and a desktop, or
+    a Home Assistant media player on the same port as the UI.
+
+    Audio is now fanned out to every attached sink on push. The cost is one
+    buffer per listener — 4 s at 16 kB/s, so 64 kB each.
+    """
+
+    __slots__ = ('buffers',)
+
+    def __init__(self, seed: dict[int, bytearray] | None = None) -> None:
+        self.buffers: dict[int, bytearray] = (
+            {port: bytearray(buf) for port, buf in seed.items()} if seed else {}
+        )
+
+
 class AudioStreamManager:
     """Byte-buffered audio stream.
 
@@ -311,7 +337,6 @@ class AudioStreamManager:
     _MAX_BUFFERED_BYTES = _SAMPLE_RATE * _SAMPLE_WIDTH * 4
 
     def __init__(self, mix: bool = False) -> None:
-        self._buffer: bytearray = bytearray()
         self._lock: threading.Lock = threading.Lock()
         self.mock: bool = MOCK   # set False once the real decoder feeds audio
 
@@ -321,7 +346,15 @@ class AudioStreamManager:
         # interleave fragments of separate conversations and would also accept
         # audio N times faster than the consumer drains it.
         self._mix: bool = mix
-        self._mix_buffers: dict[int, bytearray] = {}
+
+        # One private queue set per attached consumer — see _StreamSink.  Audio
+        # is fanned out on push; consumers never share a queue.
+        self._sinks: list[_StreamSink] = []
+        # Where audio goes while nobody is listening: a rolling live window that
+        # a newly attached consumer is seeded from, bounded to idle_keep_bytes so
+        # the listener starts live rather than inheriting history.  Reset once the
+        # last consumer detaches, so it can never serve up stale audio later.
+        self._idle_sink: _StreamSink = _StreamSink()
 
         # How much audio to accumulate before playback starts, and again after
         # the buffer runs dry.  Per-instance so a test can set it to 0 and get
@@ -333,8 +366,6 @@ class AudioStreamManager:
         self.idle_keep_bytes: int = (
             int(_SAMPLE_RATE * _IDLE_KEEP_MS / 1_000.0) * _SAMPLE_WIDTH
         )
-        # Number of live generate() consumers. Guarded by _lock.
-        self._consumers: int = 0
 
         # Diagnostics
         self.bytes_pushed: int = 0
@@ -357,65 +388,72 @@ class AudioStreamManager:
         """
         if not pcm_chunk:
             return
+        key = self._key(port)
         with self._lock:
-            buf = self._mix_buffers.setdefault(port, bytearray()) if self._mix \
-                else self._buffer
-            buf.extend(pcm_chunk)
             self.bytes_pushed += len(pcm_chunk)
             self.last_push_ts = time.time()
+
+            # Every listener gets its own copy.  With nobody listening there is
+            # one rolling window instead — see _StreamSink and _IDLE_KEEP_MS.
+            targets = self._sinks or [self._idle_sink]
             # Bound each source independently, so one channel falling behind
             # cannot evict another channel's audio.  With nobody listening the
             # bound is a rolling live window instead of the full 4 s, so a client
-            # that attaches starts live rather than inheriting history --
-            # see _IDLE_KEEP_MS.
-            cap = self._MAX_BUFFERED_BYTES if self._consumers \
+            # that attaches starts live rather than inheriting history.
+            cap = self._MAX_BUFFERED_BYTES if self._sinks \
                 else max(self.idle_keep_bytes, _CHUNK_BYTES)
-            overflow = len(buf) - cap
-            if overflow > 0:
-                del buf[:overflow]
-                self.bytes_dropped += overflow
+            shed = 0
+            for sink in targets:
+                buf = sink.buffers.setdefault(key, bytearray())
+                buf.extend(pcm_chunk)
+                overflow = len(buf) - cap
+                if overflow > 0:
+                    del buf[:overflow]
+                    # The worst listener, not the sum: this counter is meant to
+                    # stay comparable with bytes_pushed, and a slow consumer
+                    # should not make the stream look N times lossier than it is.
+                    shed = max(shed, overflow)
+            self.bytes_dropped += shed
+
+    def _key(self, port: int) -> int:
+        """Which queue a push belongs in.
+
+        A non-mix manager serves exactly one stream, so every push lands in one
+        queue regardless of the port it arrived on — which is what the single
+        shared bytearray did before sinks existed.
+        """
+        return port if self._mix else 0
+
+    def _default_sink(self, sink: _StreamSink | None) -> _StreamSink:
+        """Which view an argument-less caller means. Call with ``_lock`` held.
+
+        The diagnostics log line and tests that push then read without attaching
+        have no sink of their own: give them the sole attached consumer if there
+        is one, else the idle window.
+        """
+        if sink is not None:
+            return sink
+        return self._sinks[0] if self._sinks else self._idle_sink
 
     # ------------------------------------------------------------------
     # Consumer side (called from the asyncio event loop)
     # ------------------------------------------------------------------
 
-    def drop_stale(self, keep_bytes: int) -> int:
-        """Discard all but the newest *keep_bytes* from each source. Returns bytes dropped.
-
-        The UDP thread pushes whether or not anyone is listening, so with no
-        client attached the buffer sits at ``_MAX_BUFFERED_BYTES`` (4 s) and
-        sheds the oldest audio to stay there.  A listener attaching then finds a
-        full backlog, primes off it instantly, and -- because it is drained at
-        real time and refilled at real time -- stays 4 s behind for as long as it
-        listens.  Live scanner audio 4 s late is worse than useless: you hear the
-        reply before the call.
-
-        So priming trims to the cushion it actually wants rather than adopting
-        whatever happens to be queued.  Call recording is unaffected: clips come
-        from ``CallCapture``, which the UDP thread feeds separately.
-        """
-        dropped = 0
-        with self._lock:
-            bufs = list(self._mix_buffers.values()) if self._mix else [self._buffer]
-            for buf in bufs:
-                excess = len(buf) - keep_bytes
-                if excess > 0:
-                    del buf[:excess]          # keep the tail: newest audio
-                    dropped += excess
-            self.bytes_dropped += dropped
-        return dropped
-
-    def _take_chunk(self) -> tuple[bytes, int]:
-        """Pop up to one full chunk from the buffer.
+    def _take_chunk(self, sink: _StreamSink | None = None) -> tuple[bytes, int]:
+        """Pop up to one full chunk from *sink*'s buffer.
 
         Returns ``(pcm_bytes, real_byte_count)`` where ``real_byte_count``
         is the number of bytes that came from real pushed audio (the rest
         of the chunk is silence padding when the buffer underran).
+
+        Destructive, which is why each consumer owns its buffers — see
+        :class:`_StreamSink`.
         """
         with self._lock:
+            sink = self._default_sink(sink)
             if self._mix:
                 parts: list[bytes] = []
-                for buf in self._mix_buffers.values():
+                for buf in sink.buffers.values():
                     if not buf:
                         continue
                     take = min(len(buf), _CHUNK_BYTES)
@@ -425,20 +463,22 @@ class AudioStreamManager:
                     return b'', 0
                 chunk = mix_pcm16(parts)
                 return chunk, len(chunk)
-            if not self._buffer:
+            buf = sink.buffers.get(0)
+            if not buf:
                 return b'', 0
-            take = min(len(self._buffer), _CHUNK_BYTES)
-            chunk = bytes(self._buffer[:take])
-            del self._buffer[:take]
+            take = min(len(buf), _CHUNK_BYTES)
+            chunk = bytes(buf[:take])
+            del buf[:take]
             return chunk, take
 
-    def buffered_bytes(self) -> int:
+    def buffered_bytes(self, sink: _StreamSink | None = None) -> int:
         with self._lock:
+            sink = self._default_sink(sink)
             if self._mix:
                 # The backlog is however far the *most* backed-up source is,
                 # not the sum: the sources are drained in parallel.
-                return max((len(b) for b in self._mix_buffers.values()), default=0)
-            return len(self._buffer)
+                return max((len(b) for b in sink.buffers.values()), default=0)
+            return len(sink.buffers.get(0, b''))
 
     def producer_idle_ms(self) -> float:
         """Milliseconds since the producer last pushed; ``inf`` if it never has.
@@ -452,17 +492,39 @@ class AudioStreamManager:
                 return float('inf')
             return (time.time() - self.last_push_ts) * 1_000.0
 
-    def _attach(self) -> None:
+    def _attach(self) -> _StreamSink:
+        """Register a consumer and hand it its own queues."""
         with self._lock:
-            self._consumers += 1
+            # Seeded from the idle window, so a listener starts with whatever was
+            # in flight (<= _IDLE_KEEP_MS) rather than from silence — but never
+            # from another consumer's backlog.
+            sink = _StreamSink(self._idle_sink.buffers)
+            self._sinks.append(sink)
+            return sink
 
-    def _detach(self) -> None:
+    def _detach(self, sink: _StreamSink | None = None) -> None:
         with self._lock:
-            self._consumers = max(0, self._consumers - 1)
+            if sink is not None:
+                try:
+                    self._sinks.remove(sink)
+                except ValueError:
+                    pass
+            if self._sinks or sink is None:
+                return
+            # Last listener gone. Hand its newest audio back as the idle window,
+            # trimmed to idle_keep_bytes: that is precisely what the window would
+            # have accumulated had nobody been listening, so the next listener
+            # starts at the live edge rather than from silence — and cannot
+            # inherit the departed listener's backlog either.
+            idle = _StreamSink()
+            keep = max(self.idle_keep_bytes, _CHUNK_BYTES)
+            for port, buf in sink.buffers.items():
+                idle.buffers[port] = bytearray(buf[-keep:])
+            self._idle_sink = idle
 
     @property
     def consumers(self) -> int:
-        return self._consumers
+        return len(self._sinks)
 
     async def generate(
         self,
@@ -478,16 +540,19 @@ class AudioStreamManager:
         """
         # Registering as a consumer switches push_audio from "keep a rolling live
         # window" to "buffer properly", so audio queued before anyone was
-        # listening is never inherited as latency. See _IDLE_KEEP_MS.
-        self._attach()
+        # listening is never inherited as latency. See _IDLE_KEEP_MS.  It also
+        # gets this consumer its own queues, so several listeners cannot eat each
+        # other's audio — see _StreamSink.
+        sink = self._attach()
         try:
-            async for chunk in self._generate(out_rate, container):
+            async for chunk in self._generate(sink, out_rate, container):
                 yield chunk
         finally:
-            self._detach()
+            self._detach(sink)
 
     async def _generate(
         self,
+        sink: _StreamSink,
         out_rate: int,
         container: str,
     ) -> AsyncGenerator[bytes, None]:
@@ -536,7 +601,7 @@ class AudioStreamManager:
                 # the transmission is over and the next one deserves a real prime.
                 mid_call_loss = _JITTER_IDLE_MS < dry_idle <= _DROPOUT_END_MS
                 target = _CHUNK_BYTES if mid_call_loss else max(self.prime_bytes, _CHUNK_BYTES)
-                if self.buffered_bytes() >= target:
+                if self.buffered_bytes(sink) >= target:
                     primed = True
 
             if not primed:
@@ -544,7 +609,7 @@ class AudioStreamManager:
                 self.silent_chunks += 1
                 t += interval
             else:
-                real_bytes, real_len = self._take_chunk()
+                real_bytes, real_len = self._take_chunk(sink)
                 if real_len == _CHUNK_BYTES:
                     chunk = real_bytes
                     self.real_chunks += 1
@@ -1222,13 +1287,21 @@ class UdpAudioReceiver(threading.Thread):
         # 'silent'. A rising underrun count against a steady 'voice' count is a
         # jitter problem in this process, not a bad RF decode; see
         # _STREAM_PRIME_MS.
+        #
+        # 'listeners' is here because its absence cost a lot of time. Consumers
+        # used to share one queue and steal each other's chunks, and the only
+        # trace of it in this line was 'yielded' growing at N times 'pushed' —
+        # which reads as a puzzle rather than as "two things are listening".
+        # The counters below are still manager-wide totals, so they do scale with
+        # the listener count.
         sys.stderr.write(
             'ws audio: rx pcm=%d flag=%d other=%d  in=%d B (+%d, %.1f kbps)  '
-            'buf=%d B  pushed=%d  yielded=%d  voice=%d  silent=%d  underruns=%d  '
-            'dropped=%d\n' % (
+            'buf=%d B  listeners=%d  pushed=%d  yielded=%d  voice=%d  silent=%d  '
+            'underruns=%d  dropped=%d\n' % (
                 self.packets_pcm, self.packets_flag, self.packets_other,
                 self.bytes_in, delta_bytes, rate_kbps,
                 buffered,
+                audio_manager.consumers,
                 audio_manager.bytes_pushed,
                 audio_manager.bytes_yielded,
                 audio_manager.real_chunks,
