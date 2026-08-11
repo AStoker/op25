@@ -202,13 +202,23 @@ export default function SettingsTab({ editor, only, header }: Props) {
               disabled={busy || restarting}
               onClick={async () => {
                 setRestarting(true);
-                await restartAddon();
-                // Deliberately stays disabled: the page is about to lose its
-                // server, and re-enabling invites a second restart into the first.
+                const ok = await restartAddon();
+                // Stays disabled on success: the page is about to lose its
+                // server, and re-enabling invites a second restart into the
+                // first. On a refusal there is nothing to wait for, so the
+                // button comes back and `error` above says why.
+                if (!ok) setRestarting(false);
               }}
             >
               {restarting ? 'Restarting…' : 'Restart add-on'}
             </Button>
+            {restarting && (
+              <Hint>
+                The decoder is coming back up — the connection indicator in the
+                header will go red and then green again by itself. Nothing here
+                needs clicking twice.
+              </Hint>
+            )}
           </Box>
         </Alert>
       )}

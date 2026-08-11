@@ -423,6 +423,22 @@ class TestExportEndpoint:
         assert resp.status_code == 400
 
 
+class _SupervisorResp:
+    """What GET /addons/self/info answers, cut down to the field that matters."""
+
+    def __init__(self, role: str) -> None:
+        self._role = role
+
+    def read(self) -> bytes:
+        return json.dumps({'result': 'ok', 'data': {'hassio_role': self._role}}).encode()
+
+    def __enter__(self) -> Any:
+        return self
+
+    def __exit__(self, *_a: Any) -> None:
+        return None
+
+
 class TestRestartEndpoint:
     """Restarting is how a stored-but-not-running field takes effect.
 
@@ -469,6 +485,86 @@ class TestRestartEndpoint:
 
         monkeypatch.setattr('urllib.request.urlopen', boom)
         assert client.post('/api/restart').json()['ok'] is True
+
+    def test_the_restart_is_asked_for_after_the_response_not_during_it(
+            self, client: Any, monkeypatch: Any) -> None:
+        """Holding the response open across the restart is what produced a 502.
+
+        Supervisor kills the container to carry the restart out, so a reply still
+        in flight is never delivered and ingress answers the browser 502 -- a
+        successful restart reported as a failure, which the user answers by
+        restarting again. The POST therefore has to happen after the response.
+        """
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+        calls: list[tuple[str, str]] = []
+
+        def record(req: Any, *_a: Any, **_k: Any) -> Any:
+            calls.append((req.get_method(), req.full_url))
+            return _SupervisorResp('manager')
+
+        monkeypatch.setattr('urllib.request.urlopen', record)
+        resp = client.post('/api/restart')
+
+        assert resp.status_code == 200
+        assert resp.json()['restarting'] is True
+        # TestClient runs background tasks after the response, so by here both
+        # have happened -- but in this order, and the GET is the preflight.
+        assert calls == [
+            ('GET', 'http://supervisor/addons/self/info'),
+            ('POST', 'http://supervisor/addons/self/restart'),
+        ]
+
+    def test_an_unreachable_supervisor_does_not_block_the_restart(
+            self, client: Any, monkeypatch: Any) -> None:
+        """Only an explicit refusal counts. A slow or unreachable Supervisor must
+        not veto a restart that would probably have worked -- the fallback is the
+        add-on page, which does exactly the same thing."""
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise OSError('name resolution failed')
+
+        monkeypatch.setattr('urllib.request.urlopen', boom)
+        assert client.post('/api/restart').status_code == 200
+
+    def test_the_wrong_role_is_caught_before_the_response_goes_out(
+            self, client: Any, monkeypatch: Any) -> None:
+        """hassio_api without hassio_role: manager answers the preflight GET
+        happily and refuses the POST — which now runs after the response, where
+        nothing can report it. So the role itself is the precondition checked."""
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+        posted: list[str] = []
+
+        def answer(req: Any, *_a: Any, **_k: Any) -> Any:
+            if req.get_method() == 'POST':
+                posted.append(req.full_url)
+            return _SupervisorResp('default')
+
+        monkeypatch.setattr('urllib.request.urlopen', answer)
+        resp = client.post('/api/restart')
+        assert resp.status_code == 502
+        assert 'hassio_role' in resp.json()['detail']
+        assert 'default' in resp.json()['detail']       # names what we are running as
+        assert posted == []                              # and never tried
+
+    def test_an_unrecognised_role_field_does_not_block_the_restart(
+            self, client: Any, monkeypatch: Any) -> None:
+        # A Supervisor that words this differently must not make the button dead.
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+        monkeypatch.setattr('urllib.request.urlopen',
+                            lambda *_a, **_k: _SupervisorResp(''))
+        assert client.post('/api/restart').status_code == 200
+
+    def test_a_supervisor_500_is_not_read_as_a_permission_problem(
+            self, client: Any, monkeypatch: Any) -> None:
+        import urllib.error
+        monkeypatch.setenv('SUPERVISOR_TOKEN', 'x')
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise urllib.error.HTTPError('http://supervisor', 500, 'Boom', {}, None)
+
+        monkeypatch.setattr('urllib.request.urlopen', boom)
+        assert client.post('/api/restart').status_code == 200
 
 
 class TestFloatPrecisionOverTheApi:

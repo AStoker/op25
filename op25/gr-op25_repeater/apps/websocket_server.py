@@ -57,6 +57,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 import uvicorn
 
 import config_schema
@@ -1585,10 +1586,12 @@ def _write_denied(request: Any) -> Response | None:
         headers={'Cache-Control': 'no-store'})
 
 
-def _json(payload: Any, status_code: int = 200) -> Response:
+def _json(payload: Any, status_code: int = 200,
+          background: BackgroundTask | None = None) -> Response:
     return Response(content=json.dumps(payload), status_code=status_code,
                     media_type='application/json',
-                    headers={'Cache-Control': 'no-store'})
+                    headers={'Cache-Control': 'no-store'},
+                    background=background)
 
 
 def _no_store() -> Response:
@@ -1851,6 +1854,19 @@ async def post_restart(request: Request) -> Response:
     Gated exactly like a config write: the published port is unauthenticated, and
     "restart the scanner" is not something a stranger on the LAN should be able to
     do.
+
+    **The Supervisor call happens after this response is sent, not during it.**
+    Holding the response open across a restart cannot work: Supervisor kills the
+    container, so the reply is never flushed, and under ingress the *proxy* then
+    answers the browser 502. That looked like a failed restart while the restart
+    was in fact succeeding -- the one outcome worse than not restarting, because
+    the user retries. Answering first and asking second means the 200 is real and
+    already delivered by the time anything can kill us.
+
+    That leaves the genuine failure -- Supervisor refusing -- with nowhere to be
+    reported, so it is caught up front instead: ``_supervisor_ok()`` checks the
+    token against a harmless GET, which is the same authorisation the restart
+    needs.
     """
     denied = _write_denied(request)
     if denied is not None:
@@ -1861,26 +1877,82 @@ async def post_restart(request: Request) -> Response:
             'error': 'not running as a Home Assistant add-on',
             'detail': 'Restart the decoder however you started it.',
         }, status_code=501)
+
+    problem = _supervisor_denied(token)
+    if problem is not None:
+        return _json(problem, status_code=502)
+
+    return _json({'ok': True, 'restarting': True,
+                  'detail': 'Supervisor was asked to restart the add-on. This '
+                            'page will reconnect on its own.'},
+                 background=BackgroundTask(_ask_supervisor_to_restart, token))
+
+
+#: Roles Supervisor lets an add-on restart itself with.
+RESTART_ROLES = ('manager', 'admin')
+
+#: What to say when it will not. Named because two paths report it: the
+#: preflight, and the log line the background task leaves if it is wrong anyway.
+_ROLE_HINT = ('The add-on is not allowed to restart itself. It needs '
+              'hassio_api: true and hassio_role: manager in config.yaml.')
+
+
+def _supervisor_denied(token: str) -> dict[str, Any] | None:
+    """None if Supervisor will accept a self-restart, else what to tell the user.
+
+    ``/addons/self/info`` is a GET, so unlike the restart it leaves the container
+    alive to report its answer -- and it *names the role we are running with*,
+    which is the actual precondition. Checking only that the token works would
+    miss the case this exists to catch: ``hassio_api`` without
+    ``hassio_role: manager`` answers the GET happily and refuses the POST, and
+    the POST now runs after the response where nothing can report it.
+
+    Only a definite answer counts. A Supervisor that is slow, unreachable, or
+    answering something unexpected must not veto a restart that would probably
+    have worked, because the user's alternative is the add-on page -- which does
+    exactly the same thing, with no opinion from us.
+    """
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        'http://supervisor/addons/self/info',
+        headers={'Authorization': 'Bearer %s' % token})
     try:
-        import urllib.error
-        import urllib.request
-        req = urllib.request.Request(
-            'http://supervisor/addons/self/restart', method='POST',
-            headers={'Authorization': 'Bearer %s' % token})
-        # No response body is expected, and the container is about to be killed,
-        # so a short timeout here just means we never see the 200.
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        hint = ('Supervisor refused the restart. The add-on needs hassio_api and '
-                'hassio_role: manager in config.yaml.') if e.code in (401, 403) else ''
-        return _json({'error': 'restart failed', 'status': e.code, 'detail': hint or str(e)},
-                     status_code=502)
-    except OSError as e:
-        # The container going away mid-request looks like a connection error, and
-        # that is the success case.
+        if e.code in (401, 403):
+            return {'error': 'Supervisor refused', 'status': e.code,
+                    'detail': _ROLE_HINT}
+        sys.stderr.write('supervisor preflight: HTTP %s (continuing)\n' % e.code)
+        return None
+    except (OSError, ValueError) as e:
+        sys.stderr.write('supervisor preflight failed: %s (continuing)\n' % e)
+        return None
+
+    # Only a role Supervisor actually named blocks anything. Absent or blank is
+    # "could not tell", which by the rule above means go ahead.
+    role = str(((body or {}).get('data') or {}).get('hassio_role') or '').strip()
+    if role and role.lower() not in RESTART_ROLES:
+        return {'error': 'Supervisor would refuse', 'status': 403,
+                'detail': '%s This add-on is running as "%s".' % (_ROLE_HINT, role)}
+    return None
+
+
+def _ask_supervisor_to_restart(token: str) -> None:
+    """POST the restart. Runs after the response has gone out, so it may well
+    never return -- Supervisor kills this container to carry it out."""
+    import urllib.request
+    req = urllib.request.Request(
+        'http://supervisor/addons/self/restart', method='POST',
+        headers={'Authorization': 'Bearer %s' % token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except Exception as e:
+        # Including the success case: the container going away mid-request looks
+        # like a connection error. Nobody is left to tell, so this is a log line.
         sys.stderr.write('restart request ended with %s (expected if it worked)\n' % e)
-    return _json({'ok': True, 'detail': 'Supervisor was asked to restart the add-on.'})
 
 
 def _export_roots() -> list[str]:

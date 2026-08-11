@@ -25,6 +25,20 @@ export interface ConfigError {
   status?: number;
 }
 
+/** Statuses a proxy invents when it cannot reach the thing behind it. */
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+
+/** Whether the body is JSON this app wrote, as opposed to a proxy's error page.
+ *  Reads a clone, so the response is still intact for `readError`. */
+async function hasJsonBody(resp: Response): Promise<boolean> {
+  try {
+    const body: unknown = await resp.clone().json();
+    return Boolean(body && typeof body === 'object' && 'error' in body);
+  } catch {
+    return false;
+  }
+}
+
 async function readError(resp: Response): Promise<ConfigError> {
   let body: Record<string, unknown> = {};
   try {
@@ -177,7 +191,15 @@ export function useConfigEditor(active: boolean): UseConfigEditor {
     setError(null);
     try {
       const resp = await fetch(apiUrl('api/restart'), { method: 'POST' });
+      // A gateway status is not an answer from the server — it is the *proxy*
+      // saying it has no server to ask, which is exactly what a container being
+      // restarted looks like from Home Assistant's ingress. Reporting it as a
+      // failed restart is the worst reading available: the restart is underway,
+      // and the user's response to being told it failed is to do it again.
+      // Anything the decoder itself refuses (403, 501, and the 502 it raises
+      // when Supervisor says no) carries a JSON body and is reported.
       if (!resp.ok) {
+        if (GATEWAY_STATUSES.has(resp.status) && !(await hasJsonBody(resp))) return true;
         setError(await readError(resp));
         return false;
       }
