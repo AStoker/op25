@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.0.19
+
+**You can now search your captured calls — by what was said, or by who said
+it.** There is a new search box at the top of the Call Audio & Transcripts card.
+
+Type anything and the list narrows as you go. It looks in three places at once,
+so you do not have to decide in advance which one you remember:
+
+- the **transcript**, if the call has one
+- the **talkgroup name**
+- the **talkgroup number**
+
+Type more than one word and *all* of them have to match — but they can match in
+different places. So `cola fire` finds a call on a West Columbia talkgroup where
+someone said "fire", which is usually what you actually want and is not something
+a single search box normally lets you ask.
+
+Small things that make it easier to use:
+
+- **Matches are highlighted**, so you can see why each call is in the results.
+  Search matches are shaded plainly and your configured alert keywords keep their
+  orange marker — a search hit is not an alert, and the two never look alike.
+- **The talkgroup number now appears on each call** next to its name, so a call
+  found by number shows you the number it matched.
+- The count reads "3 of 40 captured" while you are searching, so a search that
+  finds nothing is obvious rather than looking like nothing was ever recorded.
+- It combines with the existing **Keyword hits only** switch.
+- Searching for `10-33` or a stray bracket does what you would expect. This is a
+  plain text search, not a pattern — unlike the talkgroup browser's filter, where
+  `RCHP*` means a wildcard. Radio traffic is full of characters that would
+  otherwise be read as pattern syntax and quietly match nothing.
+
+Worth knowing:
+
+- **Calls with no transcript are still findable by talkgroup.** If you have not
+  set up speech-to-text, the search still works — it just has names and numbers
+  to go on, and it tells you so when a search comes up empty.
+- **It searches the calls that are still in the list**, which is the most recent
+  60. Older calls are gone from the server's memory and cannot be searched. If
+  you want a permanent archive, turn on `media_upload` so clips are saved into
+  Home Assistant's media library.
+- The search box clears itself on reload. It filters a live list, so a search
+  restored later would hide calls that arrived since you typed it.
+
+Nothing to configure, and nothing else changed in this release.
+
 ## 0.0.18
 
 **Live audio is now levelled the same way the recordings are. That difference —
